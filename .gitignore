@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Generated figures
+_img_*.png

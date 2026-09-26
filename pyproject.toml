@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eaopt"
+version = "0.1.0"
+description = "Efficient adjoint-based shape optimization for microwave components (paper reproduction)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyyaml>=6.0",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# 服务器端（CST COM 接口）依赖，本地 mock 开发不需要
+server = ["pywin32>=306", "h5py>=3.9"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools]
+packages = ["eaopt", "eaopt.solver", "eaopt.geometry", "eaopt.adjoint", "eaopt.optimize"]

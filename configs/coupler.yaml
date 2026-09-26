@@ -1,0 +1,89 @@
+# ======================================================================
+# 算例：高定向性定向耦合器（复现论文 III-A）
+# 论文参数：5 GHz；Rogers4350B (30 mil, eps_r=3.66, tan_d=0.0037)；
+#           初始 w=1.6 mm, d=12 mm, g=1 mm；金属 35 um；
+#           目标 max |S31|：初始 -17.9 dB -> 优化后约 -10 dB，
+#           定向性 4.6 -> 17.1 dB，插入损耗 < 1 dB，约 20 次迭代。
+#
+# 几何布局（设计平面 x-y，单位 mm；y 正向朝直通线一侧）：
+#   直通线（through, 端口1-2, 固定）:  y in [1.0, 2.6]（w=1.6 mm）
+#   耦合臂（coupled, 端口3-4, 可优化）: y in [-1.6, 0.0]（w=1.6 mm）
+#   间隙 g = 1.0 mm（耦合臂上边缘 y=0 到直通线下边缘 y=1.0）
+#   耦合段沿 x 方向长 d = 12 mm，即设计区域 x in [0, 12]
+# TODO: 设计区红框纵向范围需按论文 Fig.5 核准后更新（当前为合理默认值）
+# ======================================================================
+
+name: coupler
+description: 高定向性定向耦合器（论文 III-A）
+
+solver:
+  type: mock            # 本地开发用 mock；服务器上改为 cst
+  port_power_w: 0.5
+
+frequency: 5.0
+
+substrate:
+  height_mm: 0.762      # 30 mil
+  eps_r: 3.66
+  loss_tangent: 0.0037
+
+metal:
+  thickness_mm: 0.035   # 35 um
+  material: pec         # 推导假设 PEC；FD 验证不达标再换 copper
+
+ports:
+  - {id: 1, role: input}
+  - {id: 2, role: through}
+  - {id: 3, role: observation}   # 反向仿真激励端口、FoM 观测端口
+  - {id: 4, role: auxiliary}
+
+objective:
+  type: transmission
+  from_port: 1
+  to_port: 3
+  frequency: 5.0
+
+design_region:
+  box:
+    x: [0.0, 12.0]      # 耦合段长度 d
+    y: [-2.0, 3.0]      # 覆盖两线及其上下余量
+  grid_step_mm: 0.05
+  field_margin_mm: 1.0
+
+initial_metal:
+  # 耦合臂（两端向设计区外延伸，保证与固定馈线衔接）
+  - vertices: [[-1.0, -1.6], [13.0, -1.6], [13.0, 0.0], [-1.0, 0.0]]
+  # 直通线（固定，见 fixed_region）
+  - vertices: [[-1.0, 1.0], [13.0, 1.0], [13.0, 2.6], [-1.0, 2.6]]
+
+fixed_region:
+  # 直通线整体固定（论文：耦合臂上边缘不得超过上方直通线）
+  - vertices: [[-1.0, 1.0], [13.0, 1.0], [13.0, 2.6], [-1.0, 2.6]]
+  # 设计区外的馈线延伸段固定（x<0 与 x>12 部分由设计区掩膜天然固定，
+  # 此处显式列出以保持几何完整语义）
+
+constraints:
+  min_gap_mm: 0.1       # 论文：最小间距 0.1 mm
+  allowed_region:       # 耦合臂活动范围：上界=直通线下边缘（论文约束）
+    x: [0.0, 12.0]
+    y: [-2.0, 1.0]
+
+sampling:
+  point_spacing_mm: 0.2   # 论文经验值 0.1~0.5
+  sample_offset_mm: 0.05
+  sample_side: outside    # PEC：金属外侧采样
+  field_z_mm: 0.0         # 基板顶面（金属底面）平面
+
+optimizer:
+  step_size: 0.02
+  max_iterations: 30
+  fom_tolerance: 1.0e-4
+  convergence_window: 5
+
+level_set:
+  reinit_every: 5
+  extension_band_mm: 0.5
+
+output:
+  dir: results/coupler
+  save_fields: false
