@@ -1,11 +1,14 @@
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 
-# Claude Code local settings
-.claude/settings.local.json
+# 运行产物
+results/
 
-# Generated figures
+# 本地临时文件（图片提取/调试脚本等）
 _img_*.png
+_debug_*.py

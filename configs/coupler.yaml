@@ -76,6 +76,8 @@ sampling:
 
 optimizer:
   step_size: 0.02
+  velocity_sign: 1.0   # 形状导数→速度的符号开关（±1）；mock 世界已确认 +1，
+                       # CST 端由 FD 验证裁决
   max_iterations: 30
   fom_tolerance: 1.0e-4
   convergence_window: 5

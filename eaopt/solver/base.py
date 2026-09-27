@@ -1,0 +1,71 @@
+"""求解器抽象层。
+
+定义优化闭环与电磁求解器之间的契约：
+  - Solution: 一次仿真的完整结果（S 参数、场、入射功率）；
+  - SolverInterface: build_model / solve_forward / solve_backward；
+  - make_solver: 按配置构造求解器实例（mock / cst）。
+
+求解器无关性是论文方法的核心卖点：pipeline 只依赖本模块的接口，
+具体求解器（Mock、CST）各自实现。
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+
+from eaopt.adjoint.fields import FieldGrid
+from eaopt.config import CaseConfig
+
+__all__ = ["Solution", "SolverInterface", "make_solver"]
+
+
+@dataclass
+class Solution:
+    """一次仿真的结果。
+
+    s_params: {(响应端口, 激励端口): complex}，约定 S_ij = j 端口响应、
+    i 端口激励（与 CST 一致）；
+    e_field / h_field: FieldGrid 复矢量场（V/m, A/m）；
+    pin: 入射功率 (W)。
+    """
+
+    s_params: dict
+    e_field: FieldGrid
+    h_field: FieldGrid
+    pin: float
+    extra: dict = field(default_factory=dict)
+
+
+class SolverInterface(ABC):
+    """求解器接口：正向/后向两次仿真 + 几何重建。"""
+
+    @abstractmethod
+    def build_model(self, movable: list, fixed: list) -> None:
+        """重建几何。
+
+        movable: 可动金属轮廓（世界坐标 mm，闭合或开放路径）；
+        fixed: 固定金属多边形（世界坐标 mm，含设计区外馈线等）。
+        """
+
+    @abstractmethod
+    def solve_forward(self) -> Solution:
+        """正向仿真：input 端口激励。"""
+
+    @abstractmethod
+    def solve_backward(self) -> Solution:
+        """后向仿真：observation 端口激励（论文的"伴随仿真"）。"""
+
+
+def make_solver(cfg: CaseConfig, ls=None) -> SolverInterface:
+    """按配置构造求解器。ls（水准集）仅供 mock 使用。"""
+    st = cfg.solver.type
+    if st == "mock":
+        from eaopt.solver.mock import MockSolver
+
+        return MockSolver(cfg, ls)
+    if st == "cst":
+        from eaopt.solver.cst import CstSolver
+
+        return CstSolver(cfg)
+    raise ValueError(f"未知求解器类型 {st}")

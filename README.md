@@ -1,0 +1,100 @@
+# eaopt — 基于伴随法的微波器件形状优化（论文复现）
+
+复现论文：
+
+> J. Ji, S. HuYan, L. Du, X. Xu, J. Zhao, "Efficient Adjoint-Based Shape
+> Optimization Method for the Inverse Design of Microwave Components,"
+> *IEEE Trans. Microwave Theory and Techniques*, vol. 73, no. 1, pp. 494–503, 2025.
+> DOI: 10.1109/TMTT.2024.3421558
+
+## 方法概述
+
+论文方法的核心：把"伴随仿真"实现为**换端口激励的第二次正常仿真**（后向场），
+从而只依赖商业求解器的场解（E/H 场监视器导出），不依赖系统矩阵与网格信息。
+
+每轮迭代（论文 Fig. 4）：
+
+```
+正向仿真（input 端口激励）   → E, H, S 参数, P_in
+后向仿真（observation 端口激励）→ E_back, H_back
+形状导数 δp_i = Re[−2jω/P_in·(ε E_⊥·E_⊥^back + μ0 H_∥·H_∥^back)]   ← 式(25)
+梯度下降（固定步长 + 符号开关）→ 水准集 HJ 演化 → 最小间距投影 → 重建几何
+```
+
+形状导数只定义在边界采样点上，经**速度延拓**铺满窄带后驱动
+Hamilton–Jacobi 方程 ∂φ/∂t + V|∇φ| = 0（Godunov 一阶上风格式）。
+
+## 项目结构
+
+```
+eaopt/
+├── config.py            # 算例配置系统（一个算例 = 一份 YAML）
+├── geometry/
+│   ├── levelset.py      # 水准集：SDF 初始化、HJ 演化、重初始化、速度延拓、法向
+│   └── contour.py       # 零等值面提取（marching squares）与 B 样条平滑重采样
+├── adjoint/
+│   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + 法/切分解
+│   ├── derivative.py    # 形状导数（论文式 25）
+│   ├── sampling.py      # 边界采样（排除固定金属）与导数栅格化
+│   └── fd_check.py      # 有限差分验证（符号裁决 + 数值一致性）
+├── solver/
+│   ├── base.py          # Solution / SolverInterface / make_solver 工厂
+│   ├── mock.py          # MockSolver：2D 拉普拉斯静电场玩具模型（本地验证用）
+│   └── cst.py           # CST 接口（占位，第 6 步在服务器实现）
+├── optimize/
+│   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）
+│   ├── step.py          # 固定步长 + 归一化 + active 掩膜
+│   └── constraints.py   # 速度掩膜（固定区边距/允许区/边缘 taper）、最小间距投影
+└── pipeline.py          # 优化主循环（Fig. 4）+ 日志/快照
+
+configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺寸 TODO 待按 Fig.5 核准）
+scripts/run_coupler.py   # 运行入口
+scripts/fd_check.py      # FD 验证命令行工具
+tests/                   # 44 项测试（水准集数值、导数、mock、FD、端到端）
+```
+
+## 安装与使用
+
+```bash
+pip install -e .            # 本地（numpy/scipy/pyyaml/matplotlib）
+pip install -e .[dev]       # + pytest
+pip install -e .[server]    # 服务器端 + pywin32/h5py（CST COM）
+
+python scripts/run_coupler.py          # 跑优化（solver.type=mock 时本地）
+python scripts/fd_check.py             # FD 验证（符号裁决）
+python -m pytest tests/ -v             # 测试
+```
+
+## 配置要点（configs/coupler.yaml）
+
+- 坐标约定：设计平面 x-y（mm），金属沿 z 挤出（35 µm）；φ<0 为金属
+- 边界条件（论文）：x、y、z-min 磁边界，z-max 电边界；频点 5 GHz
+- `sampling.sample_offset_mm` 必须 **> 半网格步长**（插值窗口跨金属边界会压掉一半场）
+- `optimizer.velocity_sign`：导数→速度的符号开关；mock 世界 FD 已验证 +1 正确，
+  CST 端待服务器 FD 验证裁决
+- 约束：`min_gap_mm`（硬投影）、`allowed_region`（速度掩膜）、固定区自动外扩
+  `max(min_gap, 2dx)` 边距防速度泄漏
+
+## 已验证的性质
+
+- **FD 一致性（mock，解析级）**：式(25) 整条链退化为 Hadamard 电容形状导数，
+  实测/预测比值与理论值 0.3·P_in/(2ω·C0) 偏差 14%（`scripts/fd_check.py`）
+- 水准集：SDF 初始化误差 <1e-10；均匀速度平移精确；Godunov 上风重初始化稳定
+  （中心差分方案会振荡，勿用）；凸角附近收敛慢是 PDE 法固有特性
+- 符号：mock 世界 velocity_sign=+1（V>0 金属扩张）使 FoM 上升
+
+## MockSolver 的已知局限（不影响 CST 端）
+
+- 电容-几何曲线有栅格化锯齿（固定网格 + 单元翻转），FoM 非严格单调、
+  可能过早触发收敛窗口——真实求解器的平滑 S 参数无此问题
+- 量化台阶使 FD 验证需要 h_eff 校准（脚本自动完成）
+
+## 路线图
+
+- [x] 第 1 步：项目骨架 + 配置系统
+- [x] 第 2 步：几何核心（水准集 + 轮廓）
+- [x] 第 3 步：场与导数（FieldGrid + 式 25）
+- [x] 第 4 步：求解器抽象 + MockSolver + 优化闭环
+- [x] 第 5 步：本地端到端验证 + FD 检查工具
+- [ ] 第 6 步：CST 接口（服务器端，COM/VBA 模板驱动）
+- [ ] 第 7 步：服务器 FD 验证 + 耦合器正式复现（对齐论文 Fig. 6–8）

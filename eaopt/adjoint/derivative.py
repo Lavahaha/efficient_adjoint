@@ -39,11 +39,14 @@ def shape_derivative(
     pin: 入射功率 (W)；omega: 角频率 (rad/s)；eps_r: 相对介电常数。
     返回 (N,) 实数组 δp。
     """
-    n = normals / np.linalg.norm(normals, axis=1, keepdims=True)
+    length = np.linalg.norm(normals, axis=1, keepdims=True)
+    n = normals / np.where(length < 1e-30, 1.0, length)
     e_n = np.einsum("ij,ij->i", e_fwd, n)
     e_n_back = np.einsum("ij,ij->i", e_back, n)
     h_t = h_fwd - np.einsum("ij,ij->i", h_fwd, n)[:, None] * n
     h_t_back = h_back - np.einsum("ij,ij->i", h_back, n)[:, None] * n
     h_dot = np.einsum("ij,ij->i", h_t, h_t_back)
     integrand = EPS0 * eps_r * e_n * e_n_back + MU0 * h_dot
-    return np.real(-2j * omega / pin * integrand)
+    delta = np.real(-2j * omega / pin * integrand)
+    # 法向退化（几何角点/域边界处）该点导数置零，避免 0/0
+    return np.where(length[:, 0] < 1e-30, 0.0, delta)

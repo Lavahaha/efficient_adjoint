@@ -62,7 +62,8 @@ def decompose_normal_tangential(
     复矢量点积不取共轭（与论文推导一致；符号问题由 FD 验证裁决）。
     返回 (field_normal, field_tangential)，均为 (N,3)。
     """
-    n = normals / np.linalg.norm(normals, axis=1, keepdims=True)
+    length = np.linalg.norm(normals, axis=1, keepdims=True)
+    n = normals / np.where(length < 1e-30, 1.0, length)
     dot = np.einsum("ij,ij->i", field, n)
     normal_part = dot[:, None] * n
     return normal_part, field - normal_part

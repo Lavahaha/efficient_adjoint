@@ -106,6 +106,7 @@ class SamplingSpec:
 @dataclass
 class OptimizerSpec:
     step_size: float = 0.02  # 固定步长（mm 量级，先跑通后自适应）
+    velocity_sign: float = 1.0  # 形状导数→速度的符号开关（±1），FD 验证定号
     max_iterations: int = 30
     fom_tolerance: float = 1e-4
     convergence_window: int = 5  # 连续 N 次迭代 FoM 变化小于容差则收敛
@@ -216,6 +217,8 @@ class CaseConfig:
             raise ValueError(f"未知采样侧 {self.sampling.sample_side}")
         if self.optimizer.step_size <= 0:
             raise ValueError("optimizer.step_size 必须为正")
+        if self.optimizer.velocity_sign not in (1.0, -1.0):
+            raise ValueError("optimizer.velocity_sign 必须为 +1.0 或 -1.0")
         if self.optimizer.max_iterations <= 0:
             raise ValueError("optimizer.max_iterations 必须为正")
         if self.level_set.reinit_every < 1:

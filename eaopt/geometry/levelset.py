@@ -137,8 +137,10 @@ class LevelSet2D:
         gx = np.gradient(self.phi, self.dx, axis=0)
         gy = np.gradient(self.phi, self.dx, axis=1)
         pts = np.asarray(points, dtype=float)
-        fx = RegularGridInterpolator((self.xs, self.ys), gx)
-        fy = RegularGridInterpolator((self.xs, self.ys), gy)
+        fx = RegularGridInterpolator((self.xs, self.ys), gx,
+                                     bounds_error=False, fill_value=0.0)
+        fy = RegularGridInterpolator((self.xs, self.ys), gy,
+                                     bounds_error=False, fill_value=0.0)
         n = np.stack([fx(pts), fy(pts)], axis=1)
         length = np.linalg.norm(n, axis=1, keepdims=True)
         return n / np.where(length < 1e-30, 1.0, length)
@@ -151,13 +153,14 @@ class LevelSet2D:
     ) -> np.ndarray:
         """把边界速度延拓到窄带 |φ|<band：∂V/∂τ + S(φ)n̂·∇V = 0（上风）。
 
-        v_boundary: (nx, ny)，仅在边界邻域 |φ|≤0.5·dx 处为已知值（其余忽略）。
+        v_boundary: (nx, ny)，仅在边界邻域 |φ|≤0.75·dx 处为已知值
+        （覆盖边界两侧的相邻节点；其余忽略）。
         返回延拓后的速度场（窄带外为 0）。
         """
         v_boundary = np.asarray(v_boundary, dtype=float)
         if v_boundary.shape != self.phi.shape:
             raise ValueError("v_boundary 形状与网格不一致")
-        near = np.abs(self.phi) <= 0.5 * self.dx
+        near = np.abs(self.phi) <= 0.75 * self.dx
         v = np.where(near, v_boundary, 0.0)
         dtau = 0.5 * self.dx
         for _ in range(iters):
