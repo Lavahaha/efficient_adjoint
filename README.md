@@ -89,6 +89,29 @@ python -m pytest tests/ -v             # 测试
   可能过早触发收敛窗口——真实求解器的平滑 S 参数无此问题
 - 量化台阶使 FD 验证需要 h_eff 校准（脚本自动完成）
 
+## CST 服务器流程（第 6–7 步，CST 2024）
+
+代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/vba.py` +
+`eaopt/solver/ascii_fields.py` + `eaopt/solver/template_builder.py`，
+53 项本地测试全过）；服务器实测步骤：
+
+1. 本地生成模板宏：`python scripts/build_cst_template.py cst/`（产物
+   `cst/build_templates.bas`），拷到服务器；
+2. CST GUI：宏面板导入宏 → 运行 `Main` → 生成 `coupler_fwd.cst`
+   （端口 1 激励）与 `coupler_bwd.cst`（端口 3 激励）。检查 4 个波导
+   端口、5 GHz E/H 监视器、边界（x/y/zmin 磁、zmax 电）；若激励未
+   生效（Excitation 命令被拒），在端口对话框中手工勾选（fwd→端口1，
+   bwd→端口3）；
+3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
+   `solver.type: cst`；
+4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、
+   S 参数读取候选方法、结果树条目、场导出文件头（用于核对
+   `ascii_fields` 解析器与 CST 2024 真实格式），把完整输出贴回给开发者
+   收敛候选 API；
+5. `python scripts/fd_check.py`（CST 上 FD 验证，重新裁决符号）→
+   `python scripts/run_coupler.py` 正式优化（预期约 20 次迭代，
+   参考论文 55 min）。
+
 ## 路线图
 
 - [x] 第 1 步：项目骨架 + 配置系统
@@ -96,5 +119,6 @@ python -m pytest tests/ -v             # 测试
 - [x] 第 3 步：场与导数（FieldGrid + 式 25）
 - [x] 第 4 步：求解器抽象 + MockSolver + 优化闭环
 - [x] 第 5 步：本地端到端验证 + FD 检查工具
-- [ ] 第 6 步：CST 接口（服务器端，COM/VBA 模板驱动）
-- [ ] 第 7 步：服务器 FD 验证 + 耦合器正式复现（对齐论文 Fig. 6–8）
+- [x] 第 6 步：CST 接口代码（双模板设计 + VBA 生成 + ASCII 场解析，
+      53 测试全过；服务器实测待 smoke）
+- [ ] 第 7 步：服务器 smoke → FD 验证 → 耦合器正式复现（对齐论文 Fig. 6–8）

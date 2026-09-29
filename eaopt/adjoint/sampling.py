@@ -15,7 +15,7 @@ from eaopt.config import CaseConfig
 from eaopt.geometry.contour import smooth_resample
 from eaopt.geometry.levelset import LevelSet2D
 
-__all__ = ["sample_boundary", "scatter_to_grid"]
+__all__ = ["sample_boundary", "scatter_to_grid", "make_fixed_sdf", "is_fixed_contour"]
 
 
 def sample_boundary(
@@ -31,12 +31,12 @@ def sample_boundary(
     固定金属（fixed_region）的轮廓不参与采样：论文只优化可动边界，
     且固定金属表面场强会劫持速度归一化（max|δp|），拖慢可动边界。
     """
-    fixed_sdf = _fixed_sdf(ls, cfg)
+    fixed_sdf = make_fixed_sdf(ls, cfg)
     s = cfg.sampling
     side = 1.0 if s.sample_side == "outside" else -1.0
     pts_list, nrm_list = [], []
     for c in contours:
-        if fixed_sdf is not None and _on_fixed_metal(c, fixed_sdf):
+        if fixed_sdf is not None and is_fixed_contour(c, fixed_sdf):
             continue
         closed = np.allclose(c[0], c[-1])
         r = smooth_resample(c, s.point_spacing_mm, smoothing=0.0, closed=closed)
@@ -48,7 +48,7 @@ def sample_boundary(
     return np.vstack(pts_list), np.vstack(nrm_list)
 
 
-def _fixed_sdf(ls: LevelSet2D, cfg: CaseConfig):
+def make_fixed_sdf(ls: LevelSet2D, cfg: CaseConfig):
     """固定金属的带符号距离场（无固定区时返回 None）。"""
     if not cfg.fixed_region:
         return None
@@ -59,7 +59,7 @@ def _fixed_sdf(ls: LevelSet2D, cfg: CaseConfig):
     return tmp
 
 
-def _on_fixed_metal(c: np.ndarray, fixed_sdf: LevelSet2D) -> bool:
+def is_fixed_contour(c: np.ndarray, fixed_sdf: LevelSet2D) -> bool:
     """轮廓是否属于固定金属（其上点距固定区 < 0.1 mm）。"""
     from scipy.interpolate import RegularGridInterpolator
 

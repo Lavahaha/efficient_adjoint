@@ -20,7 +20,8 @@ from pathlib import Path
 import numpy as np
 
 from eaopt.adjoint.derivative import shape_derivative
-from eaopt.adjoint.sampling import sample_boundary, scatter_to_grid
+from eaopt.adjoint.sampling import (is_fixed_contour, make_fixed_sdf,
+                                    sample_boundary, scatter_to_grid)
 from eaopt.config import CaseConfig
 from eaopt.geometry.contour import extract_contours, smooth_resample
 from eaopt.geometry.levelset import LevelSet2D
@@ -126,9 +127,13 @@ class OptimizerPipeline:
 
     # ------------------------------------------------------------------ #
     def _movable_contours(self) -> list[np.ndarray]:
+        """提取可动金属轮廓（排除固定金属，如直通线），按点距重采样。"""
         contours = extract_contours(self.ls.xs, self.ls.ys, self.ls.phi)
+        fixed_sdf = make_fixed_sdf(self.ls, self.cfg)
         out = []
         for c in contours:
+            if fixed_sdf is not None and is_fixed_contour(c, fixed_sdf):
+                continue
             closed = np.allclose(c[0], c[-1])
             out.append(
                 smooth_resample(c, self.cfg.sampling.point_spacing_mm,

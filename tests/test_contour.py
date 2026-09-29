@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from eaopt.config import BoxSpec
-from eaopt.geometry.contour import extract_contours, smooth_resample
+from eaopt.geometry.contour import (close_open_contours, extract_contours,
+                                    smooth_resample)
 from eaopt.geometry.levelset import LevelSet2D
 
 RECT = np.array([[2.0, -1.0], [10.0, -1.0], [10.0, 1.0], [2.0, 1.0]])
@@ -59,6 +60,37 @@ def test_smooth_resample_circle_uniform_spacing():
     # 仍接近圆：半径偏差小于一个网格
     rad = np.linalg.norm(out - np.array([6.0, 0.5]), axis=1)
     assert np.abs(rad - r).max() < 0.1
+
+
+def test_close_open_contours_arm_strip():
+    # 耦合臂上下两条开放边（穿出设计区左右边界）
+    top = np.array([[0.0, 0.0], [4.0, 0.0], [8.0, 0.0], [12.0, 0.0]])
+    bot = np.array([[0.0, -1.6], [4.0, -1.6], [8.0, -1.6], [12.0, -1.6]])
+    box = BoxSpec(x=(0.0, 12.0), y=(-2.0, 3.0))
+    polys = close_open_contours([top, bot], box)
+    assert len(polys) == 1
+    poly = polys[0]
+    assert np.allclose(poly[0], poly[-1])  # 闭合
+    # 顶点均在设计区外扩 0.05 的包络内
+    assert poly[:, 0].min() >= -0.05 - 1e-9
+    assert poly[:, 0].max() <= 12.05 + 1e-9
+    assert poly[:, 1].min() >= -2.05 - 1e-9
+    assert poly[:, 1].max() <= 3.05 + 1e-9
+    # 封闭区域包含臂（面积 > 臂面积 19.2）
+    from matplotlib.path import Path as MplPath
+
+    assert MplPath(poly).contains_point((6.0, -0.8))
+
+
+def test_close_open_contours_keeps_closed_and_rejects_odd():
+    box = BoxSpec(x=(0.0, 12.0), y=(-2.0, 3.0))
+    circle = circle_polygon(2.0, 6.0, 0.5)
+    top = np.array([[0.0, 0.0], [12.0, 0.0]])
+    out = close_open_contours([circle, top, top], box)  # 2 开 + 1 闭
+    assert len(out) == 2
+    assert any(np.allclose(c[0], c[-1]) for c in out)
+    with pytest.raises(ValueError):
+        close_open_contours([top], box)  # 奇数个开放轮廓
 
 
 def test_smooth_resample_open_line_keeps_endpoints():

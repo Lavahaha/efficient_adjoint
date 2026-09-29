@@ -129,8 +129,10 @@ class ConstraintSpec:
 class SolverSpec:
     type: str = "mock"  # "mock" | "cst"
     # --- cst 相关（服务器端使用，本地 mock 忽略） ---
-    template_path: Optional[str] = None  # 模板 .cst 路径
+    template_fwd: Optional[str] = None  # 正向模板 .cst（端口1激励）
+    template_bwd: Optional[str] = None  # 反向模板 .cst（观测端口激励）
     cst_version: Optional[str] = None
+    field_backend: str = "ascii"  # ascii | hdf5 | resultreader（smoke 实测后定）
     port_power_w: float = 0.5  # 端口功率（CST 默认 0.5 W）
 
 
