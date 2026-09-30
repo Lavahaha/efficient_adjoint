@@ -1,6 +1,7 @@
 """VBA 命令字符串与模板宏生成测试（纯字符串，无需 CST）。"""
 
 import numpy as np
+import pytest
 
 from eaopt.solver import vba as V
 from eaopt.solver.template_builder import (build_all_templates, build_macro,
@@ -58,8 +59,6 @@ def test_port_xface():
 
 def test_port_face_validation():
     """只接受 CST 的边界面名（不认 positive/negative 或轴名）。"""
-    import pytest
-
     for bad in ("z", "zmin", "positive", "x", "top"):
         with pytest.raises(ValueError):
             V.waveguide_port(1, "p1", bad, 0.0, 0.0, 1.0, 0.0, 1.0)
@@ -70,10 +69,27 @@ def test_excitation_supports_vba_variable():
     assert ".Port portnum" in s  # VBA 变量：不带引号
 
 
+def test_guarded_wraps_block_and_reports():
+    """guarded()：块内错误记入 errLog 而不抛出（宏继续跑完）。"""
+    s = V.guarded(V.excitation("exc", '"1"'), "Excitation", indent="")
+    assert s.startswith("Err.Clear\nWith Excitation")
+    assert "If Err.Number <> 0 Then" in s
+    assert 'errLog = errLog & "Excitation: (" & Err.Number & ") "' in s
+    assert s.rstrip().endswith("End If")
+    # 缩进：块内每行都缩进，便于阅读生成的宏
+    ind = V.guarded(V.excitation("exc", '"1"'), "Excitation")
+    assert "\n    With Excitation" in ind and "\n        .Reset" in ind
+
+
+def test_guarded_rejects_non_ascii_label():
+    """label 进字符串字面量：必须 ASCII（CST 宏按 ANSI 解码）。"""
+    for bad in ("激励", "Monitör"):
+        with pytest.raises(ValueError):
+            V.guarded("", bad)
+
+
 def test_layout_matches_paper_fig5():
     """几何关系锁死论文 Fig. 5 的参数：w=1.6, d=12, g=1。"""
-    import pytest
-
     from eaopt.solver import template_builder as T
 
     assert T.W == 1.6 and T.D == 12.0 and T.G == 1.0
@@ -86,6 +102,54 @@ def test_layout_matches_paper_fig5():
     assert T.LEG_R_OUT - T.LEG_R_IN == approx(T.W)
     assert T.LEG_BOT < T.ARM_LO               # 腿向下延伸到板底
     assert T.THRU_X0 < T.LEG_L_OUT and T.THRU_X1 > T.LEG_R_OUT  # 直通线贯通
+
+
+def test_fillet_geometry_is_concentric_strip_bend():
+    """拐弯过渡：等宽条带圆角（外 R_OUT / 内 R_IN 同心，R_OUT-R_IN=W）。"""
+    import math
+
+    from eaopt.solver import template_builder as T
+
+    assert T.R_OUT - T.R_IN == pytest.approx(T.W)
+    assert T.R_OUT + T.R_IN == pytest.approx(2 * T.R_BEND)
+
+    cx, cy = T.LEG_L_IN + T.R_IN, T.ARM_LO - T.R_IN      # 左拐弯中心
+    leg = T._left_leg_polygon()
+    arm = T._arm_design_polygon()
+
+    # 腿外缘圆弧：所有弧点到拐弯中心 = R_OUT
+    for x, y in leg[2:-1]:
+        assert math.hypot(x - cx, y - cy) == pytest.approx(T.R_OUT, abs=1e-3)
+    # 外弧与外缘相切：起点在腿外缘 x 上、切点 y = 拐弯中心 y
+    assert leg[1] == pytest.approx((T.LEG_L_OUT, cy))
+    # 臂内缘圆弧：所有弧点到同一中心 = R_IN（同心）
+    for x, y in arm[1:7]:
+        assert math.hypot(x - cx, y - cy) == pytest.approx(T.R_IN, abs=1e-3)
+    # 内弧切点落在设计区边角：(0,-2) 与 (0.4,-1.6)
+    assert arm[0] == pytest.approx((T.LEG_L_IN, cy))
+    assert arm[6] == pytest.approx((cx, T.ARM_LO))
+    # 臂轮廓范围 = 设计区（x∈[0,12]、y∈[-2,0]）
+    xs = [p[0] for p in arm]
+    ys = [p[1] for p in arm]
+    assert (min(xs), max(xs)) == pytest.approx((T.LEG_L_IN, T.LEG_R_IN))
+    assert (min(ys), max(ys)) == pytest.approx((cy, T.ARM_HI))
+
+
+def test_config_initial_metal_matches_template():
+    """配置里的初始金属必须与模板 arm_init 是同一轮廓（否则 0 次迭代
+    时 CST 里的结构与水准集表示不一致）。"""
+    from pathlib import Path
+
+    from eaopt.config import CaseConfig
+    from eaopt.solver import template_builder as T
+
+    cfg = CaseConfig.from_yaml(Path(__file__).resolve().parents[1]
+                               / "configs" / "coupler.yaml")
+    yaml_pts = list(cfg.initial_metal[0].vertices)
+    code_pts = T._arm_design_polygon()
+    assert len(yaml_pts) == len(code_pts)          # YAML 中坐标保留 4 位小数
+    for (yx, yy), (cx, cy) in zip(yaml_pts, code_pts):
+        assert (yx, yy) == pytest.approx((cx, cy), abs=1e-3)
 
 
 def test_config_design_box_agrees_with_template():
@@ -133,8 +197,9 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
         assert text.count('.Orientation "ymin"') == 2   # 端口 3/4
         # 端口面：下缘贴合接地板底面（域 zmin），上缘到空气盒顶（域 zmax）
         assert text.count('.Zrange "-0.797", "4"') == 4
-        # 模板中无挤出/曲线对象：腿与臂的交界只可能是直线
-        assert "With Extrude" not in text and "With Polygon" not in text
+        # 3 个挤出对象：左腿 / 右腿 / 设计区初始臂（带圆角过渡）
+        assert text.count("With Extrude") == 3
+        assert "With Polygon" not in text          # 不需要单独的曲线对象
         assert '    .Name "arm_init"' in text
         assert '    .Component "design_region"' in text
         # 边界：zmax 电边界、其余磁边界
@@ -144,6 +209,38 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
     fwd, bwd = (p.read_text(encoding="utf-8") for p in paths)
     assert '.Port "1"' in fwd and '.Port "3"' not in fwd
     assert '.Port "3"' in bwd and '.Port "1"' not in bwd
+
+
+def test_settings_blocks_are_error_guarded(tmp_path):
+    """设置类块（激励/监视器/边界/求解器）逐块容错：CST 2024 实测
+    Excitation.Reset 报 (10090)，未加保护会中止整个宏（连 SaveAs 都
+    跑不到）。几何与端口则必须失败即中止。"""
+    text = build_macro(tmp_path, "demo", 1).read_text(encoding="utf-8")
+    guard_at = text.index("On Error Resume Next")
+    release_at = text.index("On Error GoTo 0")
+    # 保护区之外：几何与端口（失败就该中止，不吞错）
+    assert guard_at > text.rindex("With Extrude")
+    assert guard_at > text.rindex("With Port")
+    # 保护区之内：5 个设置块，每块 2 次 Err.Clear（进入前清、记录后清）
+    assert text.count("If Err.Number <> 0 Then") == 5
+    assert text.count("Err.Clear") == 10
+    for label in ("Excitation", "Monitor Efield", "Monitor Hfield",
+                  "Boundary", "Solver"):
+        assert f'errLog = errLog & "{label}: ("' in text
+    # 顺序：保护结束 → SaveAs → 报告（报告时工程一定已存盘）
+    assert guard_at < release_at < text.index('SaveAs "') < text.index("MsgBox")
+    assert "Dim errLog As String" in text
+
+
+def test_macro_code_is_ascii_comments_may_be_chinese(tmp_path):
+    """CST 宏按 ANSI 解码：可执行语句必须全 ASCII（字符串字面量里的
+    非 ASCII 字节可能吞掉引号 → 语法错误）；注释里的中文不影响解析。"""
+    if not str(tmp_path).isascii():
+        pytest.skip("输出目录非 ASCII：SaveAs 路径本身就会含非 ASCII")
+    text = build_macro(tmp_path, "demo", 1).read_text(encoding="utf-8")
+    code = "\n".join(l for l in text.splitlines()
+                     if not l.lstrip().startswith("'"))
+    code.encode("ascii")  # 非 ASCII 抛 UnicodeEncodeError
 
 
 def test_build_macro_single(tmp_path):

@@ -20,9 +20,12 @@
         两端各一条腿 x∈[−1.6,0] / [12,13.6] 垂直下到板底；
         设计区 x∈[0,12]（= 两腿内边缘之间 = d）内的横段可动，
         腿与直通线固定
+    拐弯过渡（论文 Fig.5）：耦合臂是等宽条带以圆角拐弯，外缘 R_OUT=2.0、
+        内缘 R_IN=0.4（同心，中心线半径 R_BEND=1.2）；腿带外侧圆角，
+        设计区内的臂带内侧圆角，切点落在设计区边角上
     设计区初始金属（component design_region，pipeline 每轮删除重建）
-        在模板里用 **Brick** 建（初始形状就是矩形）：这样模板中不含
-        任何挤出/曲线对象，腿与臂的交界只可能是直线
+        为"横段 + 两端内侧圆角"，与 configs/coupler.yaml 的
+        initial_metal 同一轮廓（测试锁定）
     耦合间距 g = 1.0（直通线下边缘 y=1.0 与臂上边缘 y=0 之间）
     基板 Rogers4350B 30mil：x∈[−5.6,17.6] y∈[−7,5.6] z∈[−0.762,0]
     接地 PEC：z∈[−0.797,−0.762]；空气盒（Vacuum）z∈[0.035,2.0]
@@ -42,6 +45,7 @@ TODO(架构)：本模块的布局常量目前与算例耦合（耦合器）。�
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from eaopt.solver import vba as V
@@ -61,12 +65,65 @@ THRU_X0, THRU_X1 = LEG_L_OUT - FEED_EXT, LEG_R_OUT + FEED_EXT   # −5.6 / 17.6
 ARM_HI, ARM_LO = 0.0, -W                        # 耦合臂横段上下边缘
 THRU_LO, THRU_HI = ARM_HI + G, ARM_HI + G + W   # 直通线上下边缘 1.0 / 2.6
 LEG_BOT = -7.0              # 腿底 = 板下边缘 = 端口 3/4 所在面
+
+# ---- 拐弯过渡（论文 Fig.5：设计区两端的四分之一圆形过渡）----
+# 论文图中耦合臂是等宽(w=1.6)条带以圆角拐弯：实测外缘 R≈1.97 mm、
+# 内缘 R≈0.31 mm，二者与"中心线半径 R_BEND=1.2 的同心圆弧"自洽
+# （R_OUT = R_BEND + w/2 = 2.0，R_IN = R_BEND − w/2 = 0.4）。
+# 拐弯中心 (LEG_*_IN + R_IN, ARM_LO − R_IN) = (0.4, −2.0) / (11.6, −2.0)；
+# 内圆角的切点正好落在设计区边角上，外圆角在 x=0/12 处被设计区裁掉
+# （裁掉的只是一片最厚 0.04 mm 的薄片，可忽略）。
+R_BEND = 1.2                # 条带中心线拐弯半径
+R_OUT = R_BEND + W / 2      # 外缘圆角半径 = 2.0（腿外边 → 臂上边）
+R_IN = R_BEND - W / 2       # 内缘圆角半径 = 0.4（腿内边 → 臂下边）
+ARC_SEGS = 6                # 每段四分之一圆的折线段数（弦高误差 ~0.013 mm）
 SUB_TOP = THRU_HI + 3.0     # 板上边缘
 # 空气盒顶 = 计算域 zmax（电边界）。高度按 CST 微带端口经验取
 # h_port ≈ h + 5h ≈ 4.6 mm（端口太高会引入高次模，太低漏场、
 # 阻抗不准，见 docs/server_runbook.md 端口一节）
 AIR_H = 4.0
 FREQ = 5.0
+
+
+def _arc(cx: float, cy: float, r: float, a0_deg: float, a1_deg: float,
+         n: int = ARC_SEGS) -> list[tuple[float, float]]:
+    """圆弧折线采样点（不含起点，便于与上一条边相接）。"""
+    angs = [math.radians(a0_deg + (a1_deg - a0_deg) * i / n)
+            for i in range(1, n + 1)]
+    return [(cx + r * math.cos(a), cy + r * math.sin(a)) for a in angs]
+
+
+def _left_leg_polygon() -> list[tuple[float, float]]:
+    """左腿轮廓（含外侧四分之一圆过渡，在设计区左界 x=0 处裁断）。"""
+    cx, cy = LEG_L_IN + R_IN, ARM_LO - R_IN              # 拐弯中心 (0.4, -2.0)
+    a_cross = math.degrees(math.acos((LEG_L_IN - cx) / R_OUT))   # 外弧与 x=0 的交角
+    y_cross = cy + R_OUT * math.sin(math.radians(a_cross))       # 交点 y ≈ -0.04
+    pts = [(LEG_L_OUT, LEG_BOT), (LEG_L_OUT, cy)]
+    pts += _arc(cx, cy, R_OUT, 180.0, a_cross)
+    pts[-1] = (LEG_L_IN, y_cross)                        # 用解析交点替换采样末点
+    pts += [(LEG_L_IN, LEG_BOT)]
+    return pts
+
+
+def _right_leg_polygon() -> list[tuple[float, float]]:
+    """右腿轮廓（左腿关于设计中线镜像，反转绕向保持逆时针）。"""
+    mid = (LEG_L_IN + LEG_R_IN) / 2                      # 6.0
+    return [(2 * mid - x, y) for x, y in reversed(_left_leg_polygon())]
+
+
+def _arm_design_polygon() -> list[tuple[float, float]]:
+    """设计区初始金属轮廓（耦合臂横段 + 两端内侧四分之一圆过渡）。
+
+    两端内圆角与腿的外圆角同心（同一条带拐弯），切点落在设计区边角：
+    左 (0,-2.0)→(0.4,-1.6)，右 (12,-2.0)→(11.6,-1.6)。
+    """
+    cx, cy = LEG_L_IN + R_IN, ARM_LO - R_IN               # (0.4, -2.0)
+    cx2 = LEG_R_IN - R_IN                                 # 11.6
+    return ([(LEG_L_IN, cy)]
+            + _arc(cx, cy, R_IN, 180.0, 90.0)
+            + [(cx2, ARM_LO)]
+            + _arc(cx2, cy, R_IN, 90.0, 0.0)      # 末点即 (LEG_R_IN, cy)
+            + [(LEG_R_IN, ARM_HI), (LEG_L_IN, ARM_HI)])
 
 
 def _substrate_parts() -> list[str]:
@@ -84,26 +141,27 @@ def _substrate_parts() -> list[str]:
 
 
 def _fixed_metal_parts() -> list[str]:
-    """固定金属：直通线 + 两条腿（腿顶与臂横段齐平，构成 "⊓" 的外角）。"""
+    """固定金属：直通线 + 两条腿（腿带外侧圆角过渡，与臂内侧圆角同心）。"""
     return [
         V.brick("thru_line", "feed", "PEC",
                 THRU_X0, THRU_X1, THRU_LO, THRU_HI, 0.0, METAL_T),
-        V.brick("leg_left", "feed", "PEC",
-                LEG_L_OUT, LEG_L_IN, LEG_BOT, ARM_HI, 0.0, METAL_T),
-        V.brick("leg_right", "feed", "PEC",
-                LEG_R_IN, LEG_R_OUT, LEG_BOT, ARM_HI, 0.0, METAL_T),
+        V.polygon_extrude("leg_left", "feed", "PEC",
+                          _left_leg_polygon(), METAL_T),
+        V.polygon_extrude("leg_right", "feed", "PEC",
+                          _right_leg_polygon(), METAL_T),
     ]
 
 
 def _arm_design_part() -> str:
-    """设计区初始金属（耦合臂横段，pipeline 每轮重建）。
+    """设计区初始金属（耦合臂横段 + 两端内侧圆角，pipeline 每轮重建）。
 
-    初始形状是矩形，故用 Brick 而非 Extrude：Brick 无歧义。这样模板里
-    **没有任何挤出/曲线对象**——若服务器上仍看到"腿与臂交界是弧线"，
-    即可判定与 Extrude 无关。pipeline 重建任意轮廓时才用 Extrude。
+    轮廓与 configs/coupler.yaml 的 initial_metal 一致（由测试锁定）。
+    圆弧用折线近似（Extrude "Pointlist" 生成的是直边多边形，见
+    build_polygon_test_macro）；弦高误差 ~0.013 mm，远小于网格与
+    最小间距。
     """
-    return V.brick("arm_init", "design_region", "PEC",
-                   LEG_L_IN, LEG_R_IN, ARM_LO, ARM_HI, 0.0, METAL_T)
+    return V.polygon_extrude("arm_init", "design_region", "PEC",
+                             _arm_design_polygon(), METAL_T)
 
 
 def _ports() -> list[str]:
@@ -149,6 +207,9 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
         "' 本宏不含 NewProject（工程级指令在宏上下文非法，见模块头部说明）",
         "",
         "Sub Main()",
+        "    Dim errLog As String",
+        '    errLog = ""',
+        "",
         "    With Units",
         '        .Geometry "mm"',
         '        .Frequency "GHz"',
@@ -160,13 +221,36 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
     body.append(_arm_design_part())
     body += _ports()
     body += [
-        V.excitation("excitation1", f'"{portnum}"'),
-        V.field_monitor("e5", "Efield", FREQ),
-        V.field_monitor("h5", "Hfield", FREQ),
-        V.set_boundaries("magnetic", "magnetic", "magnetic", "magnetic",
-                         "magnetic", "electric"),
-        V.time_domain_solver_setup(),
-        f'SaveAs "{target}"',
+        "",
+        "    ' ---- 设置类块：逐块容错（CST 2024 实测 Excitation.Reset 报",
+        "    ' (10090) ActiveX Automation error，未加保护会让整个宏中止、",
+        "    ' SaveAs 都不执行）。几何与端口不加保护：它们失败必须中止。",
+        "    On Error Resume Next",
+    ]
+    for block, label in (
+        (V.excitation("excitation1", f'"{portnum}"'), "Excitation"),
+        (V.field_monitor("e5", "Efield", FREQ), "Monitor Efield"),
+        (V.field_monitor("h5", "Hfield", FREQ), "Monitor Hfield"),
+        (V.set_boundaries("magnetic", "magnetic", "magnetic", "magnetic",
+                          "magnetic", "electric"), "Boundary"),
+        (V.time_domain_solver_setup(), "Solver"),
+    ):
+        body.append(V.guarded(block, label))
+    body += [
+        "    On Error GoTo 0",
+        "",
+        f'    SaveAs "{target}"',
+        "",
+        "    ' 报告：明确告诉用户宏是否跑完、哪些块要手工补",
+        "    If Len(errLog) > 0 Then",
+        f'        MsgBox "Template saved, but some blocks FAILED and must be '
+        f'set by hand (see docs/server_runbook.md):" & vbCrLf & vbCrLf & '
+        f'errLog & vbCrLf & "saved: {target}", vbExclamation, '
+        f'"{project} template"',
+        "    Else",
+        f'        MsgBox "Template saved OK: {target}" & vbCrLf & '
+        f'"all blocks applied", vbInformation, "{project} template"',
+        "    End If",
         "End Sub",
     ]
     path = outdir / fname

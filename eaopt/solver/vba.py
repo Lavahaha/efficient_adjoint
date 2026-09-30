@@ -4,17 +4,21 @@
 所有坐标单位 mm，z=0 为基板顶面（金属底面）。
 
 约定：
-  - 波导端口面垂直于 y 轴（端口定义在 y=const 平面，Xrange/Zrange
-    给端口面范围）；Orientation: "negative"= 沿 −y 传播（端口面在
-    结构上方），"positive"= 沿 +y（端口面在结构下方）；
+  - 波导端口面落在计算域边界面上（.Orientation 取边界面名，见
+    waveguide_port 的 docstring）；
   - 激励用 Excitation 对象（CST 2020+）；若服务器版本不支持，
-    在 GUI 中手工勾选端口激励（见 smoke 脚本说明）。
+    用 guarded() 包住即可让宏不中断，并在结尾报告哪个块失败，
+    再按提示在 GUI 中手工勾选端口激励。
+
+编码：CST 宏文件按 ANSI 解码，**可执行语句里不要出现非 ASCII**
+（字符串字面量中的非 ASCII 字节可能吞掉引号造成语法错误）；
+中文只写在注释里（不影响解析）。guarded() 的 label 因此强制 ASCII。
 """
 
 from __future__ import annotations
 
 __all__ = [
-    "material_normal", "brick", "polygon_extrude",
+    "material_normal", "brick", "polygon_extrude", "guarded",
     "waveguide_port", "excitation", "field_monitor",
     "set_boundaries", "time_domain_solver_setup", "select_field_monitor",
     "ascii_export_field",
@@ -92,6 +96,36 @@ def polygon_extrude(name: str, component: str, material: str,
     return "\n".join(lines) + "\n"
 
 
+def guarded(block: str, label: str, indent: str = "    ") -> str:
+    """把"设置类"块包成失败不中断、错误汇总到 errLog 的形式。
+
+    背景：模板宏里几何与端口必须成功（失败就该中止，模板不可用），
+    但激励/监视器/边界/求解器这些设置块存在版本差异——实测
+    `Excitation.Reset` 在 CST 2024 命令宏上下文报
+    "(10090) ActiveX Automation error"，一旦抛出整个宏就中止，
+    SaveAs 都不会执行。用本函数包住后：该块失败只记录到 errLog，
+    宏继续跑完，结尾由 MsgBox 列出失败清单，用户在 GUI 里手工补。
+
+    宏需在开头 `Dim errLog As String`，并把这一组块用
+    `On Error Resume Next` / `On Error GoTo 0` 括起来。
+
+    label 必须是 ASCII（见模块头部的编码说明）。
+    """
+    if not label.isascii():
+        raise ValueError(f"label 必须为 ASCII（CST 宏按 ANSI 解码）：{label!r}")
+    body = "".join(indent + ln + "\n"
+                   for ln in block.rstrip("\n").split("\n"))
+    return (
+        f"{indent}Err.Clear\n"
+        f"{body}"
+        f"{indent}If Err.Number <> 0 Then\n"
+        f'{indent}    errLog = errLog & "{label}: (" & Err.Number & ") " '
+        f"& Err.Description & vbCrLf\n"
+        f"{indent}    Err.Clear\n"
+        f"{indent}End If\n"
+    )
+
+
 # 端口所在的计算域边界面（CST 的 .Orientation 只认这组名字）
 PORT_FACES = ("xmin", "xmax", "ymin", "ymax")
 
@@ -143,6 +177,10 @@ def excitation(name: str, port: str) -> str:
     """端口激励（CST 2020+ 的 Excitation 对象，best-effort）。
 
     port: 已含引号的字面量（如 '"1"'）或 VBA 变量名（如 'portnum'）。
+
+    **实测 CST 2024 上 `.Reset` 会报 "(10090) ActiveX Automation error"**
+    （见 guarded()），故模板宏里必须用 guarded() 包住；失败时按
+    结尾报告在端口对话框中手工勾选激励。
     """
     return (
         "With Excitation\n"

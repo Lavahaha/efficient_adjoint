@@ -47,10 +47,11 @@ eaopt/
 │   └── constraints.py   # 速度掩膜（固定区边距/允许区/边缘 taper）、最小间距投影
 └── pipeline.py          # 优化主循环（Fig. 4）+ 日志/快照
 
-configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺寸 TODO 待按 Fig.5 核准）
+configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺寸按 Fig.5 定稿）
 scripts/run_coupler.py   # 运行入口
 scripts/fd_check.py      # FD 验证命令行工具
-tests/                   # 59 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏）
+scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
+tests/                   # 65 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏）
 ```
 
 ## 安装与使用
@@ -62,6 +63,7 @@ pip install -e .[server]    # 服务器端 + pywin32/h5py（CST COM）
 
 python scripts/run_coupler.py          # 跑优化（solver.type=mock 时本地）
 python scripts/fd_check.py             # FD 验证（符号裁决）
+python scripts/plot_layout.py          # 渲染布局参考图（核对 CST 模型用）
 python -m pytest tests/ -v             # 测试
 ```
 
@@ -93,7 +95,7 @@ python -m pytest tests/ -v             # 测试
 
 代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/vba.py` +
 `eaopt/solver/ascii_fields.py` + `eaopt/solver/template_builder.py`，
-59 项本地测试全过）；服务器实测步骤：
+65 项本地测试全过）；服务器实测步骤：
 
 1. 生成模板宏：`python scripts/build_cst_template.py cst/`（产物
    `cst/build_coupler_fwd.mcr` 与 `build_coupler_bwd.mcr`，以及诊断宏
@@ -101,14 +103,17 @@ python -m pytest tests/ -v             # 测试
    指令只在命令宏上下文合法，在结构宏 .mcs 里会报 "Invalid instruction
    (NewProject)"，故宏内不含 NewProject，新建工程在 GUI 里做）；
 2. CST GUI：**File → New**（模板 `<None>`）→ 导入并运行
-   `build_coupler_fwd.mcr` → 生成 `coupler_fwd.cst`（端口 1 激励）；
-   **再 File → New** → 运行 `build_coupler_bwd.mcr` → `coupler_bwd.cst`
-   （端口 3 激励）。几何布局按论文 Fig.5（直通线横贯整板 + "⊓"形耦合臂、
-   腿下到板底、端口 1/2 在线两端 / 3/4 在腿底）；检查 4 个波导端口
-   （`.Coordinates "Free"` + 边界面名 `xmin/xmax/ymin`，端口面下缘贴合
-   接地板、上缘到空气盒顶）、5 GHz E/H 监视器、边界（x/y/zmin 磁、
-   zmax 电）；若激励未生效（Excitation 命令被拒），在端口对话框中手工
-   勾选（fwd→端口1，bwd→端口3）；
+   `build_coupler_fwd.mcr` → 结尾弹报告框 → 生成 `coupler_fwd.cst`
+   （端口 1 激励）；**再 File → New** → 运行 `build_coupler_bwd.mcr` →
+   `coupler_bwd.cst`（端口 3 激励）。几何布局按论文 Fig.5（直通线横贯
+   整板 + "⊓"形耦合臂、**设计区两端为四分之一圆过渡**、腿下到板底、
+   端口 1/2 在线两端 / 3/4 在腿底；参考图见 `docs/layout_reference.png`）；
+   检查 4 个波导端口（`.Coordinates "Free"` + 边界面名 `xmin/xmax/ymin`，
+   端口面下缘贴合接地板、上缘到空气盒顶）、5 GHz E/H 监视器、边界
+   （x/y/zmin 磁、zmax 电）。**设置类块（激励/监视器/边界/求解器）逐块
+   容错**：CST 2024 实测 `Excitation.Reset` 报 "(10090) ActiveX Automation
+   error"，未加保护会中止整个宏；现由宏结尾的报告框列出失败块，照提示
+   在 GUI 手工设置即可（激励：端口对话框勾选，fwd→端口1，bwd→端口3）；
 3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
    `solver.type: cst`；
 4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、

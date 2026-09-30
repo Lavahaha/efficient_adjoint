@@ -10,7 +10,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 54 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 65 passed（本机可先确认代码完整）
 ```
 
 ## 1. 在服务器上生成模板宏（重要：宏里包含绝对路径，必须在服务器上重新生成）
@@ -34,23 +34,30 @@ python scripts/build_cst_template.py cst/
    "CST Macro Files (\*.mcs; \*.mcr)"**（默认过滤器看不到宏文件），
    选中 `cst/build_coupler_fwd.mcr` 打开
    （不同小版本 UI 文案略有差异；另一条路：把文件直接拖进 CST 窗口）
-4. 运行宏 `Main` → 自动另存为 `cst/coupler_fwd.cst`
+4. 运行宏 `Main` → 结尾弹**报告框** → 自动另存为 `cst/coupler_fwd.cst`
+   - 报告框写 "Template saved OK ... all blocks applied" = 全部成功；
+   - 写 "Template saved, but some blocks FAILED ..." = 括号里那些块
+     （激励/监视器/边界/求解器）**没生效**，按报告里的名字在 GUI 手工补，
+     再保存。**把这张报告框截图发回开发者**（用于按版本修正宏）。
 5. **再 File → New**，导入并运行 `cst/build_coupler_bwd.mcr` →
    `cst/coupler_bwd.cst`
 6. 检查产物：两个 .cst 都已生成
 7. **打开 fwd 工程检查**（布局 = 论文 Fig.5）：
    - 模型：基板（Rogers4350B 30mil，x∈[−5.6,17.6] y∈[−7,5.6]）、
      接地 PEC、空气盒（Vacuum，z 到 4.0）、直通线（上方横贯整板）、
-     "⊓"形耦合臂（横段 + 两条腿下到板底）、设计区矩形金属
-     （design_region 组件）
+     "⊓"形耦合臂（横段 + 两条腿下到板底）、设计区金属
+     （design_region 组件：横段 + 两端内侧圆角）
    - 4 个波导端口：1/2 在直通线两端（xmin/xmax 面）、3/4 在两腿底
      （ymin 面）；端口面下缘触到接地板底面、上缘到空气盒顶
    - 5 GHz 的 E-Field / H-Field 监视器各一个
    - 边界：X/Y/Zmin = magnetic，Zmax = electric
-   - **检查腿与耦合臂的交界**：切换俯视图（视图工具条点 z 轴）
-     或只显示 design_region 组件，交界应是**直线直角**（模板里没有
-     任何挤出/曲线对象，全部是 Brick）。若看到弧边，跑第 2.5 节的
-     诊断宏并把截图发回
+   - **检查两端拐弯过渡**（论文 Fig.5 的四分之一圆）：俯视图看，
+     耦合臂横段与两条腿的连接应是**平滑等宽圆角**（腿上端外缘向外
+     弯、臂端下缘向内弯，二者同心），而不是直角。对照
+     `docs/layout_reference.png`（本地渲染的同一几何；可随时用
+     `python scripts/plot_layout.py` 重新生成）。腿与臂在 x=0 / x=12
+     处相接，**不应有缝**。若形状不符（例如成了直角、或出现明显
+     折线感），把俯视图截图发回
    - **激励**：端口 1 被勾选（Excitations 下应有 excitation1 → Port 1）。
      若没有（宏的 Excitation 命令被版本拒绝）：在端口对话框中手工勾选
      端口 1 的激励，保存
@@ -125,7 +132,15 @@ python scripts/run_coupler.py configs/coupler.yaml
 - **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
   或确认许可证正常、CST 可以独立打开。
 - **宏运行到某条命令报错**：把宏日志/报错截图或文本贴回，按 2024
-  版本命令名修正宏生成器。
+  版本命令名修正宏生成器。**几何/端口段**的报错会中止宏（这是故意的：
+  模板建不出来就没有意义）；**设置段**（激励/监视器/边界/求解器）
+  已逐块容错，只会出现在结尾报告框里，不会中止。
+- **`(10090) ActiveX Automation error. (.Reset)`**：CST 2024 命令宏
+  上下文里 `Excitation.Reset` 会报这个（实测）。模板宏已用
+  `On Error Resume Next` 包住该类块 → 宏继续跑完并另存，结尾报告框
+  会写明哪个块失败，照提示在 GUI 手工设置该块即可（激励：端口对话框
+  里勾选；监视器：Home → Field Monitors；边界：Boundaries；求解器：
+  Time Domain Solver 对话框）。把报告框截图发回，用于按版本修正宏。
 - **端口相关（CST 2024 实测结论，改宏时勿违反）**：
   `.Coordinates` 只认 `"Free"/"Full"/"Picks"`（写 `"Ranges"` 报
   "Invalid coordinate type"）；`.Orientation` 只认**边界面名**
