@@ -1,14 +1,16 @@
-"""生成 CST 模板宏（.bas）——在 CST GUI 中执行一次，创建双模板工程。
+"""生成 CST 模板宏（.mcs）——在 CST GUI 中执行一次，创建双模板工程。
 
 用法（本地，无需 CST）:
     python scripts/build_cst_template.py [输出目录]
 
-产物: <输出目录>/build_templates.bas
+产物: <输出目录>/build_templates.mcs
+（CST 的 Import Macro 对话框只认 .mcs/.mcr，.bas 不会出现在文件列表里）
 
 服务器步骤:
-    1. 把 build_templates.bas 拷到服务器，打开 CST Studio 2024；
+    1. 把 build_templates.mcs 拷到服务器，打开 CST Studio 2024；
     2. 打开任意（新）工程 → 宏面板（Macros）→ Import Macro... →
-       选择 build_templates.bas；
+       文件类型切到 "CST Macro Files (*.mcs; *.mcr)"，选择
+       build_templates.mcs；
     3. 运行宏 Main：生成 <输出目录>/coupler_fwd.cst（端口1激励）与
        coupler_bwd.cst（端口3激励）；
     4. 打开两个工程检查：4 个波导端口、5 GHz E/H 场监视器、边界
@@ -26,7 +28,7 @@ from eaopt.solver.template_builder import build_macro
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="生成 CST 双模板宏 .bas")
+    ap = argparse.ArgumentParser(description="生成 CST 双模板宏 .mcs")
     ap.add_argument("outdir", nargs="?", default="cst",
                     help="输出目录（默认 cst/）")
     args = ap.parse_args()

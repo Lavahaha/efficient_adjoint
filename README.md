@@ -96,7 +96,7 @@ python -m pytest tests/ -v             # 测试
 53 项本地测试全过）；服务器实测步骤：
 
 1. 本地生成模板宏：`python scripts/build_cst_template.py cst/`（产物
-   `cst/build_templates.bas`），拷到服务器；
+   `cst/build_templates.mcs`），拷到服务器；
 2. CST GUI：宏面板导入宏 → 运行 `Main` → 生成 `coupler_fwd.cst`
    （端口 1 激励）与 `coupler_bwd.cst`（端口 3 激励）。检查 4 个波导
    端口、5 GHz E/H 监视器、边界（x/y/zmin 磁、zmax 电）；若激励未

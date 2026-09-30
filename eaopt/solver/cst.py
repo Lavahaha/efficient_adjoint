@@ -2,7 +2,7 @@
 
 设计要点：
   - 双模板：coupler_fwd.cst（端口 1 激励）与 coupler_bwd.cst（端口 3
-    激励），由 scripts/build_cst_template.py 生成的 .bas 宏在 CST GUI
+    激励），由 scripts/build_cst_template.py 生成的 .mcs 宏在 CST GUI
     中执行一次创建。激励"烤死"在模板里，pipeline 不触碰激励 API
     （版本兼容性最稳）；
   - build_model 只重建两个工程中的 "design_region" 组件（可动金属

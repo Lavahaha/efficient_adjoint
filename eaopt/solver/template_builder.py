@@ -1,4 +1,8 @@
-"""CST 双模板宏（.bas）生成（本地可单测，无需 CST）。
+"""CST 双模板宏（.mcs）生成（本地可单测，无需 CST）。
+
+产物扩展名必须是 .mcs：CST 的 Import Macro 对话框只认
+"CST Macro Files (*.mcs; *.mcr)"，.bas 不会出现在文件列表里
+（内容与 .bas 完全相同，纯 VBA 文本，仅扩展名不同）。
 
 几何布局（单位 mm，z=0 为基板顶面，与 configs/coupler.yaml 一致）：
     直通线 y∈[1.0,2.6]（固定）：水平段 x∈[−2,14] + 两端竖桩 y∈[1,4.5]
@@ -87,7 +91,7 @@ def _ports() -> list[str]:
 
 
 def build_macro(outdir: Path) -> Path:
-    """生成 build_templates.bas（含 Main + BuildProject(fname, portnum)）。"""
+    """生成 build_templates.mcs（含 Main + BuildProject(fname, portnum)）。"""
     outdir = outdir.resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     fwd = (outdir / "coupler_fwd.cst").as_posix()
@@ -126,6 +130,7 @@ def build_macro(outdir: Path) -> Path:
         "    SaveAs fname",
         "End Sub",
     ]
-    path = outdir / "build_templates.bas"
-    path.write_text("\n".join(body), encoding="utf-8")
+    path = outdir / "build_templates.mcs"
+    # CRLF：Windows VBA 宏文件的原生换行（内容全 ASCII，无编码风险）
+    path.write_text("\n".join(body), encoding="utf-8", newline="\r\n")
     return path

@@ -17,16 +17,20 @@ python -m pytest tests/ -q   # 应 53 passed（本机可先确认代码完整）
 
 ```bash
 python scripts/build_cst_template.py cst/
-# 产物: cst/build_templates.bas
+# 产物: cst/build_templates.mcs
+# 注意扩展名是 .mcs（CST 宏格式），不是 .bas
 ```
 
 ## 2. CST GUI 生成双模板工程
 
 1. 打开 CST Studio 2024（GUI）
 2. 打开任意工程（File → New 建一个空的即可，宏会自己 NewProject）
-3. 宏面板：Home 标签 → Macros 区域 → 打开宏列表 → Import Macro File...
-   （不同小版本 UI 文案略有差异；另一条路：把 `cst/build_templates.bas`
-   直接拖进 CST 窗口，会打开宏编辑器，点运行）
+3. 宏面板：Home 标签 → Macros 区域 → Import Macro File...
+   在导入对话框里把 **文件类型切到 "CST Macro Files (\*.mcs; \*.mcr)"**
+   （默认过滤器是 CST Studio Files，看不到 .mcs），选中
+   `cst/build_templates.mcs` 打开
+   （不同小版本 UI 文案略有差异；另一条路：把文件直接拖进 CST 窗口，
+   会打开宏编辑器，点运行）
 4. 运行宏 `Main`
 5. 检查产物：`cst/coupler_fwd.cst` 与 `cst/coupler_bwd.cst` 已生成
 6. **打开 fwd 工程检查**：

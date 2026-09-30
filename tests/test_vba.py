@@ -38,6 +38,8 @@ def test_excitation_supports_vba_variable():
 
 def test_build_macro_output(tmp_path):
     path = build_macro(tmp_path)
+    assert path.suffix == ".mcs"  # CST Import Macro 只认 .mcs/.mcr
+    assert path.read_bytes().count(b"\r\n") > 10  # Windows VBA 换行
     text = path.read_text(encoding="utf-8")
     assert "Sub Main()" in text
     assert "Sub BuildProject(fname As String, portnum As Integer)" in text
