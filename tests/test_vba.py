@@ -3,7 +3,7 @@
 import numpy as np
 
 from eaopt.solver import vba as V
-from eaopt.solver.template_builder import build_macro
+from eaopt.solver.template_builder import build_all_templates, build_macro
 
 
 def test_polygon_extrude_contains_commands():
@@ -36,20 +36,37 @@ def test_excitation_supports_vba_variable():
     assert ".Port portnum" in s  # VBA 变量：不带引号
 
 
-def test_build_macro_output(tmp_path):
-    path = build_macro(tmp_path)
-    assert path.suffix == ".mcs"  # CST Import Macro 只认 .mcs/.mcr
-    assert path.read_bytes().count(b"\r\n") > 10  # Windows VBA 换行
-    text = path.read_text(encoding="utf-8")
-    assert "Sub Main()" in text
-    assert "Sub BuildProject(fname As String, portnum As Integer)" in text
-    assert 'BuildProject "1", 3' not in text
-    assert "coupler_fwd.cst" in text and "coupler_bwd.cst" in text
-    assert ".Port portnum" in text  # 激励端口取 VBA 参数
-    assert 'Rogers4350B' in text and "NewProject" in text
-    assert "SaveAs fname" in text
-    # 4 个端口
-    assert text.count("With Port") == 4
-    # 边界：zmax 电边界、其余磁边界
-    assert '.Zmax "electric"' in text
-    assert text.count('"magnetic"') == 5
+def test_build_macro_each_template_is_self_contained(tmp_path):
+    """每个模板一个命令宏：全字面量、无工程级指令、自带 SaveAs。"""
+    paths = build_all_templates(tmp_path)
+    assert [p.name for p in paths] == ["build_coupler_fwd.mcr",
+                                       "build_coupler_bwd.mcr"]
+    for path, project, port in zip(paths, ("coupler_fwd", "coupler_bwd"), (1, 3)):
+        assert path.suffix == ".mcr"  # 命令宏：工程级指令仅在此上下文合法
+        assert path.read_bytes().count(b"\r\n") > 10  # Windows VBA 换行
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("'#Language \"WWB-COM\"")
+        assert "Sub Main()" in text and "End Sub" in text
+        # 只看可执行语句（注释里会提到 NewProject 以说明为何不用它）
+        code = "\n".join(l for l in text.splitlines()
+                         if not l.lstrip().startswith("'"))
+        assert "NewProject" not in code  # 实测非法：新建工程由 GUI 完成
+        assert "portnum As Integer" not in text  # 参数全部字面量
+        assert 'SaveAs "' in text and f"{project}.cst" in text
+        assert f'.Port "{port}"' in text
+        assert "Rogers4350B" in text
+        # 4 个端口
+        assert text.count("With Port") == 4
+        # 边界：zmax 电边界、其余磁边界
+        assert '.Zmax "electric"' in text
+        assert text.count('"magnetic"') == 5
+    # 激励端口互不相同（fwd=1 / bwd=3）
+    fwd, bwd = (p.read_text(encoding="utf-8") for p in paths)
+    assert '.Port "1"' in fwd and '.Port "3"' not in fwd
+    assert '.Port "3"' in bwd and '.Port "1"' not in bwd
+
+
+def test_build_macro_single(tmp_path):
+    path = build_macro(tmp_path, "demo", 2)
+    assert path.name == "build_demo.mcr"
+    assert "demo.cst" in path.read_text(encoding="utf-8")

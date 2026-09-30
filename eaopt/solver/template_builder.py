@@ -1,8 +1,17 @@
-"""CST 双模板宏（.mcs）生成（本地可单测，无需 CST）。
+"""CST 双模板宏（.mcr 命令宏）生成（本地可单测，无需 CST）。
 
-产物扩展名必须是 .mcs：CST 的 Import Macro 对话框只认
-"CST Macro Files (*.mcs; *.mcr)"，.bas 不会出现在文件列表里
-（内容与 .bas 完全相同，纯 VBA 文本，仅扩展名不同）。
+命名与类型的两点约束（均为 CST 2024 实测/文档结论）：
+  1. Import Macro 对话框只列 "CST Macro Files (*.mcs; *.mcr)"，.bas 不可见；
+  2. CST 宏分两类——命令宏（.mcr，控制类指令）/ 结构宏（.mcs，建模类指令，
+     动作进 History List）。**工程级指令（新建/打开/另存工程）只在命令宏
+     上下文合法**：在 .mcs 里执行 NewProject 实测报 "Invalid instruction"。
+     故本宏不含 NewProject，只做"建模 + SaveAs"，新建工程由用户在 GUI 中
+     File → New 完成；且所有参数写字面量，不依赖 VBA 变量传参。
+
+用法（每个模板一次，共两次）：
+  CST → File → New（模板 <None>）→ 导入并运行 build_coupler_fwd.mcr
+  → 生成 <输出目录>/coupler_fwd.cst；再 File → New → 运行
+  build_coupler_bwd.mcr → coupler_bwd.cst。
 
 几何布局（单位 mm，z=0 为基板顶面，与 configs/coupler.yaml 一致）：
     直通线 y∈[1.0,2.6]（固定）：水平段 x∈[−2,14] + 两端竖桩 y∈[1,4.5]
@@ -90,21 +99,27 @@ def _ports() -> list[str]:
     ]
 
 
-def build_macro(outdir: Path) -> Path:
-    """生成 build_templates.mcs（含 Main + BuildProject(fname, portnum)）。"""
+# 模板清单：(工程名, 激励端口)。fwd = 输入端口 1，bwd = 观测端口 3。
+TEMPLATES = (
+    ("coupler_fwd", 1),
+    ("coupler_bwd", 3),
+)
+
+
+def build_macro(outdir: Path, project: str, portnum: int) -> Path:
+    """生成单个命令宏 build_<project>.mcr：在当前空工程中建模并另存。"""
     outdir = outdir.resolve()
     outdir.mkdir(parents=True, exist_ok=True)
-    fwd = (outdir / "coupler_fwd.cst").as_posix()
-    bwd = (outdir / "coupler_bwd.cst").as_posix()
+    target = (outdir / f"{project}.cst").as_posix()
+    fname = f"build_{project}.mcr"
 
     body = [
-        "Sub Main()",
-        f'    BuildProject "{fwd}", 1',
-        f'    BuildProject "{bwd}", 3',
-        "End Sub",
+        "'#Language \"WWB-COM\"",
+        f"' CST 命令宏：建立 {project} 模型并另存为 {target}",
+        "' 运行前请先 File -> New 新建一个空工程（模板选 <None>）",
+        "' 本宏不含 NewProject（工程级指令在宏上下文非法，见模块头部说明）",
         "",
-        "Sub BuildProject(fname As String, portnum As Integer)",
-        "    NewProject",
+        "Sub Main()",
         "    With Units",
         '        .Geometry "mm"',
         '        .Frequency "GHz"',
@@ -121,16 +136,22 @@ def build_macro(outdir: Path) -> Path:
     body.append(_arm_design_part())
     body += _ports()
     body += [
-        V.excitation("excitation1", "portnum"),
+        V.excitation("excitation1", f'"{portnum}"'),
         V.field_monitor("e5", "Efield", FREQ),
         V.field_monitor("h5", "Hfield", FREQ),
         V.set_boundaries("magnetic", "magnetic", "magnetic", "magnetic",
                          "magnetic", "electric"),
         V.time_domain_solver_setup(),
-        "    SaveAs fname",
+        f'SaveAs "{target}"',
         "End Sub",
     ]
-    path = outdir / "build_templates.mcs"
+    path = outdir / fname
     # CRLF：Windows VBA 宏文件的原生换行（内容全 ASCII，无编码风险）
     path.write_text("\n".join(body), encoding="utf-8", newline="\r\n")
     return path
+
+
+def build_all_templates(outdir: Path) -> list[Path]:
+    """生成全部模板命令宏（fwd/bwd 各一个）。"""
+    return [build_macro(outdir, project, portnum)
+            for project, portnum in TEMPLATES]

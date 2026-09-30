@@ -93,15 +93,19 @@ python -m pytest tests/ -v             # 测试
 
 代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/vba.py` +
 `eaopt/solver/ascii_fields.py` + `eaopt/solver/template_builder.py`，
-53 项本地测试全过）；服务器实测步骤：
+54 项本地测试全过）；服务器实测步骤：
 
-1. 本地生成模板宏：`python scripts/build_cst_template.py cst/`（产物
-   `cst/build_templates.mcs`），拷到服务器；
-2. CST GUI：宏面板导入宏 → 运行 `Main` → 生成 `coupler_fwd.cst`
-   （端口 1 激励）与 `coupler_bwd.cst`（端口 3 激励）。检查 4 个波导
-   端口、5 GHz E/H 监视器、边界（x/y/zmin 磁、zmax 电）；若激励未
-   生效（Excitation 命令被拒），在端口对话框中手工勾选（fwd→端口1，
-   bwd→端口3）；
+1. 生成模板宏：`python scripts/build_cst_template.py cst/`（产物
+   `cst/build_coupler_fwd.mcr` 与 `build_coupler_bwd.mcr`；**.mcr 是
+   命令宏**——CST 中新建/另存工程等工程级指令只在命令宏上下文合法，
+   在结构宏 .mcs 里会报 "Invalid instruction (NewProject)"，故宏内
+   不含 NewProject，新建工程在 GUI 里做）；
+2. CST GUI：**File → New**（模板 `<None>`）→ 导入并运行
+   `build_coupler_fwd.mcr` → 生成 `coupler_fwd.cst`（端口 1 激励）；
+   **再 File → New** → 运行 `build_coupler_bwd.mcr` → `coupler_bwd.cst`
+   （端口 3 激励）。检查 4 个波导端口、5 GHz E/H 监视器、边界
+   （x/y/zmin 磁、zmax 电）；若激励未生效（Excitation 命令被拒），
+   在端口对话框中手工勾选（fwd→端口1，bwd→端口3）；
 3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
    `solver.type: cst`；
 4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、

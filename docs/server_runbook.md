@@ -10,30 +10,34 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 53 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 54 passed（本机可先确认代码完整）
 ```
 
 ## 1. 在服务器上生成模板宏（重要：宏里包含绝对路径，必须在服务器上重新生成）
 
 ```bash
 python scripts/build_cst_template.py cst/
-# 产物: cst/build_templates.mcs
-# 注意扩展名是 .mcs（CST 宏格式），不是 .bas
+# 产物: cst/build_coupler_fwd.mcr（端口 1 激励）
+#       cst/build_coupler_bwd.mcr（端口 3 激励）
 ```
 
 ## 2. CST GUI 生成双模板工程
 
+**宏里不含 NewProject**——CST 里新建/另存工程这类工程级指令只在命令宏
+（.mcr）上下文合法，实测在结构宏（.mcs）中会报 "Invalid instruction
+(NewProject)"。所以新建工程由你在 GUI 里做，宏只负责建模 + 另存。
+
 1. 打开 CST Studio 2024（GUI）
-2. 打开任意工程（File → New 建一个空的即可，宏会自己 NewProject）
-3. 宏面板：Home 标签 → Macros 区域 → Import Macro File...
-   在导入对话框里把 **文件类型切到 "CST Macro Files (\*.mcs; \*.mcr)"**
-   （默认过滤器是 CST Studio Files，看不到 .mcs），选中
-   `cst/build_templates.mcs` 打开
-   （不同小版本 UI 文案略有差异；另一条路：把文件直接拖进 CST 窗口，
-   会打开宏编辑器，点运行）
-4. 运行宏 `Main`
-5. 检查产物：`cst/coupler_fwd.cst` 与 `cst/coupler_bwd.cst` 已生成
-6. **打开 fwd 工程检查**：
+2. **File → New**（模板选 `<None>`）新建一个空工程
+3. Home → Macros → Import Macro...，在导入对话框里把**文件类型切到
+   "CST Macro Files (\*.mcs; \*.mcr)"**（默认过滤器看不到宏文件），
+   选中 `cst/build_coupler_fwd.mcr` 打开
+   （不同小版本 UI 文案略有差异；另一条路：把文件直接拖进 CST 窗口）
+4. 运行宏 `Main` → 自动另存为 `cst/coupler_fwd.cst`
+5. **再 File → New**，导入并运行 `cst/build_coupler_bwd.mcr` →
+   `cst/coupler_bwd.cst`
+6. 检查产物：两个 .cst 都已生成
+7. **打开 fwd 工程检查**：
    - 模型：基板（Rogers4350B 30mil）、接地 PEC、直通线（上方）+
      耦合臂（下方）及两端竖桩、设计区矩形金属（design_region 组件）
    - 4 个波导端口：端口 1/2 在上方竖桩顶端、端口 3/4 在下方竖桩底端
@@ -42,7 +46,11 @@ python scripts/build_cst_template.py cst/
    - **激励**：端口 1 被勾选（Excitations 下应有 excitation1 → Port 1）。
      若没有（宏的 Excitation 命令被版本拒绝）：在端口对话框中手工勾选
      端口 1 的激励，保存
-7. **bwd 工程同样检查，激励改为端口 3**，保存
+8. **bwd 工程同样检查，激励改为端口 3**，保存
+
+> 若宏在某条指令上报 "Invalid instruction (xxx)"：把那个指令名贴回来，
+> 说明该指令在 2024 的宏上下文里不合法，改用 GUI 手工完成那一步即可
+> （模型其余部分已经建好，不会白跑）。
 
 ## 3. 修改配置
 
