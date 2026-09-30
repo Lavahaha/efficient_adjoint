@@ -15,7 +15,7 @@ from __future__ import annotations
 
 __all__ = [
     "material_normal", "brick", "polygon_extrude",
-    "waveguide_port_yface", "excitation", "field_monitor",
+    "waveguide_port", "excitation", "field_monitor",
     "set_boundaries", "time_domain_solver_setup", "select_field_monitor",
     "ascii_export_field",
 ]
@@ -59,51 +59,61 @@ def brick(name: str, component: str, material: str,
 
 def polygon_extrude(name: str, component: str, material: str,
                     points, height_mm: float, z0: float = 0.0) -> str:
-    """多边形挤出实体（points: (N,2) 或 (N,3)，z 分量被忽略）。
+    """多边形挤出实体（Extrude 对象，录制式：.Mode "Pointlist"）。
 
-    多边形定义在 z=z0 平面，向 +z 挤出 height_mm。
+    points: (N,2)（挤出平面内坐标，z 分量忽略）。轮廓点直接写进
+    Extrude 块，无需先建 Polygon 曲线；挤出平面由 Origin 与
+    Uvector/Vvector 给出（此处取 x/y 基矢，故点坐标即 (x, y)），
+    沿 U×V=+z 挤出 height_mm。
+
+    注意：**没有 .PlaneNormal 属性**（CST 2024 实测报
+    "no such property or method (.PlaneNormal)"），方向只能由
+    Origin + Uvector + Vvector 表达。
     """
     pts = [(float(p[0]), float(p[1])) for p in points]
     lines = [
-        "With Polygon",
-        "    .Reset",
-        f"    .Name \"{name}_curve\"",
-        f"    .Curve \"{name}_curve\"",
-        f"    .Point \"{pts[0][0]:.6g}\", \"{pts[0][1]:.6g}\"",
-    ]
-    for x, y in pts[1:]:
-        lines.append(f"    .LineTo \"{x:.6g}\", \"{y:.6g}\"")
-    lines += ["    .Create", "End With", ""]
-    lines += [
         "With Extrude",
         "    .Reset",
-        f"    .Name \"{name}\"",
-        f"    .Component \"{component}\"",
-        f"    .Material \"{material}\"",
-        f"    .Origin \"0.0\", \"0.0\", \"{z0}\"",
-        '    .PlaneNormal "0", "0", "1"',
-        f"    .Height \"{height_mm}\"",
-        '    .Twist "0"',
-        '    .Taper "0"',
-        "    .Create",
-        "End With",
-        "",
+        f'    .Name "{name}"',
+        f'    .Component "{component}"',
+        f'    .Material "{material}"',
+        '    .Mode "Pointlist"',
+        f'    .Height "{height_mm:.6g}"',
+        '    .Twist "0.0"',
+        '    .Taper "0.0"',
+        f'    .Origin "0.0", "0.0", "{z0:.6g}"',
+        '    .Uvector "1.0", "0.0", "0.0"',
+        '    .Vvector "0.0", "1.0", "0.0"',
+        f'    .Point "{pts[0][0]:.6g}", "{pts[0][1]:.6g}"',
     ]
+    for x, y in pts[1:]:
+        lines.append(f'    .LineTo "{x:.6g}", "{y:.6g}"')
+    lines += ["    .Create", "End With", ""]
     return "\n".join(lines) + "\n"
 
 
-def waveguide_port_yface(port_number: int, name: str,
-                         y: float, orientation: str,
-                         x0: float, x1: float, z0: float, z1: float) -> str:
-    """y=const 平面上的波导端口（单模）。
+def waveguide_port(port_number: int, name: str, axis: str, at: float,
+                   orientation: str, u0: float, u1: float,
+                   z0: float, z1: float) -> str:
+    """波导端口（单模）：端口面垂直于 axis（x 或 y），位于 axis=at。
 
-    orientation: "negative"（沿 −y 传播）/ "positive"（沿 +y）。
+    axis="x"：u 是 y 方向范围；axis="y"：u 是 x 方向范围。
+    orientation："positive"/"negative" = 沿 axis 正/负方向的传播方向
+    （即波进入结构的方向）。
     """
+    if axis not in ("x", "y"):
+        raise ValueError(f"axis 只能是 'x'/'y'，收到 {axis!r}")
+    u_axis = "y" if axis == "x" else "x"
+    rng = {
+        axis: f'"{at:.6g}", "{at:.6g}"',      # 端口面：该轴为常量
+        u_axis: f'"{u0:.6g}", "{u1:.6g}"',
+        "z": f'"{z0:.6g}", "{z1:.6g}"',
+    }
     return (
         "With Port\n"
         "    .Reset\n"
-        f"    .PortNumber \"{port_number}\"\n"
-        f"    .Label \"{name}\"\n"
+        f'    .PortNumber "{port_number}"\n'
+        f'    .Label "{name}"\n'
         '    .Folder ""\n'
         '    .NumberOfModes "1"\n'
         '    .AdjustPolarization "False"\n'
@@ -115,9 +125,9 @@ def waveguide_port_yface(port_number: int, name: str,
         f'    .Orientation "{orientation}"\n'
         '    .PortOnBound "False"\n'
         '    .ClipPickedPortToBound "False"\n'
-        f'    .Xrange "{x0:.6g}", "{x1:.6g}"\n'
-        f'    .Yrange "{y:.6g}", "{y:.6g}"\n'
-        f'    .Zrange "{z0:.6g}", "{z1:.6g}"\n'
+        f'    .Xrange {rng["x"]}\n'
+        f'    .Yrange {rng["y"]}\n'
+        f'    .Zrange {rng["z"]}\n'
         "    .Create\n"
         "End With\n"
     )

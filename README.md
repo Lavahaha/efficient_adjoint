@@ -103,9 +103,10 @@ python -m pytest tests/ -v             # 测试
 2. CST GUI：**File → New**（模板 `<None>`）→ 导入并运行
    `build_coupler_fwd.mcr` → 生成 `coupler_fwd.cst`（端口 1 激励）；
    **再 File → New** → 运行 `build_coupler_bwd.mcr` → `coupler_bwd.cst`
-   （端口 3 激励）。检查 4 个波导端口、5 GHz E/H 监视器、边界
-   （x/y/zmin 磁、zmax 电）；若激励未生效（Excitation 命令被拒），
-   在端口对话框中手工勾选（fwd→端口1，bwd→端口3）；
+   （端口 3 激励）。几何布局按论文 Fig.5（直通线横贯整板 + "⊓"形耦合臂、
+   腿下到板底、端口 1/2 在线两端 / 3/4 在腿底）；检查 4 个波导端口、
+   5 GHz E/H 监视器、边界（x/y/zmin 磁、zmax 电）；若激励未生效
+   （Excitation 命令被拒），在端口对话框中手工勾选（fwd→端口1，bwd→端口3）；
 3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
    `solver.type: cst`；
 4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、

@@ -15,6 +15,12 @@ def test_polygon_extrude_contains_commands():
     assert '.Height "0.035"' in s
     assert '.LineTo "12", "-1.6"' in s
     assert '.Point "0", "-1.6"' in s
+    # 录制式：轮廓点内联在 Extrude 里，方向由 Uvector/Vvector 表达
+    assert '.Mode "Pointlist"' in s
+    assert '.Uvector "1.0", "0.0", "0.0"' in s
+    assert '.Vvector "0.0", "1.0", "0.0"' in s
+    assert "PlaneNormal" not in s  # CST 2024 无此属性（实测报错）
+    assert "With Polygon" not in s  # 不再需要单独的曲线对象
 
 
 def test_brick_contains_ranges():
@@ -24,16 +30,69 @@ def test_brick_contains_ranges():
 
 
 def test_port_yface():
-    s = V.waveguide_port_yface(1, "p1", 4.5, "negative", -3.6, 1.2, -0.762, 2.0)
-    assert '.PortNumber "1"' in s
-    assert '.Orientation "negative"' in s
-    assert '.Yrange "4.5", "4.5"' in s  # 端口面为 y=const 平面
+    """y=const 端口面：Yrange 为常量，Xrange 为范围。"""
+    s = V.waveguide_port(3, "p3", "y", -7.0, "positive", -3.2, 1.6, -0.762, 2.0)
+    assert '.PortNumber "3"' in s
+    assert '.Orientation "positive"' in s
+    assert '.Yrange "-7", "-7"' in s
+    assert '.Xrange "-3.2", "1.6"' in s
     assert '.Coordinates "Ranges"' in s
+
+
+def test_port_xface():
+    """x=const 端口面：Xrange 为常量，Yrange 为范围。"""
+    s = V.waveguide_port(1, "p1", "x", -5.6, "positive", -0.6, 4.2, -0.762, 2.0)
+    assert '.Xrange "-5.6", "-5.6"' in s
+    assert '.Yrange "-0.6", "4.2"' in s
+    assert '.Zrange "-0.762", "2"' in s
+
+
+def test_port_axis_validation():
+    import pytest
+
+    with pytest.raises(ValueError):
+        V.waveguide_port(1, "p1", "z", 0.0, "positive", 0.0, 1.0, 0.0, 1.0)
 
 
 def test_excitation_supports_vba_variable():
     s = V.excitation("exc", "portnum")
     assert ".Port portnum" in s  # VBA 变量：不带引号
+
+
+def test_layout_matches_paper_fig5():
+    """几何关系锁死论文 Fig. 5 的参数：w=1.6, d=12, g=1。"""
+    import pytest
+
+    from eaopt.solver import template_builder as T
+
+    assert T.W == 1.6 and T.D == 12.0 and T.G == 1.0
+    approx = pytest.approx
+    assert T.ARM_HI - T.ARM_LO == approx(T.W)          # 耦合臂厚 = w
+    assert T.THRU_HI - T.THRU_LO == approx(T.W)        # 直通线宽 = w
+    assert T.THRU_LO - T.ARM_HI == approx(T.G)         # 耦合间距 = g
+    assert T.LEG_R_IN - T.LEG_L_IN == approx(T.D)      # 两腿内边缘间距 = d（设计区宽）
+    assert T.LEG_L_IN - T.LEG_L_OUT == approx(T.W)     # 腿宽 = w
+    assert T.LEG_R_OUT - T.LEG_R_IN == approx(T.W)
+    assert T.LEG_BOT < T.ARM_LO               # 腿向下延伸到板底
+    assert T.THRU_X0 < T.LEG_L_OUT and T.THRU_X1 > T.LEG_R_OUT  # 直通线贯通
+
+
+def test_config_design_box_agrees_with_template():
+    """配置文件里的设计区必须与模板布局一致（否则重建的金属对不上腿）。"""
+    from pathlib import Path
+
+    from eaopt.config import CaseConfig
+    from eaopt.solver import template_builder as T
+
+    cfg = CaseConfig.from_yaml(Path(__file__).resolve().parents[1]
+                               / "configs" / "coupler.yaml")
+    box = cfg.design_region.box
+    assert list(box.x) == [T.LEG_L_IN, T.LEG_R_IN]   # 设计区宽 = d
+    assert box.y[0] < T.ARM_LO                       # 覆盖臂下缘（可向下生长）
+    assert box.y[1] > T.THRU_HI                      # 覆盖直通线（作为固定障碍）
+    allowed = cfg.constraints.allowed_region
+    assert list(allowed.x) == [T.LEG_L_IN, T.LEG_R_IN]
+    assert allowed.y[1] == T.THRU_LO                 # 臂不得越过直通线下缘
 
 
 def test_build_macro_each_template_is_self_contained(tmp_path):

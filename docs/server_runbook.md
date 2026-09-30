@@ -37,10 +37,13 @@ python scripts/build_cst_template.py cst/
 5. **再 File → New**，导入并运行 `cst/build_coupler_bwd.mcr` →
    `cst/coupler_bwd.cst`
 6. 检查产物：两个 .cst 都已生成
-7. **打开 fwd 工程检查**：
-   - 模型：基板（Rogers4350B 30mil）、接地 PEC、直通线（上方）+
-     耦合臂（下方）及两端竖桩、设计区矩形金属（design_region 组件）
-   - 4 个波导端口：端口 1/2 在上方竖桩顶端、端口 3/4 在下方竖桩底端
+7. **打开 fwd 工程检查**（布局 = 论文 Fig.5）：
+   - 模型：基板（Rogers4350B 30mil，x∈[−5.6,17.6] y∈[−7,5.6]）、
+     接地 PEC、空气盒（Vacuum，z 到 2.0）、直通线（上方横贯整板）、
+     "⊓"形耦合臂（横段 + 两条腿下到板底）、设计区矩形金属
+     （design_region 组件）
+   - 4 个波导端口：1/2 在直通线两端（x=const 面）、3/4 在两腿底
+     （y=−7 面）
    - 5 GHz 的 E-Field / H-Field 监视器各一个
    - 边界：X/Y/Zmin = magnetic，Zmax = electric
    - **激励**：端口 1 被勾选（Excitations 下应有 excitation1 → Port 1）。
@@ -48,9 +51,9 @@ python scripts/build_cst_template.py cst/
      端口 1 的激励，保存
 8. **bwd 工程同样检查，激励改为端口 3**，保存
 
-> 若宏在某条指令上报 "Invalid instruction (xxx)"：把那个指令名贴回来，
-> 说明该指令在 2024 的宏上下文里不合法，改用 GUI 手工完成那一步即可
-> （模型其余部分已经建好，不会白跑）。
+> 若宏在某条指令上报错（如 "Invalid instruction (xxx)" 或
+> "no such property (xxx)"）：把那条指令贴回来即可。**建模是逐条执行的，
+> 报错前的部分已经建好**，多数情况只需在 GUI 里手工补那一步，不必重跑。
 
 ## 3. 修改配置
 

@@ -13,16 +13,24 @@
   → 生成 <输出目录>/coupler_fwd.cst；再 File → New → 运行
   build_coupler_bwd.mcr → coupler_bwd.cst。
 
-几何布局（单位 mm，z=0 为基板顶面，与 configs/coupler.yaml 一致）：
-    直通线 y∈[1.0,2.6]（固定）：水平段 x∈[−2,14] + 两端竖桩 y∈[1,4.5]
-    耦合臂 y∈[−1.6,0]（设计区 x∈[0,12] 可动；两端馈线固定）：
-        水平馈线段 x∈[−2,0] 与 x∈[12,14] + 竖桩 y∈[−4,0]
-    基板 Rogers4350B 30mil：x∈[−4,16] y∈[−6,6] z∈[−0.762,0]
-    接地 PEC：z∈[−0.797,−0.762]
-    端口 1/2 在直通线竖桩顶（y=4.5，沿 −y），端口 3/4 在耦合臂
-    竖桩底（y=−4，沿 +y）
+几何布局（单位 mm，z=0 为基板顶面；按论文 Fig. 5 与 w/d/g 参数）：
+    直通线（固定，端口 1-2）：y∈[1.0,2.6]（w=1.6），x 贯通整块板
+    耦合臂（"⊓"形）：横段 y∈[−1.6,0]（w=1.6）位于两腿之间，
+        两端各一条腿 x∈[−1.6,0] / [12,13.6] 垂直下到板底；
+        设计区 x∈[0,12]（= 两腿内边缘之间 = d）内的横段可动，
+        腿与直通线固定
+    耦合间距 g = 1.0（直通线下边缘 y=1.0 与臂上边缘 y=0 之间）
+    基板 Rogers4350B 30mil：x∈[−5.6,17.6] y∈[−7,5.6] z∈[−0.762,0]
+    接地 PEC：z∈[−0.797,−0.762]；空气盒（Vacuum）z∈[0.035,2.0]
+        —— 用于把计算域撑到端口面所需高度（磁/电边界下计算域 =
+        几何包围盒）
+    端口：1/2 在直通线两端（x=const 面，沿 ±x），
+        3/4 在两腿底（y=−7，沿 +y）
     边界：x/y/zmin 磁边界，zmax 电边界（论文设定）
     监视器：5 GHz E/H 场；求解器：时域 TD-S
+
+TODO(架构)：本模块的布局常量目前与算例耦合（耦合器）。后续应把 CST 侧
+布局（馈线/端口/空气盒）搬进 YAML，使其与 configs/ 的算例一一对应。
 
 服务器步骤见 scripts/build_cst_template.py 头部注释。
 """
@@ -33,69 +41,76 @@ from pathlib import Path
 
 from eaopt.solver import vba as V
 
-# ---- 布局常量（与 configs/coupler.yaml 对应）----
-SUB_H, EPS_R, TAND = 0.762, 3.66, 0.0037
+# ---- 布局常量（论文 Fig. 5；单位 mm，z=0 为基板顶面）----
+SUB_H, EPS_R, TAND = 0.762, 3.66, 0.0037   # Rogers4350B 30 mil
 METAL_T = 0.035
-X0, X1 = 0.0, 12.0          # 设计区 x 范围
-THRU_LO, THRU_HI = 1.0, 2.6  # 直通线 y
-ARM_LO, ARM_HI = -1.6, 0.0   # 耦合臂 y
-FEED_EXT = 2.0               # 设计区外馈线水平延伸长度
-STUB_LO, STUB_HI = -4.0, 4.5  # 竖桩端 y（端口面位置）
-STUB_W = 1.6                 # 竖桩宽（x）
-AIR_X = (-4.0, 16.0)
-AIR_Y = (-6.0, 6.0)
-AIR_Z = (-1.2, 3.0)
+W = 1.6                     # 线宽（直通线 / 耦合臂 / 腿）
+G = 1.0                     # 耦合间距
+D = 12.0                    # 耦合长度 = 设计区宽（两腿内边缘之间）
+
+LEG_L_IN, LEG_R_IN = 0.0, D                      # 两腿内边缘 = 设计区左右界
+LEG_L_OUT, LEG_R_OUT = LEG_L_IN - W, LEG_R_IN + W  # −1.6 / 13.6
+FEED_EXT = 4.0              # 直通线在腿外侧的延伸（Fig. 5 约 4 mm）
+THRU_X0, THRU_X1 = LEG_L_OUT - FEED_EXT, LEG_R_OUT + FEED_EXT   # −5.6 / 17.6
+
+ARM_HI, ARM_LO = 0.0, -W                        # 耦合臂横段上下边缘
+THRU_LO, THRU_HI = ARM_HI + G, ARM_HI + G + W   # 直通线上下边缘 1.0 / 2.6
+LEG_BOT = -7.0              # 腿底 = 板下边缘 = 端口 3/4 所在面
+SUB_TOP = THRU_HI + 3.0     # 板上边缘
+AIR_H = 2.0                 # 空气盒顶 = 计算域 zmax（电边界）
 FREQ = 5.0
 
 
-def _through_line_parts() -> list[str]:
-    parts = [
-        V.brick("thru_main", "feed", "PEC",
-                X0 - FEED_EXT, X1 + FEED_EXT, THRU_LO, THRU_HI, 0.0, METAL_T),
+def _substrate_parts() -> list[str]:
+    """基板 + 接地 + 空气盒（空气盒只用于撑大计算域）。"""
+    return [
+        V.material_normal("Rogers4350B", EPS_R, 1.0, TAND),
+        V.brick("substrate", "component1", "Rogers4350B",
+                THRU_X0, THRU_X1, LEG_BOT, SUB_TOP, -SUB_H, 0.0),
+        V.brick("ground", "component1", "PEC",
+                THRU_X0, THRU_X1, LEG_BOT, SUB_TOP, -SUB_H - METAL_T, -SUB_H),
+        # z 从金属顶面起，避免与金属实体重叠
+        V.brick("air", "component1", "Vacuum",
+                THRU_X0, THRU_X1, LEG_BOT, SUB_TOP, METAL_T, AIR_H),
     ]
-    for xa, xb in ((X0 - FEED_EXT, X0 - FEED_EXT + STUB_W),
-                   (X1 + FEED_EXT - STUB_W, X1 + FEED_EXT)):
-        parts.append(V.brick(f"thru_stub_{xa}", "feed", "PEC",
-                             xa, xb, THRU_LO, STUB_HI, 0.0, METAL_T))
-    return parts
 
 
-def _arm_feed_parts() -> list[str]:
-    parts = []
-    for xa, xb in ((X0 - FEED_EXT, X0), (X1, X1 + FEED_EXT)):
-        parts.append(V.brick(f"arm_feed_{xa}", "feed", "PEC",
-                             xa, xb, ARM_LO, ARM_HI, 0.0, METAL_T))
-    for xa, xb in ((X0 - FEED_EXT, X0 - FEED_EXT + STUB_W),
-                   (X1 + FEED_EXT - STUB_W, X1 + FEED_EXT)):
-        parts.append(V.brick(f"arm_stub_{xa}", "feed", "PEC",
-                             xa, xb, STUB_LO, ARM_HI, 0.0, METAL_T))
-    return parts
+def _fixed_metal_parts() -> list[str]:
+    """固定金属：直通线 + 两条腿（腿顶与臂横段齐平，构成 "⊓" 的外角）。"""
+    return [
+        V.brick("thru_line", "feed", "PEC",
+                THRU_X0, THRU_X1, THRU_LO, THRU_HI, 0.0, METAL_T),
+        V.brick("leg_left", "feed", "PEC",
+                LEG_L_OUT, LEG_L_IN, LEG_BOT, ARM_HI, 0.0, METAL_T),
+        V.brick("leg_right", "feed", "PEC",
+                LEG_R_IN, LEG_R_OUT, LEG_BOT, ARM_HI, 0.0, METAL_T),
+    ]
 
 
 def _arm_design_part() -> str:
-    """设计区初始金属（耦合臂段，pipeline 每轮重建）。"""
+    """设计区初始金属（耦合臂横段，pipeline 每轮重建）。"""
     return V.polygon_extrude("arm_init", "design_region", "PEC",
-                             [(X0, ARM_LO), (X1, ARM_LO),
-                              (X1, ARM_HI), (X0, ARM_HI)],
+                             [(LEG_L_IN, ARM_LO), (LEG_R_IN, ARM_LO),
+                              (LEG_R_IN, ARM_HI), (LEG_L_IN, ARM_HI)],
                              METAL_T)
 
 
 def _ports() -> list[str]:
-    """4 个波导端口（y=const 面，端口面半宽 2.4 ≈ 3×线宽/2 + 余量）。"""
-    pz0, pz1 = -SUB_H, 2.0
-    pxw = 2.4
-    thru_cx = X0 - FEED_EXT + STUB_W / 2.0
-    arm_cx = X0 - FEED_EXT + STUB_W / 2.0
-    thru_cx2 = X1 + FEED_EXT - STUB_W / 2.0
+    """4 个波导端口：1/2 在直通线两端（x=const），3/4 在两腿底（y=const）。
+
+    端口面 = 基板底面到空气盒顶的矩形，横向半宽 = w/2 + 1.6 余量。
+    """
+    pz0, pz1 = -SUB_H, AIR_H
+    m = 1.6
     return [
-        V.waveguide_port_yface(1, "p1", STUB_HI, "negative",
-                               thru_cx - pxw, thru_cx + pxw, pz0, pz1),
-        V.waveguide_port_yface(2, "p2", STUB_HI, "negative",
-                               thru_cx2 - pxw, thru_cx2 + pxw, pz0, pz1),
-        V.waveguide_port_yface(3, "p3", STUB_LO, "positive",
-                               arm_cx - pxw, arm_cx + pxw, pz0, pz1),
-        V.waveguide_port_yface(4, "p4", STUB_LO, "positive",
-                               thru_cx2 - pxw, thru_cx2 + pxw, pz0, pz1),
+        V.waveguide_port(1, "p1", "x", THRU_X0, "positive",
+                         THRU_LO - m, THRU_HI + m, pz0, pz1),
+        V.waveguide_port(2, "p2", "x", THRU_X1, "negative",
+                         THRU_LO - m, THRU_HI + m, pz0, pz1),
+        V.waveguide_port(3, "p3", "y", LEG_BOT, "positive",
+                         LEG_L_OUT - m, LEG_L_IN + m, pz0, pz1),
+        V.waveguide_port(4, "p4", "y", LEG_BOT, "positive",
+                         LEG_R_IN - m, LEG_R_OUT + m, pz0, pz1),
     ]
 
 
@@ -125,14 +140,9 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
         '        .Frequency "GHz"',
         '        .Time "ns"',
         "    End With",
-        V.material_normal("Rogers4350B", EPS_R, 1.0, TAND),
-        V.brick("substrate", "component1", "Rogers4350B",
-                AIR_X[0], AIR_X[1], AIR_Y[0], AIR_Y[1], -SUB_H, 0.0),
-        V.brick("ground", "component1", "PEC",
-                AIR_X[0], AIR_X[1], AIR_Y[0], AIR_Y[1], -SUB_H - METAL_T, -SUB_H),
     ]
-    body += _through_line_parts()
-    body += _arm_feed_parts()
+    body += _substrate_parts()
+    body += _fixed_metal_parts()
     body.append(_arm_design_part())
     body += _ports()
     body += [

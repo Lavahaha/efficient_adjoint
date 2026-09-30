@@ -2,8 +2,8 @@
 
 设计要点：
   - 双模板：coupler_fwd.cst（端口 1 激励）与 coupler_bwd.cst（端口 3
-    激励），由 scripts/build_cst_template.py 生成的 .mcs 宏在 CST GUI
-    中执行一次创建。激励"烤死"在模板里，pipeline 不触碰激励 API
+    激励），由 scripts/build_cst_template.py 生成的 .mcr 命令宏在 CST
+    GUI 中执行一次创建。激励"烤死"在模板里，pipeline 不触碰激励 API
     （版本兼容性最稳）；
   - build_model 只重建两个工程中的 "design_region" 组件（可动金属
     多边形挤出 35µm），其余几何/设置永不改动；
@@ -122,31 +122,29 @@ class CstSolver(SolverInterface):
         except Exception:
             pass  # 组件不存在或 API 名称不同（smoke 核实）
         for i, poly in enumerate(polys):
-            curve = f"p_curve_{i}"
-            self._polygon(mws, curve, poly)
-            self._extrude(mws, f"solid_{i}", curve)
+            self._extrude(mws, f"solid_{i}", poly)
 
-    def _polygon(self, mws, curve: str, pts: np.ndarray) -> None:
-        p = mws.Polygon
-        p.Reset()
-        p.Name(curve)
-        p.Curve(curve)
-        p.Point(str(float(pts[0, 0])), str(float(pts[0, 1])))
-        for x, y in pts[1:]:
-            p.LineTo(str(float(x)), str(float(y)))
-        p.Create()
+    def _extrude(self, mws, name: str, pts: np.ndarray) -> None:
+        """多边形直接挤出（Extrude 对象 .Mode "Pointlist"，与 vba.py 一致）。
 
-    def _extrude(self, mws, name: str, curve: str) -> None:
+        注意：Extrude 无 PlaneNormal 属性（CST 2024 实测报 no such
+        property），挤出方向只能由 Origin + Uvector + Vvector 给出。
+        """
         e = mws.Extrude
         e.Reset()
         e.Name(name)
         e.Component("design_region")
         e.Material("PEC")
-        e.Origin("0.0", "0.0", "0.0")
-        e.PlaneNormal("0", "0", "1")
+        e.Mode("Pointlist")
         e.Height(str(float(self.cfg.metal.thickness_mm)))
-        e.Twist("0")
-        e.Taper("0")
+        e.Twist("0.0")
+        e.Taper("0.0")
+        e.Origin("0.0", "0.0", "0.0")
+        e.Uvector("1.0", "0.0", "0.0")
+        e.Vvector("0.0", "1.0", "0.0")
+        e.Point(str(float(pts[0, 0])), str(float(pts[0, 1])))
+        for x, y in pts[1:]:
+            e.LineTo(str(float(x)), str(float(y)))
         e.Create()
 
     # ------------------------------------------------------------------ #
