@@ -12,6 +12,7 @@
   CST → File → New（模板 <None>）→ 导入并运行 build_coupler_fwd.mcr
   → 生成 <输出目录>/coupler_fwd.cst；再 File → New → 运行
   build_coupler_bwd.mcr → coupler_bwd.cst。
+另有诊断宏 polygon_test.mcr（可选，见 build_polygon_test_macro）。
 
 几何布局（单位 mm，z=0 为基板顶面；按论文 Fig. 5 与 w/d/g 参数）：
     直通线（固定，端口 1-2）：y∈[1.0,2.6]（w=1.6），x 贯通整块板
@@ -19,13 +20,17 @@
         两端各一条腿 x∈[−1.6,0] / [12,13.6] 垂直下到板底；
         设计区 x∈[0,12]（= 两腿内边缘之间 = d）内的横段可动，
         腿与直通线固定
+    设计区初始金属（component design_region，pipeline 每轮删除重建）
+        在模板里用 **Brick** 建（初始形状就是矩形）：这样模板中不含
+        任何挤出/曲线对象，腿与臂的交界只可能是直线
     耦合间距 g = 1.0（直通线下边缘 y=1.0 与臂上边缘 y=0 之间）
     基板 Rogers4350B 30mil：x∈[−5.6,17.6] y∈[−7,5.6] z∈[−0.762,0]
     接地 PEC：z∈[−0.797,−0.762]；空气盒（Vacuum）z∈[0.035,2.0]
         —— 用于把计算域撑到端口面所需高度（磁/电边界下计算域 =
         几何包围盒）
-    端口：1/2 在直通线两端（x=const 面，沿 ±x），
-        3/4 在两腿底（y=−7，沿 +y）
+    端口：1/2 在直通线两端（xmin/xmax 面），3/4 在两腿底（ymin 面）——
+        CST 的 .Orientation 只认边界面名（xmin/xmax/ymin/ymax），
+        不认 positive/negative；.Coordinates 必须 "Free"
     边界：x/y/zmin 磁边界，zmax 电边界（论文设定）
     监视器：5 GHz E/H 场；求解器：时域 TD-S
 
@@ -57,7 +62,10 @@ ARM_HI, ARM_LO = 0.0, -W                        # 耦合臂横段上下边缘
 THRU_LO, THRU_HI = ARM_HI + G, ARM_HI + G + W   # 直通线上下边缘 1.0 / 2.6
 LEG_BOT = -7.0              # 腿底 = 板下边缘 = 端口 3/4 所在面
 SUB_TOP = THRU_HI + 3.0     # 板上边缘
-AIR_H = 2.0                 # 空气盒顶 = 计算域 zmax（电边界）
+# 空气盒顶 = 计算域 zmax（电边界）。高度按 CST 微带端口经验取
+# h_port ≈ h + 5h ≈ 4.6 mm（端口太高会引入高次模，太低漏场、
+# 阻抗不准，见 docs/server_runbook.md 端口一节）
+AIR_H = 4.0
 FREQ = 5.0
 
 
@@ -88,28 +96,34 @@ def _fixed_metal_parts() -> list[str]:
 
 
 def _arm_design_part() -> str:
-    """设计区初始金属（耦合臂横段，pipeline 每轮重建）。"""
-    return V.polygon_extrude("arm_init", "design_region", "PEC",
-                             [(LEG_L_IN, ARM_LO), (LEG_R_IN, ARM_LO),
-                              (LEG_R_IN, ARM_HI), (LEG_L_IN, ARM_HI)],
-                             METAL_T)
+    """设计区初始金属（耦合臂横段，pipeline 每轮重建）。
+
+    初始形状是矩形，故用 Brick 而非 Extrude：Brick 无歧义。这样模板里
+    **没有任何挤出/曲线对象**——若服务器上仍看到"腿与臂交界是弧线"，
+    即可判定与 Extrude 无关。pipeline 重建任意轮廓时才用 Extrude。
+    """
+    return V.brick("arm_init", "design_region", "PEC",
+                   LEG_L_IN, LEG_R_IN, ARM_LO, ARM_HI, 0.0, METAL_T)
 
 
 def _ports() -> list[str]:
-    """4 个波导端口：1/2 在直通线两端（x=const），3/4 在两腿底（y=const）。
+    """4 个波导端口：1/2 在直通线两端（xmin/xmax 面），3/4 在两腿底（ymin 面）。
 
-    端口面 = 基板底面到空气盒顶的矩形，横向半宽 = w/2 + 1.6 余量。
+    端口面 = 接地板底面（域 zmin）到空气盒顶（域 zmax）的矩形——
+    下缘必须贴合接地参考面（CST 微带端口要求），横向半宽 = w/2 + 1.6。
+    face 用 CST 的边界面名（xmin/xmax/ymin/ymax）——`.Orientation`
+    只认这组取值。
     """
-    pz0, pz1 = -SUB_H, AIR_H
+    pz0, pz1 = -SUB_H - METAL_T, AIR_H
     m = 1.6
     return [
-        V.waveguide_port(1, "p1", "x", THRU_X0, "positive",
+        V.waveguide_port(1, "p1", "xmin", THRU_X0,
                          THRU_LO - m, THRU_HI + m, pz0, pz1),
-        V.waveguide_port(2, "p2", "x", THRU_X1, "negative",
+        V.waveguide_port(2, "p2", "xmax", THRU_X1,
                          THRU_LO - m, THRU_HI + m, pz0, pz1),
-        V.waveguide_port(3, "p3", "y", LEG_BOT, "positive",
+        V.waveguide_port(3, "p3", "ymin", LEG_BOT,
                          LEG_L_OUT - m, LEG_L_IN + m, pz0, pz1),
-        V.waveguide_port(4, "p4", "y", LEG_BOT, "positive",
+        V.waveguide_port(4, "p4", "ymin", LEG_BOT,
                          LEG_R_IN - m, LEG_R_OUT + m, pz0, pz1),
     ]
 
@@ -165,3 +179,43 @@ def build_all_templates(outdir: Path) -> list[Path]:
     """生成全部模板命令宏（fwd/bwd 各一个）。"""
     return [build_macro(outdir, project, portnum)
             for project, portnum in TEMPLATES]
+
+
+# ---- 诊断宏：确认 Extrude "Pointlist" 生成的是直边多边形 ----
+# L 形（6 点、非凸、含 90° 内角）+ 方形（4 点），错开摆放不重叠。
+POLYGON_TEST_SHAPES = (
+    ("L_shape", [(0.0, 0.0), (3.0, 0.0), (3.0, 1.0),
+                 (1.0, 1.0), (1.0, 3.0), (0.0, 3.0)]),
+    ("square", [(5.0, 0.0), (7.0, 0.0), (7.0, 2.0), (5.0, 2.0)]),
+)
+
+
+def build_polygon_test_macro(outdir: Path) -> Path:
+    """生成诊断宏 polygon_test.mcr：用同一个 polygon_extrude 建 L 形 + 方形。
+
+    pipeline 每轮迭代都要用 Extrude 重建任意轮廓（design_region），
+    所以必须确认该模式生成的是**直边多边形**（尖角保留、首尾以直线
+    闭合），而不是把点列拟合成曲线/样条。在任意空工程里运行本宏后
+    肉眼核对：两个实体都是直边、L 形六个尖角。若出现弧边，则重建
+    方式要改（换曲线对象或改用 Brick 拼）。
+    """
+    outdir = outdir.resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+    body = [
+        "'#Language \"WWB-COM\"",
+        "' 诊断宏：检查 Extrude \"Pointlist\" 是否为直边多边形",
+        "' 在任意空工程中运行，然后看模型：L 形与方形都应直边、尖角",
+        "",
+        "Sub Main()",
+        "    With Units",
+        '        .Geometry "mm"',
+        '        .Frequency "GHz"',
+        '        .Time "ns"',
+        "    End With",
+    ]
+    for name, pts in POLYGON_TEST_SHAPES:
+        body.append(V.polygon_extrude(name, "component1", "PEC", pts, METAL_T))
+    body.append("End Sub")
+    path = outdir / "polygon_test.mcr"
+    path.write_text("\n".join(body), encoding="utf-8", newline="\r\n")
+    return path

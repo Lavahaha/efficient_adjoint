@@ -50,7 +50,7 @@ eaopt/
 configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺寸 TODO 待按 Fig.5 核准）
 scripts/run_coupler.py   # 运行入口
 scripts/fd_check.py      # FD 验证命令行工具
-tests/                   # 44 项测试（水准集数值、导数、mock、FD、端到端）
+tests/                   # 59 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏）
 ```
 
 ## 安装与使用
@@ -93,20 +93,22 @@ python -m pytest tests/ -v             # 测试
 
 代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/vba.py` +
 `eaopt/solver/ascii_fields.py` + `eaopt/solver/template_builder.py`，
-54 项本地测试全过）；服务器实测步骤：
+59 项本地测试全过）；服务器实测步骤：
 
 1. 生成模板宏：`python scripts/build_cst_template.py cst/`（产物
-   `cst/build_coupler_fwd.mcr` 与 `build_coupler_bwd.mcr`；**.mcr 是
-   命令宏**——CST 中新建/另存工程等工程级指令只在命令宏上下文合法，
-   在结构宏 .mcs 里会报 "Invalid instruction (NewProject)"，故宏内
-   不含 NewProject，新建工程在 GUI 里做）；
+   `cst/build_coupler_fwd.mcr` 与 `build_coupler_bwd.mcr`，以及诊断宏
+   `polygon_test.mcr`；**.mcr 是命令宏**——CST 中新建/另存工程等工程级
+   指令只在命令宏上下文合法，在结构宏 .mcs 里会报 "Invalid instruction
+   (NewProject)"，故宏内不含 NewProject，新建工程在 GUI 里做）；
 2. CST GUI：**File → New**（模板 `<None>`）→ 导入并运行
    `build_coupler_fwd.mcr` → 生成 `coupler_fwd.cst`（端口 1 激励）；
    **再 File → New** → 运行 `build_coupler_bwd.mcr` → `coupler_bwd.cst`
    （端口 3 激励）。几何布局按论文 Fig.5（直通线横贯整板 + "⊓"形耦合臂、
-   腿下到板底、端口 1/2 在线两端 / 3/4 在腿底）；检查 4 个波导端口、
-   5 GHz E/H 监视器、边界（x/y/zmin 磁、zmax 电）；若激励未生效
-   （Excitation 命令被拒），在端口对话框中手工勾选（fwd→端口1，bwd→端口3）；
+   腿下到板底、端口 1/2 在线两端 / 3/4 在腿底）；检查 4 个波导端口
+   （`.Coordinates "Free"` + 边界面名 `xmin/xmax/ymin`，端口面下缘贴合
+   接地板、上缘到空气盒顶）、5 GHz E/H 监视器、边界（x/y/zmin 磁、
+   zmax 电）；若激励未生效（Excitation 命令被拒），在端口对话框中手工
+   勾选（fwd→端口1，bwd→端口3）；
 3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
    `solver.type: cst`；
 4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、
@@ -125,5 +127,5 @@ python -m pytest tests/ -v             # 测试
 - [x] 第 4 步：求解器抽象 + MockSolver + 优化闭环
 - [x] 第 5 步：本地端到端验证 + FD 检查工具
 - [x] 第 6 步：CST 接口代码（双模板设计 + VBA 生成 + ASCII 场解析，
-      53 测试全过；服务器实测待 smoke）
+      59 测试全过；服务器实测待 smoke）
 - [ ] 第 7 步：服务器 smoke → FD 验证 → 耦合器正式复现（对齐论文 Fig. 6–8）

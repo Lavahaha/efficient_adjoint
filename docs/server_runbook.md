@@ -19,6 +19,7 @@ python -m pytest tests/ -q   # 应 54 passed（本机可先确认代码完整）
 python scripts/build_cst_template.py cst/
 # 产物: cst/build_coupler_fwd.mcr（端口 1 激励）
 #       cst/build_coupler_bwd.mcr（端口 3 激励）
+#       cst/polygon_test.mcr（诊断宏，可选，见第 2.5 节）
 ```
 
 ## 2. CST GUI 生成双模板工程
@@ -39,17 +40,33 @@ python scripts/build_cst_template.py cst/
 6. 检查产物：两个 .cst 都已生成
 7. **打开 fwd 工程检查**（布局 = 论文 Fig.5）：
    - 模型：基板（Rogers4350B 30mil，x∈[−5.6,17.6] y∈[−7,5.6]）、
-     接地 PEC、空气盒（Vacuum，z 到 2.0）、直通线（上方横贯整板）、
+     接地 PEC、空气盒（Vacuum，z 到 4.0）、直通线（上方横贯整板）、
      "⊓"形耦合臂（横段 + 两条腿下到板底）、设计区矩形金属
      （design_region 组件）
-   - 4 个波导端口：1/2 在直通线两端（x=const 面）、3/4 在两腿底
-     （y=−7 面）
+   - 4 个波导端口：1/2 在直通线两端（xmin/xmax 面）、3/4 在两腿底
+     （ymin 面）；端口面下缘触到接地板底面、上缘到空气盒顶
    - 5 GHz 的 E-Field / H-Field 监视器各一个
    - 边界：X/Y/Zmin = magnetic，Zmax = electric
+   - **检查腿与耦合臂的交界**：切换俯视图（视图工具条点 z 轴）
+     或只显示 design_region 组件，交界应是**直线直角**（模板里没有
+     任何挤出/曲线对象，全部是 Brick）。若看到弧边，跑第 2.5 节的
+     诊断宏并把截图发回
    - **激励**：端口 1 被勾选（Excitations 下应有 excitation1 → Port 1）。
      若没有（宏的 Excitation 命令被版本拒绝）：在端口对话框中手工勾选
      端口 1 的激励，保存
 8. **bwd 工程同样检查，激励改为端口 3**，保存
+
+## 2.5 （可选）诊断宏 polygon_test.mcr
+
+pipeline 每轮迭代都用 `Extrude "Pointlist"` 重建任意轮廓（design_region
+组件），所以必须确认这个模式生成的是**直边多边形**（尖角保留），而不是
+把点列拟合成曲线。
+
+- 在任意**空工程**里运行 `cst/polygon_test.mcr`（File → New → 导入宏 →
+  运行 Main），会建出两个实体：L 形（6 点、含 90° 内角）和方形（4 点）
+- 俯视图看：两者都应是直边、尖角
+- **只在第 7 步看到弧边时才需要做这一步**；把结果（或截图）发回开发者。
+  若确实出现弧边，重建方式要改（这是 pipeline 的硬依赖）
 
 > 若宏在某条指令上报错（如 "Invalid instruction (xxx)" 或
 > "no such property (xxx)"）：把那条指令贴回来即可。**建模是逐条执行的，
@@ -109,7 +126,11 @@ python scripts/run_coupler.py configs/coupler.yaml
   或确认许可证正常、CST 可以独立打开。
 - **宏运行到某条命令报错**：把宏日志/报错截图或文本贴回，按 2024
   版本命令名修正宏生成器。
-- **端口报错（如 "port is too small"）**：把端口面 Xrange/Zrange 调大
-  （`eaopt/solver/template_builder.py` 的 `_ports()` 中 pxw / pz 参数），
-  重新生成宏。
+- **端口相关（CST 2024 实测结论，改宏时勿违反）**：
+  `.Coordinates` 只认 `"Free"/"Full"/"Picks"`（写 `"Ranges"` 报
+  "Invalid coordinate type"）；`.Orientation` 只认**边界面名**
+  `"xmin"/"xmax"/"ymin"/"ymax"`；微带类端口必须 `"Free"` + 显式
+  Xrange/Yrange/Zrange，且端口面下缘要贴合接地板底面。
+- **端口报错（如 "port is too small"）**：把端口面横向余量调大
+  （`eaopt/solver/template_builder.py` 的 `_ports()` 中 `m`），重新生成宏。
 - **SaveAs 未生效**：手工 File → Save As 保存两个模板工程。

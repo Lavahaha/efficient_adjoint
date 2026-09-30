@@ -92,17 +92,23 @@ def polygon_extrude(name: str, component: str, material: str,
     return "\n".join(lines) + "\n"
 
 
-def waveguide_port(port_number: int, name: str, axis: str, at: float,
-                   orientation: str, u0: float, u1: float,
-                   z0: float, z1: float) -> str:
-    """波导端口（单模）：端口面垂直于 axis（x 或 y），位于 axis=at。
+# 端口所在的计算域边界面（CST 的 .Orientation 只认这组名字）
+PORT_FACES = ("xmin", "xmax", "ymin", "ymax")
 
-    axis="x"：u 是 y 方向范围；axis="y"：u 是 x 方向范围。
-    orientation："positive"/"negative" = 沿 axis 正/负方向的传播方向
-    （即波进入结构的方向）。
+
+def waveguide_port(port_number: int, name: str, face: str, at: float,
+                   u0: float, u1: float, z0: float, z1: float) -> str:
+    """波导端口（单模）：端口面落在计算域边界面 face 上。
+
+    face: "xmin"/"xmax"/"ymin"/"ymax" —— CST 2024 实测：.Orientation
+    不接受 "positive"/"negative"，只认边界面名（录制宏同）。
+    at: 该面的坐标（如 xmin 面的 x 值）；u0..u1 为面内横向范围
+    （x 面 → y 范围，y 面 → x 范围）；z0..z1 为高度范围。
+    .Coordinates 必须 "Free"（给显式范围；合法值仅 Free/Full/Picks）。
     """
-    if axis not in ("x", "y"):
-        raise ValueError(f"axis 只能是 'x'/'y'，收到 {axis!r}")
+    if face not in PORT_FACES:
+        raise ValueError(f"face 只能是 {PORT_FACES}，收到 {face!r}")
+    axis, side = face[0], face[1:]
     u_axis = "y" if axis == "x" else "x"
     rng = {
         axis: f'"{at:.6g}", "{at:.6g}"',      # 端口面：该轴为常量
@@ -121,9 +127,9 @@ def waveguide_port(port_number: int, name: str, axis: str, at: float,
         '    .ReferencePlaneDistance "0"\n'
         '    .TextSize "50"\n'
         '    .TextMaxLimit "1"\n'
-        '    .Coordinates "Ranges"\n'
-        f'    .Orientation "{orientation}"\n'
-        '    .PortOnBound "False"\n'
+        '    .Coordinates "Free"\n'
+        f'    .Orientation "{face}"\n'
+        '    .PortOnBound "True"\n'      # 端口面就在计算域边界面上
         '    .ClipPickedPortToBound "False"\n'
         f'    .Xrange {rng["x"]}\n'
         f'    .Yrange {rng["y"]}\n'

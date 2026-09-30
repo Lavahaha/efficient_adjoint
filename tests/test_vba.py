@@ -3,7 +3,8 @@
 import numpy as np
 
 from eaopt.solver import vba as V
-from eaopt.solver.template_builder import build_all_templates, build_macro
+from eaopt.solver.template_builder import (build_all_templates, build_macro,
+                                           build_polygon_test_macro)
 
 
 def test_polygon_extrude_contains_commands():
@@ -30,28 +31,38 @@ def test_brick_contains_ranges():
 
 
 def test_port_yface():
-    """y=const 端口面：Yrange 为常量，Xrange 为范围。"""
-    s = V.waveguide_port(3, "p3", "y", -7.0, "positive", -3.2, 1.6, -0.762, 2.0)
+    """ymin 面端口：Yrange 为常量，Xrange 为范围。"""
+    s = V.waveguide_port(3, "p3", "ymin", -7.0, -3.2, 1.6, -0.762, 2.0)
     assert '.PortNumber "3"' in s
-    assert '.Orientation "positive"' in s
+    assert '.Orientation "ymin"' in s
     assert '.Yrange "-7", "-7"' in s
     assert '.Xrange "-3.2", "1.6"' in s
-    assert '.Coordinates "Ranges"' in s
+    # CST 2024 实测 .Coordinates 只认 Free/Full/Picks（"Ranges" 报
+    # "Invalid coordinate type"）；微带类端口用 Free + 显式范围
+    assert '.Coordinates "Free"' in s
+    assert "Ranges" not in s
+    assert '.PortOnBound "True"' in s
 
 
 def test_port_xface():
-    """x=const 端口面：Xrange 为常量，Yrange 为范围。"""
-    s = V.waveguide_port(1, "p1", "x", -5.6, "positive", -0.6, 4.2, -0.762, 2.0)
+    """xmin/xmax 面端口：Xrange 为常量，Yrange 为范围。"""
+    s = V.waveguide_port(1, "p1", "xmin", -5.6, -0.6, 4.2, -0.762, 2.0)
+    assert '.Orientation "xmin"' in s
     assert '.Xrange "-5.6", "-5.6"' in s
     assert '.Yrange "-0.6", "4.2"' in s
     assert '.Zrange "-0.762", "2"' in s
+    assert '.Coordinates "Free"' in s
+    assert '.Orientation "xmax"' in V.waveguide_port(
+        2, "p2", "xmax", 17.6, -0.6, 4.2, -0.762, 2.0)
 
 
-def test_port_axis_validation():
+def test_port_face_validation():
+    """只接受 CST 的边界面名（不认 positive/negative 或轴名）。"""
     import pytest
 
-    with pytest.raises(ValueError):
-        V.waveguide_port(1, "p1", "z", 0.0, "positive", 0.0, 1.0, 0.0, 1.0)
+    for bad in ("z", "zmin", "positive", "x", "top"):
+        with pytest.raises(ValueError):
+            V.waveguide_port(1, "p1", bad, 0.0, 0.0, 1.0, 0.0, 1.0)
 
 
 def test_excitation_supports_vba_variable():
@@ -114,8 +125,18 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
         assert 'SaveAs "' in text and f"{project}.cst" in text
         assert f'.Port "{port}"' in text
         assert "Rogers4350B" in text
-        # 4 个端口
+        # 4 个端口，全部 Free 坐标系；端口面名与几何一致
         assert text.count("With Port") == 4
+        assert ".Coordinates \"Free\"" in text and "Ranges" not in text
+        assert text.count('.Orientation "xmin"') == 1   # 端口 1
+        assert text.count('.Orientation "xmax"') == 1   # 端口 2
+        assert text.count('.Orientation "ymin"') == 2   # 端口 3/4
+        # 端口面：下缘贴合接地板底面（域 zmin），上缘到空气盒顶（域 zmax）
+        assert text.count('.Zrange "-0.797", "4"') == 4
+        # 模板中无挤出/曲线对象：腿与臂的交界只可能是直线
+        assert "With Extrude" not in text and "With Polygon" not in text
+        assert '    .Name "arm_init"' in text
+        assert '    .Component "design_region"' in text
         # 边界：zmax 电边界、其余磁边界
         assert '.Zmax "electric"' in text
         assert text.count('"magnetic"') == 5
@@ -129,3 +150,17 @@ def test_build_macro_single(tmp_path):
     path = build_macro(tmp_path, "demo", 2)
     assert path.name == "build_demo.mcr"
     assert "demo.cst" in path.read_text(encoding="utf-8")
+
+
+def test_polygon_test_macro_has_two_extrudes(tmp_path):
+    """诊断宏：L 形（非凸 6 点）+ 方形（4 点），用于核对直边。"""
+    from eaopt.solver import template_builder as T
+
+    path = build_polygon_test_macro(tmp_path)
+    assert path.name == "polygon_test.mcr"
+    text = path.read_text(encoding="utf-8")
+    assert text.count("With Extrude") == 2
+    assert text.count('.Mode "Pointlist"') == 2
+    assert "Sub Main()" in text and "End Sub" in text
+    # L 形的内角点必须在点列里（非凸轮廓）
+    assert '.Point "0", "0"' in text and '.LineTo "1", "1"' in text

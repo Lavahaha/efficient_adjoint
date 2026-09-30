@@ -5,6 +5,7 @@
 
 产物: <输出目录>/build_coupler_fwd.mcr（端口 1 激励）
       <输出目录>/build_coupler_bwd.mcr（端口 3 激励）
+      <输出目录>/polygon_test.mcr（诊断用，可选：验证 Extrude 直边）
 
 为什么是 .mcr：Import Macro 对话框只列 "CST Macro Files (*.mcs; *.mcr)"，
 .bas 不可见；且工程级指令（新建/另存工程）只在**命令宏**（.mcr）上下文
@@ -29,7 +30,8 @@
 import argparse
 from pathlib import Path
 
-from eaopt.solver.template_builder import build_all_templates
+from eaopt.solver.template_builder import (build_all_templates,
+                                           build_polygon_test_macro)
 
 
 def main() -> None:
@@ -37,8 +39,10 @@ def main() -> None:
     ap.add_argument("outdir", nargs="?", default="cst",
                     help="输出目录（默认 cst/）")
     args = ap.parse_args()
-    for path in build_all_templates(Path(args.outdir)):
+    outdir = Path(args.outdir)
+    for path in build_all_templates(outdir):
         print(f"已生成: {path}")
+    print(f"已生成诊断宏（可选）: {build_polygon_test_macro(outdir)}")
     print("服务器步骤见脚本头部注释（File → New → 导入宏 → 运行 Main → 检查端口/激励）")
 
 
