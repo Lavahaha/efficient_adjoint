@@ -28,7 +28,6 @@
 """
 
 import argparse
-import shutil
 import time
 from pathlib import Path
 
@@ -39,6 +38,14 @@ def _short(exc: BaseException, limit: int = 140) -> str:
     """异常信息压成一行（pywin32 的错误元组很长）。"""
     s = str(exc).replace("\n", " ")
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _safe_object_exists(mws, name: str) -> bool:
+    """ObjectExists 是属性风格还是方法风格都容忍（读不到一律当 False）。"""
+    try:
+        return bool(mws.ObjectExists(name))
+    except Exception:
+        return False
 
 
 def enum_com_methods(obj, label: str, keyword: str | None = None) -> None:
@@ -142,14 +149,15 @@ def main() -> None:
     print("=" * 60)
     print("2) 打开模板副本")
     print("=" * 60)
-    st = tpl.stat()
-    print(f"    模板 {tpl}：{st.st_size / 1e6:.2f} MB，最后修改 "
-          f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.st_mtime))}"
-          "（应是刚跑完宏的时间；若是旧时间 ⇒ 宏的 SaveAs 没覆盖掉旧文件）")
+    from eaopt.solver import cst_project
+    for line in cst_project.describe(tpl):
+        print("    " + line)
+    print("    （模型数据应在 .cst 里；同名文件夹是求解结果。若上面报告"
+          "找不到任何模型对象名 ⇒ 模板本身是空工程，先重建模板）")
     workdir = Path(cfg.output.dir) / "cst_work"
     workdir.mkdir(parents=True, exist_ok=True)
-    dst = workdir / f"smoke_{tpl.name}"
-    shutil.copy(tpl, dst)
+    # **整份**复制（.cst + 同名文件夹）——只复制 .cst 会打开成空工程
+    dst = cst_project.copy_project(tpl, workdir, dst_name=f"smoke_{tpl.name}")
     mws = app.OpenFile(str(dst.resolve()))
     print(f"[OK] 已打开 {dst}")
 
@@ -172,6 +180,7 @@ def main() -> None:
             print(f"    {label} = {expr()!r}")
         except Exception as e:
             print(f"    {label}: 读不到 ({_short(e)})")
+    n_ports = -1
     try:
         n_ports = int(mws.Solver.GetNumberOfPorts)
         if n_ports <= 0:
@@ -181,6 +190,16 @@ def main() -> None:
             print(f"    >>> 工程里有 {n_ports} 个端口")
     except Exception:
         pass
+    empty = n_ports == 0 or (n_ports < 0 and not _safe_object_exists(mws, "substrate"))
+    if empty:
+        print("    " + "!" * 56)
+        print("    !! 这个工程里没有几何也没有端口 ⇒ 模板本身是空的：")
+        print("       先查 `python scripts/cst_inspect_template.py`（不用 CST）"
+              "看模板文件里有没有模型；")
+        print("       空的话重建模板（GUI 里 File → New → 跑宏），重建后"
+              "**立刻在这张 GUI 里确认几何和 4 个端口都在**再保存。")
+        print("       跳过求解，直接去看后面的结果树/导出部分。")
+        print("    " + "!" * 56)
 
     print("=" * 60)
     print("3b) 激励设置（失败会在 Start 时立刻报错，不耗时）")
@@ -204,7 +223,9 @@ def main() -> None:
     ])
     print("    若 CST 界面弹出报错对话框，点掉即可，脚本会继续试下一个候选")
     winner = None
-    for port, mode in candidates:
+    if empty:
+        print("    （工程是空的，跳过求解——候选必然全失败，省几分钟）")
+    for port, mode in ([] if empty else candidates):
         try:
             mws.Solver.StimulationPort(port)
         except Exception as e:
@@ -226,7 +247,7 @@ def main() -> None:
         print(f"[OK] StimulationPort={port!r} + StimulationMode={mode!r}"
               f" → 求解成功，耗时 {time.perf_counter() - t0:.0f} s")
         break
-    if winner is None:
+    if winner is None and not empty:
         print("!! 所有候选都失败——请改用 GUI 手工设置并录宏：")
         print("   Simulation → Time Domain Solver → Source type 选端口 1 → OK")
         print("   Edit → History List → 选中刚出现的行 → 点 Macro 按钮")

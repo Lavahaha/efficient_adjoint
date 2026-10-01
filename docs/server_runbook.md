@@ -10,7 +10,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 85 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 93 passed（本机可先确认代码完整）
 ```
 
 ## 1. 在服务器上生成模板宏（重要：宏里包含绝对路径，必须在服务器上重新生成）
@@ -74,6 +74,15 @@ python scripts/build_cst_template.py cst/
      `.StimulationMode "All"` 会让 Solver.Start 直接报
      "Invalid stimulation port, please specify."
 8. **bwd 工程同样检查，激励改为端口 3**，保存
+9. **回头验一下保存出来的模板文件本身**（不用 CST，纯 Python）：
+   ```bash
+   python scripts/cst_inspect_template.py
+   ```
+   两个模板都应报 "在 .cst 内部搜到模型对象名: {...substrate...}"
+   和 "⇒ 模型数据在文件里"。**若报"空工程"**：宏跑完时的工程是好的、
+   但保存出来的文件是空的（CST 有"宏建模 + Save As 后 components 为空"
+   的已知案例）——在 GUI 里把那个有模型的工程用 **File → Save As**
+   手工另存一次（覆盖同名文件），再跑一遍本检查确认。
 
 ## 2.5 （可选）诊断宏 polygon_test.mcr
 
@@ -176,6 +185,23 @@ python scripts/run_coupler.py configs/coupler.yaml
 
 - **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
   或确认许可证正常、CST 可以独立打开。
+- **打开的工程是个空壳（导航树光秃秃、没几何、没端口、没结果）**：两种
+  原因，先分清——
+  1. **模板文件本身就是空的**：跑 `python scripts/cst_inspect_template.py`
+     （不用 CST）。它把 `.cst` 当 zip 看，在里面搜 `substrate`/
+     `design_region`/`Port 1` 这些对象名。搜不到 ⇒ 空工程，与读取 API
+     无关，按第 2 节第 9 条重建/手工另存模板；
+  2. **模板是好的，但复制时丢了配套文件夹**：CST 工程是
+     `<名字>.cst` + **同名文件夹**（外部结果目录）**两件东西**，只搬
+     `.cst` 会打开成缺结果的工程。项目的复制路径已统一到
+     `eaopt/solver/cst_project.py::copy_project`（连同名文件夹一起搬，
+     排除 `*.lok`），smoke 与 pipeline 都用它——所以**别再用
+     `shutil.copy` 复制 .cst**。
+- **"宏建模成功、工程里有几何和端口，但另存出来的文件打开是空的"**：
+  CST 的已知案例（宏自动建模 + Save As 后 components 为空）。对策：
+  保存后在 GUI 里关掉再重新打开那个 `.cst` 确认一次；确认它是空的就用
+  **File → Save As** 手工另存覆盖。`scripts/cst_inspect_template.py`
+  能在不打开 CST 的情况下告诉你文件里到底有没有模型。
 - **宏运行到某条命令报错**：把宏日志/报错截图或文本贴回，按 2024
   版本命令名修正宏生成器。**几何/端口段**的报错会中止宏（这是故意的：
   模板建不出来就没有意义）；**设置段**（激励/监视器/边界/求解器）

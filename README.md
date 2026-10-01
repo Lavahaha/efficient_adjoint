@@ -55,7 +55,7 @@ configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺�
 scripts/run_coupler.py   # 运行入口
 scripts/fd_check.py      # FD 验证命令行工具
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
-tests/                   # 85 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
+tests/                   # 93 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
 ```
 
 ## 安装与使用
@@ -99,7 +99,7 @@ python -m pytest tests/ -v             # 测试
 
 代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/cst_api.py` +
 `eaopt/solver/vba.py` + `eaopt/solver/ascii_fields.py` +
-`eaopt/solver/template_builder.py`，85 项本地测试全过）；服务器实测步骤：
+`eaopt/solver/template_builder.py`，93 项本地测试全过）；服务器实测步骤：
 
 1. 生成模板宏：`python scripts/build_cst_template.py cst/`（产物
    `cst/build_coupler_fwd.mcr` 与 `build_coupler_bwd.mcr`，以及诊断宏

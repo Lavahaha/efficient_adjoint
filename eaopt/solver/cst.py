@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +26,7 @@ from eaopt.adjoint.fields import FieldGrid
 from eaopt.config import CaseConfig
 from eaopt.geometry.contour import close_open_contours
 from eaopt.solver import cst_api
+from eaopt.solver import cst_project
 from eaopt.solver import vba as V
 from eaopt.solver.ascii_fields import parse_ascii_field
 from eaopt.solver.base import Solution, SolverInterface
@@ -73,10 +73,15 @@ class CstSolver(SolverInterface):
         self._bwd = self._open_copy(Path(self.cfg.solver.template_bwd), workdir, "bwd")
 
     def _open_copy(self, template: Path, workdir: Path, tag: str):
+        """把模板整份复制到工作目录再打开（**含同名文件夹**，见 cst_project）。
+
+        只复制 `.cst` 文件会丢掉同名文件夹里的东西，打开后可能是个空工程
+        （没有几何/端口/结果），CST 不报错——所以复制一律走 cst_project。
+        """
         if not template.exists():
             raise FileNotFoundError(f"模板不存在: {template}（先跑 build_cst_template 宏）")
-        dst = workdir / f"{tag}_{template.name}"
-        shutil.copy(template, dst)
+        dst = cst_project.copy_project(template, workdir,
+                                       dst_name=f"{tag}_{template.name}")
         return self._app.OpenFile(str(dst))
 
     def close(self) -> None:
