@@ -28,6 +28,9 @@ CST 2024 实测结论（2026-10-01，服务器）：
   - 诊断原则：**失败要报原始错误**。这一层的每个函数都可选接收 notes
     列表，把"为什么没读到"原样写进去（pywin32 的异常文本能区分
     "方法不存在"与"参数/路径不对"，是收敛 API 的唯一线索）。
+  - 会话与自省：connect_app()（附接 GUI 实例）、member_signatures() /
+    member_names()（读 IDispatch 类型库，拿**真实成员名与形参名**，
+    调用形状存疑时以它为准）；脚本与 cst.py 共用这一层。
 """
 
 from __future__ import annotations
@@ -35,32 +38,80 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["tree_children", "s_param_ids", "find_item", "s_param_at",
-           "s_param_via_result1d", "member_names"]
+           "s_param_via_result1d", "member_names", "member_signatures",
+           "connect_app"]
+
+PROGID = "CSTStudio.Application"
 
 
-def member_names(obj, keyword: str | None = None) -> list[str]:
-    """COM 对象真实成员名（读 IDispatch 类型库），按名字排序去重。
+def connect_app():
+    """连接运行中的 CST（优先附接已打开的 GUI 实例）。
+
+    先 Dispatch（已在跑就用现成的，没有再启动新的），失败再
+    GetActiveObject。两个都失败抛 RuntimeError——提示要先把 CST GUI 打开，
+    避免脚本悄悄启动一个后台实例、而用户对着另一个窗口找模型。
+    """
+    import win32com.client
+
+    errs = []
+    for label, factory in (
+        ("Dispatch", lambda: win32com.client.Dispatch(PROGID)),
+        ("GetActiveObject", lambda: win32com.client.GetActiveObject(PROGID)),
+    ):
+        try:
+            app = factory()
+            print(f"[OK] COM 连接：{label}")
+            return app
+        except Exception as e:
+            errs.append(f"{label}: {e}")
+    raise RuntimeError("无法连接 CST（请先启动 CST Studio 2024 并保持 GUI "
+                       "打开）：" + "；".join(str(e) for e in errs))
+
+
+def member_signatures(obj, keyword: str | None = None) -> list[dict]:
+    """COM 对象成员**签名**：名字 + 参数名 + 参数个数 + 帮助串。
+
+    比 member_names 多给参数名——调用形状存疑时（比如 AddToHistory 到底
+    是 (标题, 命令) 还是 (命令, 标题)、要 1 个还是 2 个参数），类型库里的
+    形参名就是权威答案，不必猜、也不必反复试。
 
     **不要靠猜 CST 的 API 名字**：各版本方法名有出入，而 pywin32 的
     "dynamic dispatch" 让 `hasattr` 对不存在的成员也返回 True。
-    直接问类型库要成员表是最可靠的（cst_smoke 与建模板脚本共用）。
-    keyword 非空时只返回名字含该串的成员（工程对象有几百个成员，
-    全打印会淹掉输出）。取不到类型信息时抛原始异常——调用方决定怎么报。
+    keyword 非空时只返回名字含该串的成员（工程对象有几百个成员）。
+    取不到类型信息时抛原始异常——调用方决定怎么报。
     """
     ole = getattr(obj, "_oleobj_", obj)      # 已包成 PyIDispatch 的也能用
     ti = ole.GetTypeInfo()
     ta = ti.GetTypeAttr()
-    names: list[str] = []
+    out: dict[str, dict] = {}
     for i in range(ta.cFuncs):
         try:
             fd = ti.GetFuncDesc(i)
-            nm = ti.GetNames(fd.memid)[0]
+            names = list(ti.GetNames(fd.memid))
         except Exception:
             continue
-        if keyword and keyword.lower() not in nm.lower():
+        if not names:
             continue
-        names.append(nm)
-    return sorted(set(names))
+        name = names[0]
+        if keyword and keyword.lower() not in name.lower():
+            continue
+        try:
+            doc = ti.GetDocumentation(fd.memid)
+            help_text = (doc[1] or "").strip()
+        except Exception:
+            help_text = ""
+        sig = out.setdefault(name, {
+            "name": name, "params": names[1:],
+            "n_params": getattr(fd, "cParams", len(names) - 1),
+            "help": help_text, "id": fd.memid})
+        if not sig["params"] and len(names) > 1:
+            sig["params"] = names[1:]        # 同名重载：补上带形参名的那条
+    return sorted(out.values(), key=lambda d: d["name"])
+
+
+def member_names(obj, keyword: str | None = None) -> list[str]:
+    """COM 对象真实成员名，按名字排序去重（= member_signatures 的名字列）。"""
+    return [s["name"] for s in member_signatures(obj, keyword)]
 
 
 def _note(notes: list[str] | None, msg: str) -> None:

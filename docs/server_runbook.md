@@ -10,7 +10,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 113 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 122 passed（本机可先确认代码完整）
 ```
 
 ## 1. 生成模板工程（**方式 A 优先**：Python + COM）
@@ -39,8 +39,29 @@ python scripts/cst_build_template.py configs/coupler.yaml
 
 万一 `AddToHistory` 这个成员名在这台机器上不存在（报
 `<unknown>.AddToHistory`），先跑一次 `--probe`：它会把 app / 工程对象上
-名字含 Add/History/Save/Brick/Port 的**真实成员名**全列出来，把那张表
-贴回开发者即可（`cst_api.member_names` 直读 IDispatch 类型库，不靠猜）。
+名字含 Add/History/Save/Brick/Port 的**真实成员名与形参名**全列出来，把
+那张表贴回开发者即可（`cst_api.member_signatures` 直读 IDispatch 类型库，
+不靠猜）。
+
+**若每一块都 `[FAIL] ... AddToHistory 返回 False`**（实测遇到过：连只有
+一行、语法显然没问题的块也 False ⇒ 与命令内容无关，是"条目创建本身被拒"
+或"调用形状不对"），跑专门的诊断：
+
+```bash
+python scripts/cst_probe_history.py
+```
+
+它一次问清四件事：① `AddToHistory` 的**真实形参名与个数**（权威答案）；
+② 各种调用形状矩阵（空内容 / 单行 / LF / CRLF / **参数换序** / 分号 /
+单参数）**哪一种返回 True**；③ 另存到临时文件后再试一遍（"未存盘的工程
+不许写历史"这一怀疑）；④ 把工程对象上所有能读的 history 成员读回来。
+
+**同时请在 GUI 里做一次对照实验**：手工画一个 Brick（或改一下单位），看
+History List 里**有没有出现那一条**——
+- 手工操作也不进历史表 ⇒ 这个 CST 会话/安装的记录功能本身有问题；
+- 手工操作进历史表 ⇒ 是 API 调用形状的问题，按矩阵结果改。
+
+两种情况的完整输出/截图都贴回开发者。
 
 ### 方式 B（备用）：GUI 宏
 
@@ -244,6 +265,12 @@ python scripts/run_coupler.py configs/coupler.yaml
 
 - **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
   或确认许可证正常、CST 可以独立打开。
+- **"`AddToHistory` 每一块都返回 False"**：返回 False = 条目没建成**或**
+  contents 没执行成功，光看返回值分不清。**每一块都 False（含单行块）
+  说明与命令内容无关**——先跑 `python scripts/cst_probe_history.py`（签名
+  + 调用形状矩阵 + 读回），再在 GUI 里手工画个 Brick 看历史表是否记录，
+  两者输出一起贴回。（`cst_build_template.py` 检测到全 False 时也会提示
+  这一条。）
 - **"宏跑完工程里几何/端口/监视器都好好的，但 History List 是空的"**
   （→ 存盘重开就是空工程，**这是"打开一片空白"最常见的根因**）：
   **最快的出路是改用第 1 节的方式 A（COM + `AddToHistory`）**——它不走

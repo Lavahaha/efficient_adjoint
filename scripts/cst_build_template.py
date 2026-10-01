@@ -24,7 +24,13 @@
     python scripts/cst_build_template.py configs/coupler.yaml --probe   # 只查 API
 
 `--probe` 不建任何东西，只把 mws / app 上名字含 Add/History/Save 的成员
-列出来——万一 AddToHistory 在这个版本里叫别的名字，那张表就是答案。
+**连形参名**一起列出来（`cst_api.member_signatures` 读 IDispatch 类型库）
+——万一 AddToHistory 在这个版本里叫别的名字、或参数顺序不同，那张表就是
+答案。
+
+若所有块都返回 False（与命令内容无关的信号），先跑
+`python scripts/cst_probe_history.py`：它专门查这件事（签名 + 调用形状
+矩阵 + 读回历史表）。
 
 产物：按 cfg.solver.template_fwd / template_bwd 的路径写出两个 .cst
 （连同名文件夹一起，见 cst_project）。
@@ -41,39 +47,25 @@ def _short(exc: BaseException, limit: int = 200) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-def connect():
-    """连接到运行中的 CST（优先附接已打开的 GUI 实例）。"""
-    import win32com.client
-
-    for label, factory in (
-        ("Dispatch", lambda: win32com.client.Dispatch("CSTStudio.Application")),
-        ("GetActiveObject",
-         lambda: win32com.client.GetActiveObject("CSTStudio.Application")),
-    ):
-        try:
-            app = factory()
-            print(f"[OK] COM 连接：{label}")
-            return app
-        except Exception as e:
-            print(f"[FAIL] {label}: {_short(e)}")
-    raise RuntimeError("无法连接 CST：请先启动 CST Studio 2024 并保持 GUI 打开")
-
-
 def probe(app) -> None:
-    """打印 app / mws 上可能与"建工程 + 写历史表 + 保存"有关的成员名。"""
+    """打印 app / mws 上可能与"建工程 + 写历史表 + 保存"有关的成员**签名**。
+
+    带形参名（member_signatures 读的是 IDispatch 类型库）——调用形状存疑
+    时以它为准，不用反复试。
+    """
     print("=" * 60)
     print("COM 成员探针（不建任何东西）")
     print("=" * 60)
     for obj, label in ((app, "app"),):
         for kw in ("New", "Open", "Save", "Active", "Project"):
             try:
-                names = cst_api.member_names(obj, kw)
+                sigs = cst_api.member_signatures(obj, kw)
             except Exception as e:
                 print(f"    {label} 含 {kw!r}: 拿不到类型信息（{_short(e)}）")
                 continue
-            print(f"    {label} 含 {kw!r} 的成员（{len(names)}）：")
-            for nm in names:
-                print("      " + nm)
+            print(f"    {label} 含 {kw!r} 的成员（{len(sigs)}）：")
+            for s in sigs:
+                print(f"      {s['name']}({', '.join(s['params'])})")
     for factory, label in ((lambda: app.GetActiveProject(), "app.GetActiveProject()"),
                            (lambda: app.ActiveProject(), "app.ActiveProject()"),
                            (lambda: app.NewMWS(), "app.NewMWS()")):
@@ -85,13 +77,13 @@ def probe(app) -> None:
         print(f"    {label}: OK")
         for kw in ("History", "Add", "Save", "Reset", "Brick", "Port"):
             try:
-                names = cst_api.member_names(mws, kw)
+                sigs = cst_api.member_signatures(mws, kw)
             except Exception as e:
                 print(f"      mws 含 {kw!r}: 拿不到类型信息（{_short(e)}）")
                 continue
-            print(f"      mws 含 {kw!r} 的成员（{len(names)}）：")
-            for nm in names:
-                print("        " + nm)
+            print(f"      mws 含 {kw!r} 的成员（{len(sigs)}）：")
+            for s in sigs:
+                print(f"        {s['name']}({', '.join(s['params'])})")
         break
 
 
@@ -121,6 +113,7 @@ def build(mws, project: str, portnum: int) -> bool:
     from eaopt.solver.template_builder import template_blocks
 
     ok_all = True
+    n_false = 0
     for i, (header, cmd) in enumerate(template_blocks(project, portnum), 1):
         try:
             ok = mws.AddToHistory(header, cmd)
@@ -131,12 +124,20 @@ def build(mws, project: str, portnum: int) -> bool:
             ok_all = False
             continue
         if not ok:
-            # 文档：返回 False = 条目没建成（命令没生效）
+            # 文档：返回 False = 条目没建成，或 contents 没执行成功
             print(f"[FAIL] {i:2d} {header:<22} AddToHistory 返回 False"
-                  f"（条目没建成）")
+                  f"（条目没建成或命令没执行）")
             ok_all = False
+            n_false += 1
             continue
         print(f"[ OK ] {i:2d} {header:<22} 已执行并记入 History List")
+    if n_false == i:              # 每一块都 False（i = 块数）
+        # 全部失败 = 与命令内容无关（连单行、语法显然没问题的块也 False）：
+        # 是条目创建本身被拒，或调用形状不对。别在这儿瞎猜——
+        print("  !! 所有块都返回 False：这不是命令内容的问题（单行块也失败）。"
+              "\n     跑 `python scripts/cst_probe_history.py`：它会打印"
+              "AddToHistory 的真实形参名，\n     并把各种调用形状（含参数"
+              "换序、CRLF、另存后再试）逐个试一遍。")
     return ok_all
 
 
@@ -176,7 +177,7 @@ def main() -> None:
     from eaopt.config import CaseConfig
 
     cfg = CaseConfig.from_yaml(args.config)
-    app = connect()
+    app = cst_api.connect_app()
     if args.probe:
         probe(app)
         return

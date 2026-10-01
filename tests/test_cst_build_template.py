@@ -119,3 +119,59 @@ def test_template_blocks_match_the_macro_content(tmp_path):
         for line in cmd.rstrip("\n").splitlines():
             assert line.strip() in in_macro, \
                 f"{header} 的命令行不在宏里：{line.strip()!r}"
+
+
+# ---- scripts/cst_probe_history.py：调用形状矩阵 ----
+
+PROBE = Path(__file__).resolve().parents[1] / "scripts" / "cst_probe_history.py"
+
+
+@pytest.fixture(scope="module")
+def probe_mod():
+    spec = importlib.util.spec_from_file_location("_cst_probe_history", PROBE)
+    m = importlib.util.module_from_spec(spec)
+    sys.modules["_cst_probe_history"] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+class _MatrixMWS:
+    """只对指定形状返回 True 的假工程（模拟"参数顺序反了"这类版本差异）。"""
+
+    def __init__(self, accept=(), raise_on=()):
+        self.accept = set(accept)
+        self.raise_on = set(raise_on)
+        self.seen = []
+
+    def AddToHistory(self, *args):
+        self.seen.append(args)
+        if any(a in self.raise_on for a in args):
+            raise RuntimeError("(10090) ActiveX Automation error")
+        return any(a in self.accept for a in args)
+
+
+def test_probe_matrix_finds_the_shape_that_works(probe_mod):
+    mws = _MatrixMWS(accept={"probe-swap"})
+    good = probe_mod.run_matrix(mws, "假工程")
+    assert good == ["G 参数换序（命令在前）"]
+    # 矩阵要试满所有形状，不能在第一个 True 处停下
+    assert len(mws.seen) == len(probe_mod.CASES)
+
+
+def test_probe_matrix_keeps_going_after_an_exception(probe_mod):
+    mws = _MatrixMWS(accept={"probe-crlf"}, raise_on={"probe-empty"})
+    good = probe_mod.run_matrix(mws, "假工程")
+    assert good == ["E 多行 CRLF"]
+    assert len(mws.seen) == len(probe_mod.CASES)
+
+
+def test_probe_matrix_reports_all_false(probe_mod, capsys):
+    good = probe_mod.run_matrix(_MatrixMWS(), "假工程")
+    assert good == []
+    assert "全部返回 False" in capsys.readouterr().out
+
+
+def test_probe_read_back_does_not_crash_without_com(probe_mod, capsys):
+    """读不回历史表只能算"这条诊断没结果"，不能把整个脚本带崩。"""
+    probe_mod.read_back(object())
+    assert "拿不到类型信息" in capsys.readouterr().out

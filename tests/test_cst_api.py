@@ -231,3 +231,95 @@ def test_member_names_raises_when_type_info_unavailable():
 
     with pytest.raises(RuntimeError, match="GetTypeInfo"):
         cst_api.member_names(NoTypeInfo())
+
+
+class _FakeFuncDesc:
+    def __init__(self, memid, cparams):
+        self.memid = memid
+        self.cParams = cparams
+
+
+class _SigTypeInfo:
+    """带形参名与帮助串的假类型库：AddToHistory(header, contents)。"""
+
+    def GetTypeAttr(self):
+        return type("TA", (), {"cFuncs": 1})()
+
+    def GetFuncDesc(self, i):
+        return _FakeFuncDesc(7, 2)
+
+    def GetNames(self, memid):
+        return ("AddToHistory", "header", "contents")
+
+    def GetDocumentation(self, memid):
+        return ("AddToHistory", " Adds an entry to the history list. ", "", 0)
+
+
+class _SigCom:
+    _oleobj_ = type("Ole", (), {
+        "GetTypeInfo": lambda self: _SigTypeInfo()})()
+
+
+def test_member_signatures_reports_param_names_and_help():
+    sigs = cst_api.member_signatures(_SigCom())
+    assert len(sigs) == 1
+    s = sigs[0]
+    assert s["name"] == "AddToHistory"
+    assert s["params"] == ["header", "contents"]   # 形参名 = 参数顺序的权威答案
+    assert s["n_params"] == 2
+    assert "history list" in s["help"]
+
+
+def test_member_names_is_the_name_column_of_signatures():
+    assert cst_api.member_names(_SigCom()) == ["AddToHistory"]
+    assert cst_api.member_names(_SigCom(), "HISTORY") == ["AddToHistory"]
+
+
+def _fake_win32com(monkeypatch, dispatch, get_active):
+    """装上假的 win32com.client（不装真 pywin32 也能测连接逻辑）。"""
+    import sys
+    import types
+
+    pkg = types.ModuleType("win32com")
+    pkg.__path__ = []
+    client = types.ModuleType("win32com.client")
+    client.Dispatch = dispatch
+    client.GetActiveObject = get_active
+    pkg.client = client
+    monkeypatch.setitem(sys.modules, "win32com", pkg)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+
+def test_connect_app_falls_back_to_get_active_object(monkeypatch):
+    """Dispatch 失败要退回 GetActiveObject；两个都必须带上 PROGID。"""
+    calls = []
+
+    def dispatch(progid):
+        calls.append(("Dispatch", progid))
+        raise RuntimeError("no running instance")
+
+    def get_active(progid):
+        calls.append(("GetActiveObject", progid))
+        return "APP"
+
+    _fake_win32com(monkeypatch, dispatch, get_active)
+    assert cst_api.connect_app() == "APP"
+    assert [c[0] for c in calls] == ["Dispatch", "GetActiveObject"]
+    assert all(c[1] == cst_api.PROGID for c in calls)
+
+
+def test_connect_app_uses_dispatch_when_it_works(monkeypatch):
+    def get_active(progid):
+        raise AssertionError("Dispatch 成功就不该再试 GetActiveObject")
+
+    _fake_win32com(monkeypatch, lambda progid: "APP", get_active)
+    assert cst_api.connect_app() == "APP"
+
+
+def test_connect_app_raises_with_both_errors(monkeypatch):
+    def boom(progid):
+        raise RuntimeError("nope")
+
+    _fake_win32com(monkeypatch, boom, boom)
+    with pytest.raises(RuntimeError, match="无法连接 CST"):
+        cst_api.connect_app()

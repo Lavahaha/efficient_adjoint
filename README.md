@@ -55,11 +55,12 @@ configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺�
 scripts/run_coupler.py   # 运行入口
 scripts/fd_check.py      # FD 验证命令行工具
 scripts/cst_build_template.py  # 建模板工程（COM + AddToHistory，推荐路径）
+scripts/cst_probe_history.py   # 诊断 AddToHistory 返回 False（签名 + 调用形状矩阵）
 scripts/build_cst_template.py  # 生成模板宏 .mcs/.mcr（备用路径）
 scripts/cst_inspect_template.py # 模板文件检查（空工程判定；不用 CST）
 scripts/cst_smoke.py     # CST 端 smoke（候选 API 收敛）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
-tests/                   # 113 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
+tests/                   # 122 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
 ```
 
 ## 安装与使用
@@ -103,7 +104,7 @@ python -m pytest tests/ -v             # 测试
 
 代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/cst_api.py` +
 `eaopt/solver/vba.py` + `eaopt/solver/ascii_fields.py` +
-`eaopt/solver/template_builder.py`，113 项本地测试全过）；服务器实测步骤：
+`eaopt/solver/template_builder.py`，122 项本地测试全过）；服务器实测步骤：
 
 1. 生成模板工程（**推荐方式 A**）：CST GUI 启动着，直接跑
    `python scripts/cst_build_template.py configs/coupler.yaml` —— 它逐块
@@ -162,5 +163,5 @@ python -m pytest tests/ -v             # 测试
 - [x] 第 4 步：求解器抽象 + MockSolver + 优化闭环
 - [x] 第 5 步：本地端到端验证 + FD 检查工具
 - [x] 第 6 步：CST 接口代码（双模板设计 + VBA 生成 + ASCII 场解析，
-      113 测试全过；服务器实测进行中：模板改走 COM + AddToHistory 建）
+      122 测试全过；服务器实测进行中：模板改走 COM + AddToHistory 建）
 - [ ] 第 7 步：服务器 smoke → FD 验证 → 耦合器正式复现（对齐论文 Fig. 6–8）
