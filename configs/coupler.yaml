@@ -19,7 +19,7 @@ name: coupler
 description: 高定向性定向耦合器（论文 III-A）
 
 solver:
-  type: mock            # 本地开发用 mock；服务器上改为 cst
+  type: cst            # 本地开发用 mock；服务器上改为 cst
   port_power_w: 0.5
   # ---- cst（服务器端，本地 mock 忽略）----
   # 由 scripts/build_cst_template.py 生成的宏在 CST GUI 中执行一次创建；
