@@ -35,7 +35,32 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["tree_children", "s_param_ids", "find_item", "s_param_at",
-           "s_param_via_result1d"]
+           "s_param_via_result1d", "member_names"]
+
+
+def member_names(obj, keyword: str | None = None) -> list[str]:
+    """COM 对象真实成员名（读 IDispatch 类型库），按名字排序去重。
+
+    **不要靠猜 CST 的 API 名字**：各版本方法名有出入，而 pywin32 的
+    "dynamic dispatch" 让 `hasattr` 对不存在的成员也返回 True。
+    直接问类型库要成员表是最可靠的（cst_smoke 与建模板脚本共用）。
+    keyword 非空时只返回名字含该串的成员（工程对象有几百个成员，
+    全打印会淹掉输出）。取不到类型信息时抛原始异常——调用方决定怎么报。
+    """
+    ole = getattr(obj, "_oleobj_", obj)      # 已包成 PyIDispatch 的也能用
+    ti = ole.GetTypeInfo()
+    ta = ti.GetTypeAttr()
+    names: list[str] = []
+    for i in range(ta.cFuncs):
+        try:
+            fd = ti.GetFuncDesc(i)
+            nm = ti.GetNames(fd.memid)[0]
+        except Exception:
+            continue
+        if keyword and keyword.lower() not in nm.lower():
+            continue
+        names.append(nm)
+    return sorted(set(names))
 
 
 def _note(notes: list[str] | None, msg: str) -> None:

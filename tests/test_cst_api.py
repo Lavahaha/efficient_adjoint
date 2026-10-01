@@ -180,3 +180,54 @@ def test_tree_children_breaks_on_self_referencing_next():
             return item
 
     assert cst_api.tree_children(Stuck(children=["a"]), "f") == ["a"]
+
+
+class _FakeTypeAttr:
+    cFuncs = 3
+
+
+class _FakeTypeInfo:
+    """假 IDispatch 类型库：三个成员，其中一个 memid 重复（去重）、
+    一个 GetFuncDesc 抛错（要跳过、不能整体失败）。"""
+
+    _names = {1: ("AddToHistory",), 2: ("GetActiveProject",),
+              3: ("AddToHistory",)}
+
+    def GetTypeAttr(self):
+        return _FakeTypeAttr()
+
+    def GetFuncDesc(self, i):
+        if i == 3:
+            raise RuntimeError("bad index")
+        return type("FD", (), {"memid": i + 1})()
+
+    def GetNames(self, memid):
+        return self._names[memid]
+
+
+class _FakeOle:
+    def GetTypeInfo(self):
+        return _FakeTypeInfo()
+
+
+class _FakeCom:
+    _oleobj_ = _FakeOle()
+
+
+def test_member_names_reads_type_library_and_dedupes():
+    assert cst_api.member_names(_FakeCom()) == ["AddToHistory", "GetActiveProject"]
+
+
+def test_member_names_filters_by_keyword_case_insensitively():
+    assert cst_api.member_names(_FakeCom(), "history") == ["AddToHistory"]
+    assert cst_api.member_names(_FakeCom(), "save") == []
+
+
+def test_member_names_raises_when_type_info_unavailable():
+    """拿不到类型信息要抛原始异常（调用方决定怎么报），不静默返回空表。"""
+    class NoTypeInfo:
+        def GetTypeInfo(self):
+            raise RuntimeError("<unknown>.GetTypeInfo")
+
+    with pytest.raises(RuntimeError, match="GetTypeInfo"):
+        cst_api.member_names(NoTypeInfo())

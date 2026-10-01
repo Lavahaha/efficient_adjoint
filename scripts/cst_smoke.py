@@ -45,31 +45,17 @@ def enum_com_methods(obj, label: str, keyword: str | None = None) -> None:
     """打印 COM 对象的真实成员名（读 IDispatch 类型库）。
 
     比逐个猜名字可靠得多：CST 各版本方法名有出入，这里直接问 COM 要
-    成员表。keyword 非空时只打印名字含该串的成员（工程对象有几百个方法，
-    全打印会淹掉输出）。
+    成员表。实现收敛在 cst_api.member_names（建模板脚本也用同一个）。
     """
-    ole = getattr(obj, "_oleobj_", obj)     # 已包成 PyIDispatch 的也能用
+    from eaopt.solver import cst_api
+
     try:
-        ti = ole.GetTypeInfo()
-        ta = ti.GetTypeAttr()
-        n = ta.cFuncs
+        names = cst_api.member_names(obj, keyword)
     except Exception as e:
         print(f"    {label}: 拿不到类型信息（{_short(e)}）")
         return
-    names: list[str] = []
-    for i in range(n):
-        try:
-            fd = ti.GetFuncDesc(i)
-            nm = ti.GetNames(fd.memid)[0]
-        except Exception:
-            continue
-        if keyword and keyword.lower() not in nm.lower():
-            continue
-        names.append(nm)
-    names = sorted(set(names))
-    head = f"    {label}: {n} 个成员"
-    if keyword:
-        head += f"，名字含 {keyword!r} 的 {len(names)} 个"
+    head = f"    {label}: 名字含 {keyword!r} 的成员 {len(names)} 个" \
+        if keyword else f"    {label}: {len(names)} 个成员"
     print(head)
     for nm in names:
         print("      " + nm)

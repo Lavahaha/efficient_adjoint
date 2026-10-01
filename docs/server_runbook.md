@@ -10,29 +10,72 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 102 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 113 passed（本机可先确认代码完整）
 ```
 
-## 1. 在服务器上生成模板宏（重要：宏里包含绝对路径，必须在服务器上重新生成）
+## 1. 生成模板工程（**方式 A 优先**：Python + COM）
+
+> **为什么模型必须落到 History List 里**：CST 的模型是"历史表重放"出来
+> 的。历史表为空 ⇒ 存盘写出的工程重开就是**空的**（"打开一片空白"的
+> 根因）。所以判成功的唯一标准是第 2 节那两条。
+
+### 方式 A（推荐）：`scripts/cst_build_template.py`
 
 ```bash
-python scripts/build_cst_template.py cst/
+# 先决：CST Studio 2024 GUI 已启动并保持打开（脚本附接运行实例）
+python scripts/cst_build_template.py configs/coupler.yaml
+# 只建一个（调试用）：  ... --which fwd
+# 只查 API 不建东西：  ... --probe
+```
+
+它逐块调用 CST 文档里的 `AddToHistory(标题, 命令文本)`——**既执行命令、
+又写进 History List**，而且**每一块都有返回值**：失败会打印
+`[FAIL] 序号 标题` + 原始错误（哪一块、错误号是什么），不会再像宏那样
+只弹一个"遇到不适当的参数"对话框。命令文本与宏路径共用
+`eaopt/solver/template_builder.py::template_blocks`（单一事实来源），
+两条路建出来的模型一模一样。
+
+跑完先看它最后打印的 4 步验证清单（= 下面第 2 节）。
+
+万一 `AddToHistory` 这个成员名在这台机器上不存在（报
+`<unknown>.AddToHistory`），先跑一次 `--probe`：它会把 app / 工程对象上
+名字含 Add/History/Save/Brick/Port 的**真实成员名**全列出来，把那张表
+贴回开发者即可（`cst_api.member_names` 直读 IDispatch 类型库，不靠猜）。
+
+### 方式 B（备用）：GUI 宏
+
+```bash
+python scripts/build_cst_template.py cst/   # 生成宏文件
 # 产物: cst/build_coupler_fwd.mcs（结构宏：端口 1 激励的模型）
 #       cst/save_coupler_fwd.mcr （控制宏：另存为 coupler_fwd.cst）
 #       cst/build_coupler_bwd.mcs / save_coupler_bwd.mcr（端口 3 激励）
 #       cst/polygon_test.mcs（诊断宏，可选，见第 2.5 节）
 ```
 
-## 2. CST GUI 生成双模板工程
+## 2. 验证模板（判定成功的唯一标准）
 
-**两个必须同时满足的条件，缺一个 History List 就是空的**（实测踩过）：
+> 方式 A 的脚本跑完会直接打印这个清单；方式 B（GUI 宏）要从第 3 条开始。
 
-1. **建模必须是结构宏 `.mcs`**（不是控制宏 `.mcr`）。CST 的模型是
-   "历史表重放"出来的：控制宏的动作**不写进 History List**，会话里看着
-   几何/端口/监视器都建好了，但存盘重开就是**空工程**——这就是"打开一片
-   空白"的根因。
-2. **必须从 CST 主界面的 Macros 下拉菜单运行**。在 VBA 编辑器里点运行
-   图标，即使是结构宏也不写 History List。
+1. **History List 必须非空**（Modeling 树 / Home → History List）：应看到
+   Units / Material / Brick / Extrude / Port / Monitor / Boundary 一条条
+   记录。**空的就停下来**，把完整输出贴回开发者。
+2. **关掉工程再重新打开那个 `.cst`**，确认几何与 4 个端口还在。
+   历史表为空的话这一步就会变空——那才是问题所在。
+3. `python scripts/cst_inspect_template.py`（不用 CST，文件层再确认）
+4. `python scripts/cst_smoke.py configs/coupler.yaml`
+
+以下细节供第 3、4 步对照检查：
+
+### 方式 B（GUI 宏）逐步操作
+
+走宏这条路，**两个条件必须同时满足，缺一个 History List 就是空的**
+（实测踩过）：
+
+- **建模必须是结构宏 `.mcs`**（不是控制宏 `.mcr`）：控制宏的动作**不写进
+  History List**，会话里看着几何/端口/监视器都建好了，但存盘重开就是
+  **空工程**。
+- **必须从 CST 主界面的 Macros 下拉菜单运行**。在 VBA 编辑器里点运行
+  图标，即使是结构宏也不写 History List。
 
 **宏里不含 NewProject/SaveAs**——工程级指令只在控制宏（.mcr）上下文合法，
 实测在结构宏里报 "Invalid instruction"。所以新建工程由你在 GUI 里做，
@@ -52,8 +95,9 @@ python scripts/build_cst_template.py cst/
      开发者**（用于按版本修正宏）。
 5. **立刻检查 History List 不为空**（Modeling 树 / Home → History List）：
    应能看到 Units/Brick/Extrude/Port/Monitor/Boundary 一条条记录。
-   **空的就停下来**，把"你是从哪个菜单运行宏的"告诉我——这是第 1 条条件
-   没满足。
+   **空的就停下来**——上面两个条件有一条没满足（多半是运行方式）。
+   若还弹过别的对话框（如"遇到不适当的参数"），**换成第 1 节的方式 A
+   （COM）**：那条路会把失败块和原始错误逐条打印出来。
 6. **另存**：运行 `cst/save_coupler_fwd.mcr`（同样从 Macros 菜单），
    或直接在 GUI 里 File → Save As → `cst/coupler_fwd.cst`
 7. **再 File → New**，重复 3–6，用 bwd 那两个宏 → `cst/coupler_bwd.cst`
@@ -201,8 +245,10 @@ python scripts/run_coupler.py configs/coupler.yaml
 - **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
   或确认许可证正常、CST 可以独立打开。
 - **"宏跑完工程里几何/端口/监视器都好好的，但 History List 是空的"**
-  （→ 存盘重开就是空工程，**这是"打开一片空白"最常见的根因**）：两个
-  条件必须同时满足——
+  （→ 存盘重开就是空工程，**这是"打开一片空白"最常见的根因**）：
+  **最快的出路是改用第 1 节的方式 A（COM + `AddToHistory`）**——它不走
+  宏菜单，每块都返回成功/失败与原始错误。如果坚持用宏，两个条件必须
+  同时满足——
   1. **建模宏必须是结构宏 `.mcs`**。CST 的模型是"历史表重放"出来的：
      控制宏（`.mcr`）的动作**不写 History List**，会话里看着都建好了，
      存盘却没有模型。我们早期生成的正是 `.mcr`，实测踩了这个坑；现在

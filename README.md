@@ -54,8 +54,12 @@ eaopt/
 configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺寸按 Fig.5 定稿）
 scripts/run_coupler.py   # 运行入口
 scripts/fd_check.py      # FD 验证命令行工具
+scripts/cst_build_template.py  # 建模板工程（COM + AddToHistory，推荐路径）
+scripts/build_cst_template.py  # 生成模板宏 .mcs/.mcr（备用路径）
+scripts/cst_inspect_template.py # 模板文件检查（空工程判定；不用 CST）
+scripts/cst_smoke.py     # CST 端 smoke（候选 API 收敛）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
-tests/                   # 93 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
+tests/                   # 113 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
 ```
 
 ## 安装与使用
@@ -99,16 +103,27 @@ python -m pytest tests/ -v             # 测试
 
 代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/cst_api.py` +
 `eaopt/solver/vba.py` + `eaopt/solver/ascii_fields.py` +
-`eaopt/solver/template_builder.py`，102 项本地测试全过）；服务器实测步骤：
+`eaopt/solver/template_builder.py`，113 项本地测试全过）；服务器实测步骤：
 
-1. 生成模板宏：`python scripts/build_cst_template.py cst/`（产物
-   `cst/build_coupler_{fwd,bwd}.mcs` = 建模**结构宏**、
-   `cst/save_coupler_{fwd,bwd}.mcr` = 另存**控制宏**，以及诊断宏
-   `polygon_test.mcs`。**建模必须用结构宏**：CST 的模型是"历史表重放"
-   出来的，控制宏的动作不进 History List —— 会话里几何/端口都正常，
-   存盘重开却是空工程（实测踩过，"打开一片空白"的根因）。另存是工程级
-   指令、只在控制宏里合法，故拆成两个文件）；
-2. CST GUI：**File → New**（模板 `<None>`）→ **从主界面 Macros 下拉菜单**
+1. 生成模板工程（**推荐方式 A**）：CST GUI 启动着，直接跑
+   `python scripts/cst_build_template.py configs/coupler.yaml` —— 它逐块
+   调用 CST 的 `AddToHistory(标题, 命令文本)`，**既执行命令又写进
+   History List**，每块打印成功/失败与原始错误（不再像宏那样只弹一个
+   "遇到不适当的参数"对话框）。命令文本与宏路径共用
+   `template_builder.template_blocks`（单一事实来源）。
+   备用方式 B：`python scripts/build_cst_template.py cst/` 生成宏
+   （`build_coupler_{fwd,bwd}.mcs` = 建模**结构宏**、
+   `save_coupler_{fwd,bwd}.mcr` = 另存**控制宏**、诊断宏
+   `polygon_test.mcs`），在 GUI 里从 **Macros 下拉菜单**运行——**建模
+   必须是结构宏**：CST 的模型是"历史表重放"出来的，控制宏的动作不进
+   History List，会话里几何/端口都正常、存盘重开却是空工程（实测踩过，
+   "打开一片空白"的根因）。另存是工程级指令、只在控制宏里合法，故拆成
+   两个文件；
+2. 验证模板（**判定成功的唯一标准**）：**History List 非空** → 关掉工程
+   再重新打开那个 `.cst`，几何与 4 个端口还在 → `cst_inspect_template.py`
+   → `cst_smoke.py`。
+   （方式 B 的 GUI 操作：**File → New**（模板 `<None>`）→
+   **从主界面 Macros 下拉菜单**
    运行 `build_coupler_fwd.mcs`（**不要**在 VBA 编辑器里点运行图标——
    那样即使是结构宏也不写历史表）→ 结尾弹报告框 →
    **先确认 History List 非空** → 运行 `save_coupler_fwd.mcr`（或手工
@@ -128,7 +143,7 @@ python -m pytest tests/ -v             # 测试
    **设置类块（激励/频段/监视器/边界/求解器/另存）逐块容错**：CST 2024
    实测设置类命令报过 "(10090) ActiveX Automation error" 与
    "(10097) wrong number of parameters"，未加保护会中止整个宏；现由宏
-   结尾的报告框列出失败块，照提示在 GUI 手工设置即可；
+   结尾的报告框列出失败块，照提示在 GUI 手工设置即可）；
 3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
    `solver.type: cst`；
 4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、
@@ -147,5 +162,5 @@ python -m pytest tests/ -v             # 测试
 - [x] 第 4 步：求解器抽象 + MockSolver + 优化闭环
 - [x] 第 5 步：本地端到端验证 + FD 检查工具
 - [x] 第 6 步：CST 接口代码（双模板设计 + VBA 生成 + ASCII 场解析，
-      59 测试全过；服务器实测待 smoke）
+      113 测试全过；服务器实测进行中：模板改走 COM + AddToHistory 建）
 - [ ] 第 7 步：服务器 smoke → FD 验证 → 耦合器正式复现（对齐论文 Fig. 6–8）

@@ -1,4 +1,10 @@
-"""生成 CST 模板宏——每个模板在 CST GUI 中执行一次。
+"""生成 CST 模板宏——每个模板在 CST GUI 中执行一次（**备用路径**）。
+
+**首选不是本脚本，而是 scripts/cst_build_template.py**（Python + COM +
+`AddToHistory`）：那条路每块命令都有返回值与原始错误，不依赖"必须从
+Macros 菜单运行"这类 GUI 约定，出问题能直接看到是哪一块、错误号多少。
+两条路共用 template_builder.template_blocks()，建出来的模型一模一样。
+当 COM 路径拿不到 `AddToHistory` 时才走这里的宏。
 
 **建模用结构宏 `.mcs`（动作进 History List），另存用控制宏 `.mcr`。**
 服务器实测：拿 `.mcr` 建模，几何/端口/监视器在会话里都正常，但

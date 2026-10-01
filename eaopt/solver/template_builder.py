@@ -28,7 +28,13 @@
      框——CST 2024 实测 `Excitation.Reset` 报 "(10090)"，未加保护会让整个
      宏中止。
 
-用法（每个模板一次，共两次）：
+用法（**首选**）：不经过宏菜单，直接跑
+  ``python scripts/cst_build_template.py configs/coupler.yaml``
+（Python + COM，逐块 ``mws.AddToHistory(标题, 命令文本)``：既执行又写历史
+表，且每块能拿到返回值与原始异常）。本模块的 template_blocks() 是那条路
+与下面宏路共用的**单一事实来源**。
+
+备用用法（每个模板一次，共两次）：
   CST → File → New（模板 <None>）→ Macros 菜单运行 build_coupler_fwd.mcs
   → 确认 History List 非空、几何与 4 个端口都在 → 运行 save_coupler_fwd.mcr
   （或 File → Save As）→ 得到 <输出目录>/coupler_fwd.cst；
@@ -188,6 +194,72 @@ def _arm_design_part() -> str:
                              _arm_design_polygon(), METAL_T)
 
 
+def model_blocks() -> list[str]:
+    """全部**建模**命令块（顺序即执行顺序）：基板/接地/空气盒 → 固定金属
+    → 设计区初始金属 → 4 个端口。"""
+    return (_substrate_parts() + _fixed_metal_parts()
+            + [_arm_design_part()] + _ports())
+
+
+def setting_blocks(portnum: int) -> list[tuple[str, str]]:
+    """全部**设置**类块 ``[(标签, 命令文本)]``：求解器/频段/监视器/边界。
+
+    顺序与 template_blocks 一致（标签在前）——两条建模板路径共用同一份
+    列表，元组顺序写反会让 COM 路径把命令文本当标题传给 AddToHistory。
+    标签是 ASCII（宏里要写进 errLog，见 vba.guarded 的编码说明）。
+    """
+    return [
+        # 只激励本模板指定的端口（fwd→1 / bwd→3）。用 Solver 的
+        # StimulationPort，不用 Excitation 对象（后者在 CST 2024 里
+        # 报 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
+        # 端口与模式成对给出（"1"/"1"）：实测 "1" + "All" 会让
+        # Solver.Start 报 "Invalid stimulation port, please specify."。
+        ("Solver", V.time_domain_solver_setup(str(portnum))),
+        ("FrequencyRange", V.frequency_range(FMIN, FMAX)),
+        ("Monitor Efield", V.field_monitor("Efield", FREQ)),
+        ("Monitor Hfield", V.field_monitor("Hfield", FREQ)),
+        ("Boundary", V.set_boundaries("magnetic", "magnetic", "magnetic",
+                                      "magnetic", "magnetic", "electric")),
+    ]
+
+
+UNITS_BLOCK = ('With Units\n'
+               '    .Geometry "mm"\n'
+               '    .Frequency "GHz"\n'
+               '    .Time "ns"\n'
+               'End With')
+
+
+def block_header(cmd: str) -> str:
+    """从命令文本推一个可读的标题（进 History List 时显示这一列）。
+
+    形如 ``With Brick`` + ``.Name "substrate"`` → ``"Brick substrate"``。
+    """
+    text = cmd.strip()
+    kind = text.split("\n", 1)[0].replace("With ", "").strip() or "Block"
+    for line in text.splitlines():
+        s = line.strip()
+        for key in (".Name ", ".Label "):
+            if s.startswith(key):
+                return f'{kind} {s[len(key):].strip().strip(chr(34))}'
+    return kind
+
+
+def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
+    """模板的全部命令块 ``[(标题, VBA 命令文本)]`` —— **单一事实来源**。
+
+    两条建模板的路径共用本函数，保证建出来的模型一模一样：
+      - GUI 宏路径：build_macro() 拿它拼 .mcs（结构宏）；
+      - COM 路径：scripts/cst_build_template.py 把每个块交给
+        ``mws.AddToHistory(标题, 命令文本)``（既执行、又写进历史表）。
+    改几何只改这里（以及它调用的 vba 生成器），两条路径不会漂移。
+    """
+    blocks = [("Units", UNITS_BLOCK)]
+    blocks += [(block_header(c), c) for c in model_blocks()]
+    blocks += setting_blocks(portnum)
+    return blocks
+
+
 def _ports() -> list[str]:
     """4 个波导端口：1/2 在直通线两端（xmin/xmax 面），3/4 在两腿底（ymin 面）。
 
@@ -246,16 +318,9 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
         "    Dim errLog As String",
         '    errLog = ""',
         "",
-        "    With Units",
-        '        .Geometry "mm"',
-        '        .Frequency "GHz"',
-        '        .Time "ns"',
-        "    End With",
     ]
-    body += _substrate_parts()
-    body += _fixed_metal_parts()
-    body.append(_arm_design_part())
-    body += _ports()
+    body += ["    " + ln for ln in UNITS_BLOCK.splitlines()]  # 见 template_blocks
+    body += model_blocks()
     body += [
         "",
         "    ' ---- 设置类块：逐块容错。CST 2024 宏里设置类命令实测报过",
@@ -265,19 +330,7 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
         "    ' 出来就没有意义）。",
         "    On Error Resume Next",
     ]
-    for block, label in (
-        # 只激励本模板指定的端口（fwd→1 / bwd→3）。用 Solver 的
-        # StimulationPort，不用 Excitation 对象（后者在 CST 2024 里
-        # 报 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
-        # 端口与模式成对给出（"1"/"1"）：实测 "1" + "All" 会让
-        # Solver.Start 报 "Invalid stimulation port, please specify."。
-        (V.time_domain_solver_setup(str(portnum)), "Solver"),
-        (V.frequency_range(FMIN, FMAX), "FrequencyRange"),
-        (V.field_monitor("Efield", FREQ), "Monitor Efield"),
-        (V.field_monitor("Hfield", FREQ), "Monitor Hfield"),
-        (V.set_boundaries("magnetic", "magnetic", "magnetic", "magnetic",
-                          "magnetic", "electric"), "Boundary"),
-    ):
+    for label, block in setting_blocks(portnum):
         body.append(V.guarded(block, label))
     body += [
         "    On Error GoTo 0",
