@@ -87,4 +87,38 @@ def test_describe_missing_file(tmp_path):
 def test_describe_handles_non_zip(tmp_path):
     p = tmp_path / "old.cst"
     p.write_bytes(b"\x00\x01 not a zip")
-    assert "不是 zip 容器" in "\n".join(cst_project.describe(p))
+    lines = "\n".join(cst_project.describe(p))
+    assert "读不出任何成员" in lines and "空的/损坏的" in lines
+
+
+def test_describe_recovers_members_from_broken_zip(tmp_path):
+    """服务器实测：模板 .cst 报 BadZipFile（中央目录坏）——必须能容错。"""
+    import io
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("model.xml", "<brick name='substrate'/>")
+        z.writestr("history.xml", "<history/>")
+    data = buf.getvalue()
+    p = tmp_path / "broken.cst"
+    p.write_bytes(data[:data.rfind(b"PK\x01\x02")])      # 砍掉中央目录
+    lines = "\n".join(cst_project.describe(p))
+    assert "中央目录" in lines
+    assert "恢复出" in lines
+    assert "substrate" in lines
+    assert "容器已损坏" in lines
+
+
+def test_safe_console_tolerates_gbk_stream(monkeypatch):
+    """GBK 控制台上打印非常用字符不能把脚本弄崩（实测踩过）。"""
+    import io
+    import sys
+
+    from eaopt.cli import safe_console
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="gbk", newline="")
+    monkeypatch.setattr(sys, "stdout", stream)
+    safe_console()
+    print("中文没问题，箭头 ⇒ 换成 => 了")      # 不设 replace 会抛
+    stream.flush()
+    assert stream.buffer.getvalue()

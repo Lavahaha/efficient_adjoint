@@ -109,6 +109,9 @@ def probe_project_bytes(path: Path) -> None:
 
 
 def main() -> None:
+    from eaopt.cli import safe_console
+
+    safe_console()
     ap = argparse.ArgumentParser(description="CST smoke 测试")
     ap.add_argument("config", nargs="?", default="configs/coupler.yaml")
     ap.add_argument("--template", default=None,
@@ -150,14 +153,21 @@ def main() -> None:
     print("2) 打开模板副本")
     print("=" * 60)
     from eaopt.solver import cst_project
-    for line in cst_project.describe(tpl):
-        print("    " + line)
+    try:                       # 检查只是诊断，失败也要继续往下走
+        for line in cst_project.describe(tpl):
+            print("    " + line)
+    except Exception as e:
+        print(f"    模板内容检查失败（继续跑其它步骤）: {_short(e)}")
     print("    （模型数据应在 .cst 里；同名文件夹是求解结果。若上面报告"
-          "找不到任何模型对象名 ⇒ 模板本身是空工程，先重建模板）")
+          "找不到任何模型对象名 => 模板本身是空工程，先重建模板）")
     workdir = Path(cfg.output.dir) / "cst_work"
     workdir.mkdir(parents=True, exist_ok=True)
     # **整份**复制（.cst + 同名文件夹）——只复制 .cst 会打开成空工程
-    dst = cst_project.copy_project(tpl, workdir, dst_name=f"smoke_{tpl.name}")
+    try:
+        dst = cst_project.copy_project(tpl, workdir, dst_name=f"smoke_{tpl.name}")
+    except Exception as e:
+        print(f"[FAIL] 复制模板失败: {_short(e)}")
+        return
     mws = app.OpenFile(str(dst.resolve()))
     print(f"[OK] 已打开 {dst}")
 
@@ -193,7 +203,7 @@ def main() -> None:
     empty = n_ports == 0 or (n_ports < 0 and not _safe_object_exists(mws, "substrate"))
     if empty:
         print("    " + "!" * 56)
-        print("    !! 这个工程里没有几何也没有端口 ⇒ 模板本身是空的：")
+        print("    !! 这个工程里没有几何也没有端口 => 模板本身是空的：")
         print("       先查 `python scripts/cst_inspect_template.py`（不用 CST）"
               "看模板文件里有没有模型；")
         print("       空的话重建模板（GUI 里 File → New → 跑宏），重建后"
@@ -210,7 +220,7 @@ def main() -> None:
         ("Solver.Method", lambda: mws.Solver.Method),
     ):
         try:
-            print(f"    {label} = {getter()!r}（bound method ⇒ 只写读不出）")
+            print(f"    {label} = {getter()!r}（bound method => 只写读不出）")
         except Exception as e:
             print(f"    {label}: 读不到 ({e})")
 

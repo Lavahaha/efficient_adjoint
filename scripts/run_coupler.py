@@ -14,6 +14,9 @@ from eaopt.solver.base import make_solver
 
 
 def main() -> None:
+    from eaopt.cli import safe_console
+
+    safe_console()
     ap = argparse.ArgumentParser(description="运行伴随法形状优化")
     ap.add_argument("config", nargs="?", default="configs/coupler.yaml",
                     help="配置文件路径（默认 configs/coupler.yaml）")

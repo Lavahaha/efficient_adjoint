@@ -36,6 +36,9 @@ def inspect(path: Path) -> None:
 
 
 def main() -> None:
+    from eaopt.cli import safe_console
+
+    safe_console()
     ap = argparse.ArgumentParser(description="检查 CST 模板文件内容")
     ap.add_argument("paths", nargs="*", help="模板 .cst 路径（默认取配置里的两个）")
     ap.add_argument("--config", default="configs/coupler.yaml")

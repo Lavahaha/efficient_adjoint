@@ -346,7 +346,7 @@ def ascii_export_params(step_mm: float,
 
     CST 2024 可用的属性集：Reset / FileName / Mode / StepX / StepY /
     StepZ / Execute。**没有区域范围属性**——导出范围就是当前选中结果的
-    整个包围盒（Volume 监视器 ⇒ 整个计算域），要限制范围只能在解析端
+    整个包围盒（Volume 监视器 => 整个计算域），要限制范围只能在解析端
     裁剪（或改用 SetPoints 给显式点列，待服务器实测）。
 
     StepX/Y/Z 的确切含义（步长 mm 还是采样点数）以 smoke 导出文件头为准。

@@ -18,6 +18,7 @@ from __future__ import annotations
 import shutil
 import time
 import zipfile
+import zlib
 from pathlib import Path
 
 __all__ = ["LOCK_SUFFIX", "companion_dir", "copy_project", "describe"]
@@ -59,13 +60,90 @@ def _dir_size(path: Path) -> tuple[int, int]:
     return len(files), sum(f.stat().st_size for f in files)
 
 
+# zip 本地文件头（中央目录损坏时靠它逐个恢复成员）
+_PK_LOCAL = b"PK\x03\x04"
+
+
+def _read_members(path: Path, limit: int = 60) -> tuple[list[tuple[str, bytes]], list[str]]:
+    """尽量读出 `.cst`（zip 容器）里的成员 → ([(名字, 内容)], 诊断行)。
+
+    三种情况都容忍（诊断脚本不能自己崩掉）：
+      1. 标准 zip（有中央目录）→ zipfile 直接读；
+      2. 中央目录损坏/缺失（截断、边写边复制…）→ 扫本地文件头逐个恢复，
+         能解压的解压，解不了的只报名字；
+      3. 根本不是 zip → 空列表 + 说明。
+    """
+    data = path.read_bytes()
+    notes: list[str] = []
+    members: list[tuple[str, bytes]] = []
+    try:
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist()[:limit]:
+                if info.file_size > 40e6:
+                    continue
+                try:
+                    members.append((info.filename, z.read(info)))
+                except Exception as e:
+                    notes.append(f"    成员 {info.filename} 读失败：{e}")
+        notes.insert(0, f"  .cst 是标准 zip 容器，{len(members)} 个成员")
+        return members, notes
+    except Exception as e:
+        notes.append(f"  zipfile 读不了（{type(e).__name__}: {e}）")
+
+    # 中央目录坏了：扫本地文件头做恢复
+    i, recovered = 0, 0
+    while True:
+        i = data.find(_PK_LOCAL, i)
+        if i < 0:
+            break
+        try:
+            method = int.from_bytes(data[i + 8:i + 10], "little")
+            csize = int.from_bytes(data[i + 18:i + 22], "little")
+            nlen = int.from_bytes(data[i + 26:i + 28], "little")
+            elen = int.from_bytes(data[i + 28:i + 30], "little")
+            name = data[i + 30:i + 30 + nlen].decode("utf-8", "replace")
+            start = i + 30 + nlen + elen
+            raw = data[start:start + csize] if csize else b""
+            if method == 0:                     # 未压缩
+                members.append((name, raw))
+                recovered += 1
+            elif method == 8 and raw:           # deflate
+                try:
+                    members.append((name, zlib.decompress(raw, -15)))
+                    recovered += 1
+                except Exception:
+                    members.append((name, b""))
+                    notes.append(f"    成员 {name} 解压失败（文件可能被截断）")
+            else:
+                members.append((name, b""))
+            i = start + csize if csize else start + 1
+        except Exception:
+            i += 4
+    if members:
+        notes.append(f"  按本地文件头恢复出 {len(members)} 个成员"
+                     f"（其中 {recovered} 个内容完整）")
+        notes.append("  !! 这个 .cst 的 zip 中央目录是坏的——**文件本身已损坏/"
+                     "写得不完整**，CST 打开它就会是空工程")
+    return members, notes
+
+
+def _count_needles(blob: bytes, needles) -> dict[str, int]:
+    hits: dict[str, int] = {}
+    for nd in needles:
+        b = nd.encode("ascii", "ignore")
+        n = blob.count(b) + blob.count(b.decode("ascii").encode("utf-16-le"))
+        if n:
+            hits[nd] = n
+    return hits
+
+
 def describe(path, needles=("substrate", "design_region", "Port 1",
                             "Rogers4350B")) -> list[str]:
     """人看的工程清单（供 smoke / scripts/cst_inspect_template.py 打印）。
 
     重点回答"模型到底在不在这个文件里"：新版 `.cst` 是 zip 容器，
-    直接列出内部成员，并在成员里搜模型对象名（substrate 等）。找不到
-    任何对象名 ⇒ 这个工程文件就是空的，跟读结果的 API 无关。
+    列出内部成员并在里面搜模型对象名（substrate 等）。搜不到任何对象名
+    => 这个工程文件就是空的/坏的，跟读结果的 API 无关。
     """
     p = Path(path)
     out: list[str] = []
@@ -83,32 +161,30 @@ def describe(path, needles=("substrate", "design_region", "Port 1",
     else:
         out.append(f"  **没有**同名文件夹 {sub.name}/（求解过的工程一般会有）")
 
-    if not zipfile.is_zipfile(p):
-        out.append("  .cst 不是 zip 容器（旧格式或已损坏）——里面有什么"
-                   "只能靠 CST 打开看")
-        return out
-    with zipfile.ZipFile(p) as z:
-        members = [(i.filename, i.file_size) for i in z.infolist()]
-    out.append(f"  .cst 是 zip 容器，含 {len(members)} 个成员")
-    for name, size in sorted(members, key=lambda m: -m[1])[:8]:
-        out.append(f"    {size / 1e3:9.1f} KB  {name}")
+    members, notes = _read_members(p)
+    out.extend(notes)
+    for name, blob in sorted(members, key=lambda m: -len(m[1]))[:8]:
+        out.append(f"    {len(blob) / 1e3:9.1f} KB  {name}")
+
     hits: dict[str, int] = {}
-    for name, size in members:
-        if size > 40e6:                       # 太大就不读了（网格文件之类）
-            continue
-        try:
-            with zipfile.ZipFile(p) as z:
-                blob = z.read(name)
-        except Exception:
-            continue
-        for nd in needles:
-            hits[nd] = hits.get(nd, 0) + blob.count(nd.encode("ascii", "ignore"))
-    found = {k: v for k, v in hits.items() if v}
-    if found:
-        out.append(f"  在 .cst 内部搜到模型对象名：{found}")
-        out.append("  ⇒ 模型数据在文件里，复制 .cst 不会丢模型")
+    for _, blob in members:
+        for k, v in _count_needles(blob, needles).items():
+            hits[k] = hits.get(k, 0) + v
+    raw_hits = _count_needles(p.read_bytes(), needles)
+    broken = any("中央目录" in n for n in notes)
+    if hits:
+        out.append(f"  在 .cst 解压后的内容里搜到模型对象名：{hits}")
+        out.append("  => 模型数据在文件里" + ("（但容器已损坏，需重建/重存）"
+                                             if broken else "，复制 .cst 不会丢模型"))
+    elif raw_hits:
+        out.append(f"  在 .cst 原始字节里搜到模型对象名：{raw_hits}")
+        out.append("  => 模型数据在文件里（容器解析不完整，但内容还在）")
+    elif not members:
+        out.append(f"  .cst 里读不出任何成员，也搜不到模型对象名"
+                   f"（找过 {list(needles)}）")
+        out.append("  => 这个文件基本可以判定是**空的/损坏的**")
     else:
         out.append(f"  在 .cst 内部**找不到**任何模型对象名（找过 {list(needles)}）")
-        out.append("  ⇒ 这个 .cst 是**空工程**：宏保存出来的东西不完整，"
+        out.append("  => 这是个**空工程**：宏保存出来的东西不完整，"
                    "跟读取 API 无关")
     return out

@@ -16,6 +16,9 @@ from eaopt.solver.base import make_solver
 
 
 def main() -> None:
+    from eaopt.cli import safe_console
+
+    safe_console()
     ap = argparse.ArgumentParser(description="形状导数有限差分验证")
     ap.add_argument("config", nargs="?", default="configs/coupler.yaml",
                     help="配置文件路径（默认 configs/coupler.yaml）")
@@ -40,9 +43,9 @@ def main() -> None:
     print(f"偏差                : {r['deviation']*100:.1f}%")
     print("-" * 60)
     if r["sign_ok"]:
-        print("符号裁决: ratio > 0 ⟹ velocity_sign = +1（V>0 金属扩张）正确")
+        print("符号裁决: ratio > 0 => velocity_sign = +1（V>0 金属扩张）正确")
     else:
-        print("符号裁决: ratio < 0 ⟹ velocity_sign = -1（请翻转配置中的符号）")
+        print("符号裁决: ratio < 0 => velocity_sign = -1（请翻转配置中的符号）")
     print("=" * 60)
 
 

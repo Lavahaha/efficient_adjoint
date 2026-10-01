@@ -199,7 +199,7 @@ class CstSolver(SolverInterface):
     def _export_field(self, mws, field_type: str) -> FieldGrid:
         """导出该监视器结果（ASCII 后端）并解析为 FieldGrid。
 
-        导出范围 = 监视器的整个包围盒（Volume 监视器 ⇒ 整个计算域）：
+        导出范围 = 监视器的整个包围盒（Volume 监视器 => 整个计算域）：
         CST 的 ASCIIExport 没有区域范围属性（见 vba.ascii_export_params），
         设计区的裁剪在采样端按世界坐标做（FieldGrid 自带 origin/spacing），
         所以这里不影响正确性，只是文件更大。
