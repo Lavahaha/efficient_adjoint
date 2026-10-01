@@ -112,13 +112,20 @@ python scripts/cst_smoke.py configs/coupler.yaml
 
 它会依次验证并打印：
 
-1. COM 连接 → 打开模板副本；
+1. COM 连接 → 打开模板副本（同时打印模板 .cst 的大小与**最后修改时间**：
+   若是旧时间戳，说明宏的 SaveAs 没覆盖掉旧文件，你打开的是陈旧工程）；
 2. **2b. 模板 .cst 里内嵌的激励字符串**（看宏究竟把什么存了进去）；
-3. **激励候选闭环**：先读回当前值，再依次试
-   `"1"+"1"` / `"Port 1"+"1"` / `"1"+"All"` / `"All"+"All"`，
-   每个候选都真调一次 `Solver.Start()` —— 写法不对会**立刻**报
-   "Invalid stimulation port"（不耗时），试到能跑为止（**能跑的那次会
-   真的算完，几分钟**；期间 CST 界面若弹报错对话框，点掉即可）；
+3. **工程状态探针**：读 `mws.GetSolverType`（**属性**，别加括号——
+   加了报 `'str' object is not callable`）、`Solver.GetNumberOfPorts`、
+   `Solver.GetPortNames`、`ObjectExists("substrate")`、`ObjectExists("Port 1")`。
+   **端口数为 0 会大声报警**——那说明模板被存成了空壳，先别管激励；
+4. **激励候选闭环**：再依次试
+   `"1"+"1"` / `"Port 1"+"1"` / `1+1` / `"1"+"All"` / `"All"+"All"`，
+   每个 COM 调用单独 try/except（报告会点明失败在 StimulationPort、
+   StimulationMode 还是 Start），每个候选都真调一次 `Solver.Start()` ——
+   写法不对会**立刻**报 "Invalid stimulation port"（不耗时），试到能跑
+   为止（**能跑的那次会真的算完，几分钟**；期间 CST 界面若弹报错
+   对话框，点掉即可）；
 4. S 参数读取：先列 `1D Results\S-Parameters` 的子条目（顺带确认端口
    命名），再用 `GetResultIDsFromTreeItem` + `GetResultFromTreeItem` +
    `GetArray("x"/"yre"/"yim")` 读 5 GHz 的值；
@@ -177,10 +184,15 @@ python scripts/run_coupler.py configs/coupler.yaml
   两个 Volume 监视器；边界：Boundaries；求解器：Time Domain Solver
   对话框）。把报告框截图发回，用于按版本修正宏。
 - **`Invalid stimulation port, please specify.`（Solver.Start 时报）**：
-  激励写法不对。实测 `.StimulationPort "1"` 配 `.StimulationMode "All"`
-  会这样（宏不报错、SaveAs 也正常，只在求解时炸）——**端口与模式必须
-  成对**，正确写法是 `.StimulationPort "1"` + `.StimulationMode "1"`
-  （单模端口）。`scripts/cst_smoke.py` 第 3 节会逐个候选试到能跑为止。
+  两种原因，报错文本能区分——
+  - 带 **`please specify a positive integer value or "All"`** ⇒ 值格式错
+    （`"Port 1"` 这种就报这个）；
+  - **不带**这半句 ⇒ 格式对（`"1"` 是数字字符串）但**该端口不存在**，
+    先用 smoke 第 3 节的 `Solver.GetNumberOfPorts` 看工程里到底有几个端口。
+  另外实测 `.StimulationPort "1"` 配 `.StimulationMode "All"` 也会炸：
+  **端口与模式必须成对**（`.StimulationPort "1"` + `.StimulationMode "1"`，
+  单模端口）。宏本身不报错、SaveAs 也正常，只在求解时炸。
+  `scripts/cst_smoke.py` 第 3/4 节会逐个候选试到能跑为止。
 - **通用兜底：任何 GUI 设置不知道怎么写成宏**——在 GUI 里手工做那一步
   （比如 Time Domain Solver 对话框里选端口），然后 **Edit → History
   List**，选中刚出现的行 → 点 **Macro** 按钮 → 生成对应 VBA → 原样贴回。
@@ -213,6 +225,12 @@ python scripts/run_coupler.py configs/coupler.yaml
   先试 `SaveAs "<路径>", "False"`、失败再试 `"True"`（两种布尔的含义在
   不同版本文档里说法不一：覆盖开关 / 另存副本），并把这一步放进容错区。
   若两种都失败，报告框会点名 `SaveAs`，此时手工 File → Save As 保存即可。
-- **模板存出来的工程内容不全**（老版本 CST 有"宏保存的项目丢了端口/监视器"
-  的报告）：跑 smoke 就能发现——参数读不到=端口没存上，结果树里没有
-  `e-field (f=5) [AC]`=监视器没存上。真遇到就手工补后另存。
+- **模板存出来的工程内容不全 / 像是空壳**（老版本 CST 有"宏保存的项目丢了
+  端口/监视器"的报告）：跑 smoke 就能发现——模板 .cst 只有 0.04 MB、
+  `Solver.GetNumberOfPorts` 为 0、`ObjectExists("substrate")` 为 False、
+  结果树里没有 `e-field (f=5) [AC]`=监视器没存上。**先看 smoke 第 2 节打印的
+  模板最后修改时间**：若是旧时间戳，说明宏的 `SaveAs` 没能覆盖旧文件（第二
+  个布尔参数在不同版本里可能是"覆盖开关"而不是"另存副本"），此时宏报告框
+  仍会写 "saved OK"——只要在 GUI 里 **File → Save As 手工覆盖**一次（或干脆
+  删掉旧 .cst 再跑宏）即可。若时间戳是新的但内容仍缺，就手工补端口/监视器
+  后另存，并把 GUI 里 Ports 树和 Field Monitors 的截图发回。
