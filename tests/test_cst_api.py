@@ -323,3 +323,109 @@ def test_connect_app_raises_with_both_errors(monkeypatch):
     _fake_win32com(monkeypatch, boom, boom)
     with pytest.raises(RuntimeError, match="无法连接 CST"):
         cst_api.connect_app()
+
+
+def _fake_win32com_with_gencache(monkeypatch, ensure):
+    """带 gencache 的假 win32com（早绑定优先级的测试用）。"""
+    import sys
+    import types
+
+    _fake_win32com(monkeypatch, lambda progid: "LATE", lambda progid: "ACT")
+    pkg = sys.modules["win32com"]
+    client = sys.modules["win32com.client"]
+    client.gencache = types.SimpleNamespace(EnsureDispatch=ensure)
+    pkg.client = client
+
+
+def test_connect_app_prefers_early_binding(monkeypatch, capsys):
+    """早绑定优先：只有它才拿得到 AddToHistory 的返回值。"""
+    calls = []
+
+    def ensure(progid):
+        calls.append(progid)
+        return "EARLY"
+
+    _fake_win32com_with_gencache(monkeypatch, ensure)
+    assert cst_api.connect_app() == "EARLY"
+    assert calls == [cst_api.PROGID]
+    assert "早绑定" in capsys.readouterr().out
+
+
+def test_connect_app_falls_back_when_gencache_missing(monkeypatch):
+    """没装类型库/没生成包装类时，EnsureDispatch 抛错 -> 退回晚绑定。"""
+
+    def ensure(progid):
+        raise ImportError("no gen_py")
+
+    _fake_win32com_with_gencache(monkeypatch, ensure)
+    assert cst_api.connect_app() == "LATE"
+
+
+# ---- call_first / get_project：取工程对象（Active3D 优先） ----
+
+
+class _App:
+    """假 Application：记录调用顺序，可按名字配置成功/报错。"""
+
+    def __init__(self, ok=(), fail=()):
+        self.calls: list[str] = []
+        self.ok = set(ok)
+        self.fail = set(fail)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def method():
+            self.calls.append(name)
+            if name in self.fail:
+                raise AttributeError(f"CSTStudio.Application.{name}")
+            if name in self.ok:
+                return f"<{name}>"
+            raise AttributeError(f"CSTStudio.Application.{name}")
+
+        return method
+
+
+def test_call_first_returns_the_first_working_name():
+    app = _App(ok={"B"})
+    assert cst_api.call_first(app, ("A", "B", "C")) == ("B", "<B>")
+    assert app.calls == ["A", "B"]           # 拿到就停，不再往下试
+
+
+def test_call_first_records_notes_and_raises_last_error():
+    app = _App(fail={"A"}, ok={"B"})
+    notes: list[str] = []
+    assert cst_api.call_first(app, ("A", "B"), notes)[0] == "B"
+    assert notes and "A" in notes[0]
+
+    notes = []
+    with pytest.raises(AttributeError):
+        cst_api.call_first(_App(), ("A", "B"), notes)
+    assert len(notes) == 2                   # 每个候选的原始错误都记下
+
+
+def test_get_project_prefers_active3d_after_creating(capsys):
+    """建完工程**必须再从活动工程取对象**：NewMWS 的返回值不生效。"""
+    app = _App(ok={"NewMWS", "Active3D"})
+    assert cst_api.get_project(app) == "<Active3D>"
+    assert app.calls == ["NewMWS", "Active3D"]
+
+
+def test_get_project_attach_never_creates(capsys):
+    app = _App(ok={"ActiveMWS"})
+    assert cst_api.get_project(app, attach=True) == "<ActiveMWS>"
+    assert app.calls == ["Active3D", "ActiveMWS"]     # 一路只试"活动工程"
+
+
+def test_get_project_warns_when_active_lookup_fails(capsys):
+    """取不到活动工程时退回新建对象，但必须**大声警告**（那是老毛病来源）。"""
+    app = _App(ok={"NewMWS"})
+    assert cst_api.get_project(app) == "<NewMWS>"
+    out = capsys.readouterr().out
+    assert "退回" in out and "AddToHistory 常常无效" in out
+
+
+def test_get_project_raises_when_nothing_works():
+    with pytest.raises(AttributeError):
+        cst_api.get_project(_App())

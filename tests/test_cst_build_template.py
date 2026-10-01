@@ -76,6 +76,43 @@ def test_build_reports_exception_and_keeps_going(mod):
     assert "Brick air" in [h for h, _ in mws.calls]     # 后面照跑
 
 
+class _NoneMWS(_FakeMWS):
+    """晚绑定：AddToHistory 拿不到返回值（返回 None）。"""
+
+    def AddToHistory(self, header, contents):
+        self.calls.append((header, contents))
+        return None
+
+
+def test_build_treats_none_as_unknown_not_failure(mod, capsys):
+    """None = 晚绑定拿不到返回值：既不能当失败，也不能当成功。
+
+    之前把 None 打成"返回 False"，把整批都报成失败——那是误报。
+    """
+    assert mod.build(_NoneMWS(), "coupler_fwd", 1) is True
+    out = capsys.readouterr().out
+    assert "[ ?? ]" in out
+    assert "晚绑定拿不到返回值" in out
+    assert "[FAIL]" not in out
+
+
+def test_check_written_flags_an_empty_project(tmp_path, capsys, mod):
+    """存完的 .cst 里搜不到对象名 => 必须报"空模板"（返回值靠不住）。"""
+    empty = tmp_path / "empty.cst"
+    empty.write_bytes(b"not a cst at all")
+    assert mod.check_written(empty) is False
+    out = capsys.readouterr().out
+    assert "找不到模型" in out
+    assert mod.check_written(tmp_path / "nope.cst") is False   # 不存在也不崩
+
+
+def test_check_written_accepts_a_project_with_model(tmp_path, capsys, mod):
+    ok_file = tmp_path / "ok.cst"
+    ok_file.write_bytes(b'...NAME "substrate" ... "Port 1" ...')
+    assert mod.check_written(ok_file) is True
+    assert "文件里有模型" in capsys.readouterr().out
+
+
 def test_build_bwd_uses_port_3(mod):
     mws = _FakeMWS()
     mod.build(mws, "coupler_bwd", 3)
@@ -153,22 +190,50 @@ class _MatrixMWS:
 def test_probe_matrix_finds_the_shape_that_works(probe_mod):
     mws = _MatrixMWS(accept={"probe-swap"})
     good = probe_mod.run_matrix(mws, "假工程")
-    assert good == ["G 参数换序（命令在前）"]
+    assert len(good) == 1 and good[0].startswith("G ")
     # 矩阵要试满所有形状，不能在第一个 True 处停下
-    assert len(mws.seen) == len(probe_mod.CASES)
+    assert len(mws.seen) == len(probe_mod.cases())
 
 
 def test_probe_matrix_keeps_going_after_an_exception(probe_mod):
     mws = _MatrixMWS(accept={"probe-crlf"}, raise_on={"probe-empty"})
     good = probe_mod.run_matrix(mws, "假工程")
-    assert good == ["E 多行 CRLF"]
-    assert len(mws.seen) == len(probe_mod.CASES)
+    assert len(good) == 1 and good[0].startswith("E ")
+    assert len(mws.seen) == len(probe_mod.cases())
 
 
 def test_probe_matrix_reports_all_false(probe_mod, capsys):
     good = probe_mod.run_matrix(_MatrixMWS(), "假工程")
     assert good == []
-    assert "全部返回 False" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "没有一条明确返回 True" in out
+    assert "probe-brick" in out          # 指向模型树（唯一可靠判据）
+
+
+def test_probe_cases_use_visible_bricks_with_a_prefix(probe_mod):
+    """除控制组外每条命令都要**看得见**（建 Brick），且 Brick 名带前缀。
+
+    返回值不可靠（晚绑定恒 None），判据只能是模型树；名字带前缀才能分清
+    是哪个对象建出来的。
+    """
+    for label, args in probe_mod.cases("xyz"):
+        cmd = args[0] if label.startswith("G") else (args[1] if len(args) > 1
+                                                     else "")
+        if label[0] in "ABCH":
+            continue
+        assert "With Brick" in cmd and ".Create" in cmd
+        assert "xyz-" in cmd, label
+
+
+def test_probe_marks_none_as_unknown(probe_mod, capsys):
+    class NoneMWS:
+        def AddToHistory(self, *args):
+            return None
+
+    probe_mod.run_matrix(NoneMWS(), "晚绑定假工程")
+    out = capsys.readouterr().out
+    assert "[ ?? ]" in out and "None" in out
+    assert "[FAIL]" not in out
 
 
 def test_probe_read_back_does_not_crash_without_com(probe_mod, capsys):
@@ -177,24 +242,16 @@ def test_probe_read_back_does_not_crash_without_com(probe_mod, capsys):
     assert "拿不到类型信息" in capsys.readouterr().out
 
 
-def test_open_new_project_attach_uses_active_project_only(mod):
-    """--attach：不发 NewMWS（新建工程与 GUI 工程状态可能不同）。"""
-    class App:
-        def __init__(self):
-            self.calls = []
+def test_build_script_defers_project_creation_to_cst_api(mod):
+    """取工程对象这件事只有一处实现（cst_api.get_project），脚本不再自己发。
 
-        def NewMWS(self):
-            self.calls.append("NewMWS")
-            return "NEW"
-
-        def GetActiveProject(self):
-            self.calls.append("GetActiveProject")
-            return "ACTIVE"
-
-    app = App()
-    assert mod.open_new_project(app, attach=True) == "ACTIVE"
-    assert app.calls == ["GetActiveProject"]
-    assert mod.open_new_project(app) == "NEW"       # 默认链没变
+    服务器实测教训：`app.NewMWS()` 返回的对象上 AddToHistory 不生效，
+    必须改从活动工程（Active3D）取——放在共享层才能一处改、处处对。
+    """
+    src = SCRIPT.read_text("utf-8")
+    assert "cst_api.get_project(" in src
+    assert ".NewMWS()" not in src           # 不再自己发 NewMWS
+    assert not hasattr(mod, "open_new_project")
 
 
 def test_probe_modeler_section_runs_matrix_on_modeler_object(probe_mod, capsys):

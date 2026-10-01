@@ -39,33 +39,120 @@ import numpy as np
 
 __all__ = ["tree_children", "s_param_ids", "find_item", "s_param_at",
            "s_param_via_result1d", "member_names", "member_signatures",
-           "connect_app"]
+           "connect_app", "call_first", "get_project",
+           "ACTIVE_PROJECT_METHODS", "CREATE_PROJECT_METHODS"]
 
 PROGID = "CSTStudio.Application"
 
+# 取"当前活动 3D 工程"的候选方法名。**Active3D 是官方例程的写法**
+# （C#: CST.Active3D() → MWS.AddToHistory(...)；MATLAB 同源），
+# CST 2024 实测 app.GetActiveProject / app.ActiveProject **都不存在**
+# （pywin32 报 AttributeError），所以 Active3D 必须排最前。
+ACTIVE_PROJECT_METHODS = ("Active3D", "ActiveMWS", "GetActiveProject",
+                          "ActiveProject", "GetActiveDesignEnvironment")
+# 新建工程的候选。NewMWS = 明确新建微波工作室（3D）工程；
+# FileNew = 走 GUI 的 File → New（官方 C# 例程用它，其后必接 Active3D）。
+CREATE_PROJECT_METHODS = ("NewMWS", "FileNew")
+
 
 def connect_app():
-    """连接运行中的 CST（优先附接已打开的 GUI 实例）。
+    """连接运行中的 CST，返回 Application 对象。
 
-    先 Dispatch（已在跑就用现成的，没有再启动新的），失败再
-    GetActiveObject。两个都失败抛 RuntimeError——提示要先把 CST GUI 打开，
-    避免脚本悄悄启动一个后台实例、而用户对着另一个窗口找模型。
+    候选顺序：
+      1. **EnsureDispatch（早绑定）**——用注册的类型库生成包装类，方法签名
+         （含返回值/形参类型）都是编译期已知的，pywin32 不用猜。实测晚绑定
+         时 `AddToHistory` 返回 **None**（拿不到返回值），早绑定能拿到真正的
+         True/False；
+      2. Dispatch（晚绑定，装了 pywin32 就能用）；
+      3. GetActiveObject（附接已注册的运行实例）。
+
+    三个都失败抛 RuntimeError——提示先打开 CST GUI，避免脚本悄悄起一个
+    后台实例、而用户对着另一个窗口找模型。
     """
     import win32com.client
 
     errs = []
     for label, factory in (
-        ("Dispatch", lambda: win32com.client.Dispatch(PROGID)),
+        ("EnsureDispatch（早绑定）", lambda: win32com.client.gencache
+         .EnsureDispatch(PROGID)),
+        ("Dispatch（晚绑定）", lambda: win32com.client.Dispatch(PROGID)),
         ("GetActiveObject", lambda: win32com.client.GetActiveObject(PROGID)),
     ):
         try:
             app = factory()
-            print(f"[OK] COM 连接：{label}")
-            return app
         except Exception as e:
             errs.append(f"{label}: {e}")
+            continue
+        early = "gen_py" in getattr(type(app), "__module__", "")
+        print(f"[OK] COM 连接：{label}"
+              + ("（早绑定生效）" if early else "（**仍是晚绑定**，返回值可能"
+                 "拿不到，见 cst_api.connect_app 的说明）"))
+        return app
     raise RuntimeError("无法连接 CST（请先启动 CST Studio 2024 并保持 GUI "
                        "打开）：" + "；".join(str(e) for e in errs))
+
+
+def call_first(obj, names, notes: list[str] | None = None):
+    """按顺序试 names 里的方法，返回 ``(名字, 返回值)``；全失败抛最后一个错。
+
+    不在 hasattr 上做判断：pywin32 的晚绑定对象对**不存在的成员**也会在
+    调用时才报错，用 getattr + 调用最直接（错误原文写进 notes）。
+    """
+    last: Exception | None = None
+    for name in names:
+        try:
+            method = getattr(obj, name)
+        except Exception as e:          # 名字不存在：换下一个
+            last = e
+            _note(notes, f"{name}: {e}")
+            continue
+        try:
+            return name, method()
+        except Exception as e:
+            last = e
+            _note(notes, f"{name}(): {e}")
+    if last is None:
+        raise RuntimeError(f"没有可用的方法名：{names}")
+    raise last
+
+
+def get_project(app, attach: bool = False):
+    """取得要操作的工程对象（建模板/改模型都用它）。
+
+    attach=True：只取 GUI 里**当前活动的 3D 工程**（不发新建）。
+    否则：先新建（NewMWS/FileNew），**再统一用 Active3D 之类的活动工程
+    取回对象**——这是 CST 官方例程（C#/MATLAB）的写法，实测差别很大：
+    `app.NewMWS()` 返回的那个对象上调 `AddToHistory` 一律没有效果
+    （返回 None、历史表与模型树都不动），而从 `Active3D()` 拿到的活动工程
+    才是可写的那个。取不到活动工程时退回新建函数的返回值（聊胜于无，
+    并打印警告）。
+    """
+    if attach:
+        name, proj = call_first(app, ACTIVE_PROJECT_METHODS)
+        print(f"[OK] 工程对象：app.{name}()（--attach：用 GUI 里当前打开的"
+              f"工程，请确认它就是你要建模板的那个空工程）")
+        return proj
+    created = None
+    try:
+        cname, created = call_first(app, CREATE_PROJECT_METHODS)
+        print(f"[OK] 新建工程：app.{cname}()")
+    except Exception as e:
+        print(f"[ -- ] 新建失败（继续试取活动工程）：{e}")
+    notes: list[str] = []
+    try:
+        name, proj = call_first(app, ACTIVE_PROJECT_METHODS, notes)
+        print(f"[OK] 工程对象：app.{name}()"
+              + ("" if created is None else "（活动工程，用它建模）"))
+        return proj
+    except Exception as e:
+        for n in notes:
+            print(f"     [ -- ] {n}")
+        if created is None:
+            raise
+        print(f"!! 取不到活动工程（{e}），退回用新建函数返回的对象——"
+              "实测那个对象上 AddToHistory 常常无效，出现"
+              "「历史表空/模型没建上」时优先怀疑这里")
+        return created
 
 
 def member_signatures(obj, keyword: str | None = None) -> list[dict]:

@@ -10,7 +10,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 122 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 137 passed（本机可先确认代码完整）
 ```
 
 ## 1. 生成模板工程（**方式 A 优先**：Python + COM）
@@ -29,50 +29,65 @@ python scripts/cst_build_template.py configs/coupler.yaml
 ```
 
 它逐块调用 CST 文档里的 `AddToHistory(标题, 命令文本)`——**既执行命令、
-又写进 History List**，而且**每一块都有返回值**：失败会打印
+又写进 History List**，而且每一块都打印**原始返回值**：失败会打印
 `[FAIL] 序号 标题` + 原始错误（哪一块、错误号是什么），不会再像宏那样
 只弹一个"遇到不适当的参数"对话框。命令文本与宏路径共用
 `eaopt/solver/template_builder.py::template_blocks`（单一事实来源），
 两条路建出来的模型一模一样。
 
-跑完先看它最后打印的 4 步验证清单（= 下面第 2 节）。
+**工程对象从哪儿来**（上一轮的实测教训）：建完工程后一律**从活动工程**
+取对象（`cst_api.get_project` → `app.Active3D()`），不用 `NewMWS()` 的
+返回值——后者上 `AddToHistory` 不生效。这条已固化在共享层，脚本不用改。
 
-万一 `AddToHistory` 这个成员名在这台机器上不存在（报
-`<unknown>.AddToHistory`），先跑一次 `--probe`：它会把 app / 工程对象上
-名字含 Add/History/Save/Brick/Port 的**真实成员名与形参名**全列出来，把
-那张表贴回开发者即可（`cst_api.member_signatures` 直读 IDispatch 类型库，
-不靠猜）。
+**⚠️ 返回值不能当判据**：晚绑定（`Dispatch`）下 `AddToHistory` 返回
+**None**（pywin32 拿不到返回值），脚本会打 `[ ?? ]`；早绑定
+（`gencache.EnsureDispatch`，连接那行会写明）才可能看到 True/False。
+**唯一可靠的判据是**：① 结尾自动跑的**文件层检查**（`cst_project.describe`
+不用 CST 直接读文件，打印"文件里有模型"才算过）；② 第 2 节那两条。
 
-**若 `AddToHistory` 一律返回 False**，还有一个开关可以分辨原因：先用
-GUI 的 **File → New** 建好空工程，再
+跑完先看它最后打印的验证清单（= 下面第 2 节）。
+
+推倒重来之前要知道的两个开关：
 
 ```bash
+# 不删任何东西，只列 app/工程对象上相关成员的真实名字与形参名
+python scripts/cst_build_template.py configs/coupler.yaml --probe
+# 不新建工程，直接在 GUI 里当前打开的那个活动工程上建（先 File → New）
 python scripts/cst_build_template.py configs/coupler.yaml --attach
 ```
 
-`--attach` 不发 `NewMWS()`，直接在**当前活动工程**上建——`app.NewMWS()`
-建出来的工程与 GUI 建的工程状态可能不同，这一条能把"新建工程的问题"和
-"调用形状的问题"分开。
+`--probe` 的输出（`cst_api.member_signatures` 直读 IDispatch 类型库）就是
+"这个版本里方法到底叫什么、参数几个"的权威答案，贴回开发者即可。
 
-**若每一块都 `[FAIL] ... AddToHistory 返回 False`**（实测遇到过：连只有
-一行、语法显然没问题的块也 False ⇒ 与命令内容无关，是"条目创建本身被拒"
-或"调用形状不对"），跑专门的诊断：
+**若每一块都失败**（实测遇到过：连只有一行、语法显然没问题的块也一样
+⇒ 与命令内容无关），跑专门的诊断：
 
 ```bash
 python scripts/cst_probe_history.py
 ```
 
-它一次问清四件事：① `AddToHistory` 的**真实形参名与个数**（权威答案）；
-② 各种调用形状矩阵（空内容 / 单行 / LF / CRLF / **参数换序** / 分号 /
-单参数）**哪一种返回 True**；③ 另存到临时文件后再试一遍（"未存盘的工程
-不许写历史"这一怀疑）；④ 把工程对象上所有能读的 history 成员读回来。
+它一次问清四件事：① Application 上所有"取工程对象 / 建工程 / 保存"相关
+成员的**真实签名**；② **三个候选对象**（建之前的活动工程 /
+`app.NewMWS()` 的返回值 / 建之后的活动工程）各自打一遍调用形状矩阵
+（空内容 / 单行 / LF / CRLF / 末尾换行 / **参数换序** / 分号 / 单参数）；
+③ 另存到临时文件后再试一遍（"未存盘的工程不许写历史"这一怀疑）；
+④ 把工程对象上所有能读的 history 成员读回来。
+
+**矩阵里的命令是"看得见"的**（建一个名叫 `probeA-brick-lf` 之类的
+Brick）——**跑完请到 CST 模型树里看 component `probe` 下出现了哪几个
+Brick**，这是唯一可靠的判据：
+- 有 `probeC-*`（建之后的活动工程）而没有 `probeB-*` ⇒ 必须用活动工程
+  对象（正是现在的做法）；
+- 一个都没有 ⇒ 连可见命令都没执行，请把输出贴回，并做下面的对照实验；
+- 只有 CRLF 那几个出现 ⇒ 是**换行符**问题，按结果改 `vba.py` 的行尾；
+- 只有 G（参数换序）出现 ⇒ 这台机器的形参顺序与文档相反。
 
 **同时请在 GUI 里做一次对照实验**：手工画一个 Brick（或改一下单位），看
 History List 里**有没有出现那一条**——
 - 手工操作也不进历史表 ⇒ 这个 CST 会话/安装的记录功能本身有问题；
-- 手工操作进历史表 ⇒ 是 API 调用形状的问题，按矩阵结果改。
+- 手工操作进历史表 ⇒ 是 API 调用侧的问题，按矩阵结果改。
 
-两种情况的完整输出/截图都贴回开发者。
+两种情况的完整输出/截图（含模型树里 probe 组件的样子）都贴回开发者。
 
 ### 方式 B（备用）：GUI 宏
 
@@ -86,14 +101,16 @@ python scripts/build_cst_template.py cst/   # 生成宏文件
 
 ## 2. 验证模板（判定成功的唯一标准）
 
-> 方式 A 的脚本跑完会直接打印这个清单；方式 B（GUI 宏）要从第 3 条开始。
+> 方式 A 的脚本跑完会直接打印这个清单，**并且已经自动跑过第 3 条**
+> （存完立刻做文件层检查）；方式 B（GUI 宏）要从第 3 条开始。
 
 1. **History List 必须非空**（Modeling 树 / Home → History List）：应看到
    Units / Material / Brick / Extrude / Port / Monitor / Boundary 一条条
    记录。**空的就停下来**，把完整输出贴回开发者。
 2. **关掉工程再重新打开那个 `.cst`**，确认几何与 4 个端口还在。
    历史表为空的话这一步就会变空——那才是问题所在。
-3. `python scripts/cst_inspect_template.py`（不用 CST，文件层再确认）
+3. `python scripts/cst_inspect_template.py`（不用 CST，文件层再确认；
+   方式 A 已自动做过，可跳过）
 4. `python scripts/cst_smoke.py configs/coupler.yaml`
 
 以下细节供第 3、4 步对照检查：
@@ -290,12 +307,21 @@ python scripts/run_coupler.py configs/coupler.yaml
 
 - **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
   或确认许可证正常、CST 可以独立打开。
-- **"`AddToHistory` 每一块都返回 False"**：返回 False = 条目没建成**或**
-  contents 没执行成功，光看返回值分不清。**每一块都 False（含单行块）
-  说明与命令内容无关**——先跑 `python scripts/cst_probe_history.py`（签名
-  + 调用形状矩阵 + 读回），再在 GUI 里手工画个 Brick 看历史表是否记录，
-  两者输出一起贴回。（`cst_build_template.py` 检测到全 False 时也会提示
-  这一条。）
+- **"`AddToHistory` 每一块都失败 / 返回 False"**：**先确认返回值到底是
+  什么**——晚绑定下 pywin32 拿不到返回值，打印出来是 `None`（脚本先按
+  `[ ?? ]` 标出），**那不是失败**。真正的判据是模型树、History List、
+  以及脚本结尾自动跑的文件层检查（`cst_project.describe`）。
+  若确实是明确的 `False`：False = 条目没建成**或** contents 没执行成功，
+  **每一块都 False（含单行块）说明与命令内容无关**——先跑
+  `python scripts/cst_probe_history.py`（Application 成员签名 + 三个候选
+  对象各打一遍调用形状矩阵 + 读回历史表），**并按矩阵里给的 Brick 名字到
+  模型树里核对**，再在 GUI 里手工画个 Brick 看历史表是否记录，两者输出
+  一起贴回。
+- **"建了工程但模型没进去"**：上一轮实测的两个根因都已固化——① 工程对象
+  必须从**活动工程**取（`app.Active3D()`），`app.NewMWS()` 的返回值上调
+  `AddToHistory` 不生效；CST 2024 里 `GetActiveProject` / `ActiveProject`
+  **不存在**。② 早绑定（`gencache.EnsureDispatch`）才拿得到返回值。
+  两条都在 `cst_api.get_project` / `connect_app` 里，脚本只需看输出。
 - **"宏跑完工程里几何/端口/监视器都好好的，但 History List 是空的"**
   （→ 存盘重开就是空工程，**这是"打开一片空白"最常见的根因**）：
   **最快的出路是改用第 1 节的方式 A（COM + `AddToHistory`）**——它不走
