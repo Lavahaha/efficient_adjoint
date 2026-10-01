@@ -8,10 +8,13 @@
   1. COM 连接（Dispatch / GetActiveObject）；
   2. 打开模板副本；
   2b. 模板 .cst 里内嵌的激励相关字符串（看宏到底把什么存了进去）；
-  3. 激励设置：先读回当前值，再逐个候选试到 Solver.Start 成功为止
-     —— CST 2024 实测 `.StimulationPort "1"` + `.StimulationMode "All"`
-     会让 Start 报 "Invalid stimulation port, please specify."，端口与
-     模式必须成对（Dassault 教程：`.StimulationPort "1"` + `.StimulationMode "1"`）；
+  3. 工程状态探针（`GetSolverType` / `Solver.GetNumberOfPorts` /
+     `ObjectExists`——CST 的 GetXxx 多为**属性**，加括号调用会报
+     "'str' object is not callable"）；
+  3b. 激励设置：逐个候选试到 Solver.Start 成功为止。实测 `"Port 1"` 会报
+     「please specify a positive integer value or "All"」（⇒ 要的是数字），
+     而 `"1"` 报 "Invalid stimulation port" —— 说明**格式对但端口不存在**，
+     所以先看 3 里读到的端口数；
   4. S 参数读取：列结果树子条目 + 逐候选调用链
      （GetResultIDsFromTreeItem / GetResultFromTreeItem / GetArray）；
   5. 结果树中的监视器条目路径（SelectTreeItem 必须能选中）；
@@ -27,6 +30,12 @@ import time
 from pathlib import Path
 
 import numpy as np
+
+
+def _short(exc: BaseException, limit: int = 140) -> str:
+    """异常信息压成一行（pywin32 的错误元组很长）。"""
+    s = str(exc).replace("\n", " ")
+    return s if len(s) <= limit else s[:limit] + "…"
 
 
 def probe_project_bytes(path: Path) -> None:
@@ -95,6 +104,10 @@ def main() -> None:
     print("=" * 60)
     print("2) 打开模板副本")
     print("=" * 60)
+    st = tpl.stat()
+    print(f"    模板 {tpl}：{st.st_size / 1e6:.2f} MB，最后修改 "
+          f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.st_mtime))}"
+          "（应是刚跑完宏的时间；若是旧时间 ⇒ 宏的 SaveAs 没覆盖掉旧文件）")
     workdir = Path(cfg.output.dir) / "cst_work"
     workdir.mkdir(parents=True, exist_ok=True)
     dst = workdir / f"smoke_{tpl.name}"
@@ -108,23 +121,47 @@ def main() -> None:
     probe_project_bytes(dst)
 
     print("=" * 60)
-    print("3) 激励设置（端口与模式必须成对；失败会在 Start 时立刻报错）")
+    print("3) 工程状态探针（CST 的 GetXxx 多是属性，不能加括号调用）")
+    print("=" * 60)
+    for label, expr in (
+        ("mws.GetSolverType", lambda: mws.GetSolverType),
+        ("Solver.GetNumberOfPorts", lambda: mws.Solver.GetNumberOfPorts),
+        ("Solver.GetPortNames", lambda: mws.Solver.GetPortNames),
+        ("ObjectExists('substrate')", lambda: mws.ObjectExists("substrate")),
+        ("ObjectExists('Port 1')", lambda: mws.ObjectExists("Port 1")),
+    ):
+        try:
+            print(f"    {label} = {expr()!r}")
+        except Exception as e:
+            print(f"    {label}: 读不到 ({e})")
+    try:
+        n_ports = int(mws.Solver.GetNumberOfPorts)
+        if n_ports <= 0:
+            print("    !! 端口数为 0 —— 打开的工程里没有端口（模板被存成空壳？），"
+                  "先别管激励，去 GUI 里确认模板内容")
+        else:
+            print(f"    >>> 工程里有 {n_ports} 个端口")
+    except Exception:
+        pass
+
+    print("=" * 60)
+    print("3b) 激励设置（失败会在 Start 时立刻报错，不耗时）")
     print("=" * 60)
     for label, getter in (
         ("Solver.StimulationPort", lambda: mws.Solver.StimulationPort),
         ("Solver.StimulationMode", lambda: mws.Solver.StimulationMode),
         ("Solver.Method", lambda: mws.Solver.Method),
-        ("GetSolverType()", lambda: mws.GetSolverType()),
     ):
         try:
-            print(f"    读回 {label} = {getter()!r}")
+            print(f"    {label} = {getter()!r}（bound method ⇒ 只写读不出）")
         except Exception as e:
-            print(f"    读回 {label}: 失败 ({e})")
+            print(f"    {label}: 读不到 ({e})")
 
     candidates = ([(args.stim, "1")] if args.stim else [
         ("1", "1"),        # Dassault 教程写法（端口 1 + 模式 1）
-        ("Port 1", "1"),   # 保险：万一 CST 用带前缀的端口名
-        ("1", "All"),      # 模板当前写法（已知失败，再确认一次）
+        ("Port 1", "1"),   # 已知报「positive integer or All」→ 证明要的是数字
+        (1, 1),            # 万一要的是整数类型而不是字符串
+        ("1", "All"),      # 模板早先的写法（已知失败）
         ("All", "All"),    # 兜底：至少让工程跑起来（场是多端口叠加，仅供验证 API）
     ])
     print("    若 CST 界面弹出报错对话框，点掉即可，脚本会继续试下一个候选")
@@ -132,15 +169,25 @@ def main() -> None:
     for port, mode in candidates:
         try:
             mws.Solver.StimulationPort(port)
+        except Exception as e:
+            print(f"[FAIL] StimulationPort({port!r}): {_short(e)}")
+            continue
+        try:
             mws.Solver.StimulationMode(mode)
+        except Exception as e:
+            print(f"[FAIL] StimulationMode({mode!r})（端口 {port!r} 已设）: "
+                  f"{_short(e)}")
+            continue
+        try:
             t0 = time.perf_counter()
             mws.Solver.Start()
-            winner = (port, mode)
-            print(f"[OK] StimulationPort={port!r} + StimulationMode={mode!r}"
-                  f" → 求解成功，耗时 {time.perf_counter() - t0:.0f} s")
-            break
         except Exception as e:
-            print(f"[FAIL] StimulationPort={port!r} + StimulationMode={mode!r}: {e}")
+            print(f"[FAIL] Start()（端口 {port!r} 模式 {mode!r}）: {_short(e)}")
+            continue
+        winner = (port, mode)
+        print(f"[OK] StimulationPort={port!r} + StimulationMode={mode!r}"
+              f" → 求解成功，耗时 {time.perf_counter() - t0:.0f} s")
+        break
     if winner is None:
         print("!! 所有候选都失败——请改用 GUI 手工设置并录宏：")
         print("   Simulation → Time Domain Solver → Source type 选端口 1 → OK")
@@ -242,8 +289,10 @@ def main() -> None:
         except Exception as e:
             print(f"    [FAIL] Mode={mode!r} + {exec_name}(): {e}")
 
-    # 属性存在性探针：CST 2024 没有 XStart/XEnd/...（实测 <unknown>.XStart）
-    print("    属性探针（能设进去的才是存在的属性）：")
+    # 属性存在性探针：CST 2024 没有 XStart/XEnd/...（实测 <unknown>.XStart）。
+    # 注意：探针给的值是 "0.1"，对**会校验取值**的属性（如 Mode）会得到
+    # "值被拒" 而不是 "属性不存在"——所以这里打印原始报错，别只看成败。
+    print("    属性探针（给值 0.1，打印原始报错）：")
     try:
         a = mws.ASCIIExport
         a.Reset()
@@ -253,11 +302,11 @@ def main() -> None:
             try:
                 getattr(a, prop)("0.1")
                 print(f"      {prop}: 可设置")
-            except Exception:
-                print(f"      {prop}: 不可设置（不存在/签名不符）")
+            except Exception as e:
+                print(f"      {prop}: 失败 -> {_short(e)}")
         a.Reset()
     except Exception as e:
-        print(f"      探针失败: {e}")
+        print(f"      探针失败: {_short(e)}")
 
     if exported and path.exists():
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
