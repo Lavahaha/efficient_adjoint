@@ -280,8 +280,11 @@ def main() -> None:
     enum_com_methods(mws.Solver, "mws.Solver", keyword="Stimulation")
     # 模型（几何/端口）查询：`ObjectExists` 不是 COM 成员，所以"工程里
     # 有没有几何"目前只能靠这里问出来的**真名**——不再猜。
+    # "History" 一组是给 pipeline 探路的：COM 侧改模型必须用
+    # AddToHistory（既执行、又写进 History List），否则历史表重放会把
+    # 旧的 design_region 复活（见 cst.py::_rebuild_design 的说明）。
     for kw in ("Object", "Solid", "Model", "Shape", "Component",
-               "Brick", "Port", "Count", "Number"):
+               "Brick", "Port", "Count", "Number", "History", "Script"):
         enum_com_methods(mws, "mws", keyword=kw)
     for attr in ("Model", "Model3D", "Objects", "Ports", "Component"):
         try:

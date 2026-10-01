@@ -10,39 +10,55 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 93 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 102 passed（本机可先确认代码完整）
 ```
 
 ## 1. 在服务器上生成模板宏（重要：宏里包含绝对路径，必须在服务器上重新生成）
 
 ```bash
 python scripts/build_cst_template.py cst/
-# 产物: cst/build_coupler_fwd.mcr（端口 1 激励）
-#       cst/build_coupler_bwd.mcr（端口 3 激励）
-#       cst/polygon_test.mcr（诊断宏，可选，见第 2.5 节）
+# 产物: cst/build_coupler_fwd.mcs（结构宏：端口 1 激励的模型）
+#       cst/save_coupler_fwd.mcr （控制宏：另存为 coupler_fwd.cst）
+#       cst/build_coupler_bwd.mcs / save_coupler_bwd.mcr（端口 3 激励）
+#       cst/polygon_test.mcs（诊断宏，可选，见第 2.5 节）
 ```
 
 ## 2. CST GUI 生成双模板工程
 
-**宏里不含 NewProject**——CST 里新建/另存工程这类工程级指令只在命令宏
-（.mcr）上下文合法，实测在结构宏（.mcs）中会报 "Invalid instruction
-(NewProject)"。所以新建工程由你在 GUI 里做，宏只负责建模 + 另存。
+**两个必须同时满足的条件，缺一个 History List 就是空的**（实测踩过）：
+
+1. **建模必须是结构宏 `.mcs`**（不是控制宏 `.mcr`）。CST 的模型是
+   "历史表重放"出来的：控制宏的动作**不写进 History List**，会话里看着
+   几何/端口/监视器都建好了，但存盘重开就是**空工程**——这就是"打开一片
+   空白"的根因。
+2. **必须从 CST 主界面的 Macros 下拉菜单运行**。在 VBA 编辑器里点运行
+   图标，即使是结构宏也不写 History List。
+
+**宏里不含 NewProject/SaveAs**——工程级指令只在控制宏（.mcr）上下文合法，
+实测在结构宏里报 "Invalid instruction"。所以新建工程由你在 GUI 里做，
+另存交给配套的 `save_*.mcr`（或手工 File → Save As）。
 
 1. 打开 CST Studio 2024（GUI）
 2. **File → New**（模板选 `<None>`）新建一个空工程
-3. Home → Macros → Import Macro...，在导入对话框里把**文件类型切到
-   "CST Macro Files (\*.mcs; \*.mcr)"**（默认过滤器看不到宏文件），
-   选中 `cst/build_coupler_fwd.mcr` 打开
-   （不同小版本 UI 文案略有差异；另一条路：把文件直接拖进 CST 窗口）
-4. 运行宏 `Main` → 结尾弹**报告框** → 自动另存为 `cst/coupler_fwd.cst`
-   - 报告框写 "Template saved OK ... all blocks applied" = 全部成功；
-   - 写 "Template saved, but some blocks FAILED ..." = 括号里那些块
-     （激励/监视器/边界/求解器）**没生效**，按报告里的名字在 GUI 手工补，
-     再保存。**把这张报告框截图发回开发者**（用于按版本修正宏）。
-5. **再 File → New**，导入并运行 `cst/build_coupler_bwd.mcr` →
-   `cst/coupler_bwd.cst`
-6. 检查产物：两个 .cst 都已生成
-7. **打开 fwd 工程检查**（布局 = 论文 Fig.5）：
+3. 把 `cst/build_coupler_fwd.mcs` 放进 CST 能看到的宏目录，或
+   Home → Macros → Import Macro...（对话框里把**文件类型切到
+   "CST Macro Files (\*.mcs; \*.mcr)"**，默认过滤器看不到宏文件），
+   选中 `cst/build_coupler_fwd.mcs`
+4. **从主界面 Macros 下拉菜单里运行它**（不要进 VBA 编辑器点运行）
+   → 结尾弹**报告框**：
+   - "All blocks applied." = 全部成功；
+   - "Some blocks FAILED ..." = 括号里那些块（激励/监视器/边界/求解器）
+     **没生效**，按报告里的名字在 GUI 手工补。**把这张报告框截图发回
+     开发者**（用于按版本修正宏）。
+5. **立刻检查 History List 不为空**（Modeling 树 / Home → History List）：
+   应能看到 Units/Brick/Extrude/Port/Monitor/Boundary 一条条记录。
+   **空的就停下来**，把"你是从哪个菜单运行宏的"告诉我——这是第 1 条条件
+   没满足。
+6. **另存**：运行 `cst/save_coupler_fwd.mcr`（同样从 Macros 菜单），
+   或直接在 GUI 里 File → Save As → `cst/coupler_fwd.cst`
+7. **再 File → New**，重复 3–6，用 bwd 那两个宏 → `cst/coupler_bwd.cst`
+8. 检查产物：两个 .cst 都已生成
+9. **打开 fwd 工程检查**（布局 = 论文 Fig.5）：
    - 模型：基板（Rogers4350B 30mil，x∈[−5.6,17.6] y∈[−7,5.6]）、
      接地 PEC、空气盒（Vacuum，z 到 4.0）、直通线（上方横贯整板）、
      "⊓"形耦合臂（横段 + 两条腿下到板底）、设计区金属
@@ -73,27 +89,26 @@ python scripts/build_cst_template.py cst/
      静默的）。**端口与模式必须成对**：实测 `.StimulationPort "1"` +
      `.StimulationMode "All"` 会让 Solver.Start 直接报
      "Invalid stimulation port, please specify."
-8. **bwd 工程同样检查，激励改为端口 3**，保存
-9. **回头验一下保存出来的模板文件本身**（不用 CST，纯 Python）：
-   ```bash
-   python scripts/cst_inspect_template.py
-   ```
-   两个模板都应报 "在 .cst 内部搜到模型对象名: {...substrate...}"
-   和 "⇒ 模型数据在文件里"。**若报"空工程"**：宏跑完时的工程是好的、
-   但保存出来的文件是空的（CST 有"宏建模 + Save As 后 components 为空"
-   的已知案例）——在 GUI 里把那个有模型的工程用 **File → Save As**
-   手工另存一次（覆盖同名文件），再跑一遍本检查确认。
+10. **bwd 工程同样检查，激励改为端口 3**，另存
+11. **回头验一下保存出来的模板文件本身**（不用 CST，纯 Python）：
+    ```bash
+    python scripts/cst_inspect_template.py
+    ```
+    它两处都查（`.cst` 内部 + 同名文件夹），并打印文件头 8 字节。
+    **两处都搜不到 `substrate`/`design_region` 等对象名才叫空工程**；
+    若 `.cst` 搜不到而同名文件夹搜得到，那是检查工具早先只盯 `.cst`
+    造成的误判（已修）。
 
-## 2.5 （可选）诊断宏 polygon_test.mcr
+## 2.5 （可选）诊断宏 polygon_test.mcs
 
 pipeline 每轮迭代都用 `Extrude "Pointlist"` 重建任意轮廓（design_region
 组件），所以必须确认这个模式生成的是**直边多边形**（尖角保留），而不是
 把点列拟合成曲线。
 
-- 在任意**空工程**里运行 `cst/polygon_test.mcr`（File → New → 导入宏 →
-  运行 Main），会建出两个实体：L 形（6 点、含 90° 内角）和方形（4 点）
-- 俯视图看：两者都应是直边、尖角
-- **只在第 7 步看到弧边时才需要做这一步**；把结果（或截图）发回开发者。
+- 在任意**空工程**里从 **Macros 菜单**运行 `cst/polygon_test.mcs`
+  （File → New → 运行），会建出两个实体：L 形（6 点、含 90° 内角）和方形
+- 俯视图看：两者都应是直边、尖角；History List 应出现两条 Extrude
+- **只在第 9 步看到弧边时才需要做这一步**；把结果（或截图）发回开发者。
   若确实出现弧边，重建方式要改（这是 pipeline 的硬依赖）
 
 > 若宏在某条指令上报错（如 "Invalid instruction (xxx)" 或
@@ -185,15 +200,27 @@ python scripts/run_coupler.py configs/coupler.yaml
 
 - **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
   或确认许可证正常、CST 可以独立打开。
-- **打开的工程是个空壳（导航树光秃秃、没几何、没端口、没结果）**：两种
+- **"宏跑完工程里几何/端口/监视器都好好的，但 History List 是空的"**
+  （→ 存盘重开就是空工程，**这是"打开一片空白"最常见的根因**）：两个
+  条件必须同时满足——
+  1. **建模宏必须是结构宏 `.mcs`**。CST 的模型是"历史表重放"出来的：
+     控制宏（`.mcr`）的动作**不写 History List**，会话里看着都建好了，
+     存盘却没有模型。我们早期生成的正是 `.mcr`，实测踩了这个坑；现在
+     建模走 `build_<project>.mcs`，另存走 `save_<project>.mcr`。
+  2. **必须从 CST 主界面的 Macros 下拉菜单运行**。在 VBA 编辑器里点运行
+     图标，即使文件是结构宏也不写 History List。
+  判别：跑完先看 History List，空的就是上面某条没满足。
+- **打开的工程是个空壳（导航树光秃秃、没几何、没端口、没结果）**：三种
   原因，先分清——
-  1. **模板文件本身就是空的**：跑 `python scripts/cst_inspect_template.py`
+  1. **历史表是空的**（上一条）：模板存盘时模型就没存下来。跑
+     `python scripts/cst_inspect_template.py` 判别，按上一条重建；
+  2. **模板文件本身就是空的**：跑 `python scripts/cst_inspect_template.py`
      （不用 CST）。它**两处都查**——`.cst` 当 zip 看（读不动就退回搜原始
      字节）+ 同名文件夹递归搜 `substrate`/`design_region`/`Port 1` 这些
-     对象名。**两处都搜不到** ⇒ 空工程，与读取 API 无关，按第 2 节第 9
-     条重建/手工另存模板；只有 `.cst` 搜不到而同名文件夹搜得到 ⇒ 是下一条
-     的复制姿势问题，模板本身没毛病；
-  2. **模板是好的，但复制时丢了配套文件夹**：CST 工程是
+     对象名。**两处都搜不到** ⇒ 空工程，与读取 API 无关，按第 2 节重建
+     模板；只有 `.cst` 搜不到而同名文件夹搜得到 ⇒ 是下一条的复制姿势
+     问题，模板本身没毛病；
+  3. **模板是好的，但复制时丢了配套文件夹**：CST 工程是
      `<名字>.cst` + **同名文件夹**（外部结果目录）**两件东西**，只搬
      `.cst` 会打开成缺结果的工程。项目的复制路径已统一到
      `eaopt/solver/cst_project.py::copy_project`（连同名文件夹一起搬，
@@ -207,10 +234,12 @@ python scripts/run_coupler.py configs/coupler.yaml
   文件夹递归搜对象名），并打印文件头 8 字节（`50 4B 03 04` 才是 zip）。
   判定以"**两处都搜不到 `substrate`/`design_region` 等对象名**"为准。
 - **"宏建模成功、工程里有几何和端口，但另存出来的文件打开是空的"**：
-  CST 的已知案例（宏自动建模 + Save As 后 components 为空）。对策：
-  保存后在 GUI 里关掉再重新打开那个 `.cst` 确认一次；确认它是空的就用
-  **File → Save As** 手工另存覆盖。`scripts/cst_inspect_template.py`
-  能在不打开 CST 的情况下告诉你文件里到底有没有模型。
+  **先看 History List**——空的话就是上面那条（宏类型/运行方式），不是
+  另存的问题。历史表非空却仍存空，才考虑 CST 的"宏建模 + Save As 后
+  components 为空"老案例：在 GUI 里关掉再重新打开那个 `.cst` 确认，
+  确认是空的就用 **File → Save As** 手工另存覆盖。
+  `scripts/cst_inspect_template.py` 能在不打开 CST 的情况下告诉你文件里
+  到底有没有模型。
 - **宏运行到某条命令报错**：把宏日志/报错截图或文本贴回，按 2024
   版本命令名修正宏生成器。**几何/端口段**的报错会中止宏（这是故意的：
   模板建不出来就没有意义）；**设置段**（激励/监视器/边界/求解器）

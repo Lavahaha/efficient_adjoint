@@ -2,9 +2,10 @@
 
 设计要点：
   - 双模板：coupler_fwd.cst（端口 1 激励）与 coupler_bwd.cst（端口 3
-    激励），由 scripts/build_cst_template.py 生成的 .mcr 命令宏在 CST
-    GUI 中执行一次创建。激励"烤死"在模板里，pipeline 不触碰激励 API
-    （版本兼容性最稳）；
+    激励），由 scripts/build_cst_template.py 生成的**结构宏 .mcs** 在
+    CST GUI 中执行一次创建（必须是结构宏、必须从 Macros 菜单运行，否则
+    动作不进 History List —— 见 template_builder 头部）。激励"烤死"在
+    模板里，pipeline 不触碰激励 API（版本兼容性最稳）；
   - build_model 只重建两个工程中的 "design_region" 组件（可动金属
     多边形挤出 35µm），其余几何/设置永不改动；
   - 场导出：ASCII 后端（版本最稳），解析器见 ascii_fields.py；
@@ -124,6 +125,16 @@ class CstSolver(SolverInterface):
     # 建模（COM 对象模型，与 vba.py 的字符串命令一一对应）
     # ------------------------------------------------------------------ #
     def _rebuild_design(self, mws, polys: list[np.ndarray]) -> None:
+        """重建设计区组件（每轮迭代）。
+
+        TODO(正确性)：这里用的是**直接 COM 调用**，它只改当前模型、不写
+        History List。CST 的模型是"历史表重放"出来的，模板里已经有
+        arm_init 的挤出记录；求解时一旦重放历史，旧的 design_region 会
+        被复活，梯度就作用在错的模型上。正式迭代前需要改成
+        `mws.AddToHistory(header, 命令文本)`（既执行又记录，签名见 CST
+        文档 / python 端的 add_to_history）。smoke 的 3c 节会枚举 mws 的
+        History 成员，先确认该方法在 COM 上可用（`scripts/cst_smoke.py`）。
+        """
         try:
             mws.Component.Delete("design_region")
         except Exception:

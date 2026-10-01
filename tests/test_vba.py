@@ -267,23 +267,28 @@ def test_config_design_box_agrees_with_template():
     assert allowed.y[1] == T.THRU_LO                 # 臂不得越过直通线下缘
 
 
+def _model_macros(paths):
+    """从 build_all_templates 的产物里挑出建模宏（.mcs）。"""
+    return [p for p in paths if p.suffix == ".mcs"]
+
+
 def test_build_macro_each_template_is_self_contained(tmp_path):
-    """每个模板一个命令宏：全字面量、无工程级指令、自带 SaveAs。"""
+    """每个模板一个**结构宏**（.mcs）：全字面量、无工程级指令、建模齐全。"""
     paths = build_all_templates(tmp_path)
-    assert [p.name for p in paths] == ["build_coupler_fwd.mcr",
-                                       "build_coupler_bwd.mcr"]
-    for path, project, port in zip(paths, ("coupler_fwd", "coupler_bwd"), (1, 3)):
-        assert path.suffix == ".mcr"  # 命令宏：工程级指令仅在此上下文合法
+    runs = _model_macros(paths)
+    assert [p.name for p in runs] == ["build_coupler_fwd.mcs",
+                                      "build_coupler_bwd.mcs"]
+    for path, project, port in zip(runs, ("coupler_fwd", "coupler_bwd"), (1, 3)):
         assert path.read_bytes().count(b"\r\n") > 10  # Windows VBA 换行
         text = path.read_text(encoding="utf-8")
         assert text.startswith("'#Language \"WWB-COM\"")
         assert "Sub Main()" in text and "End Sub" in text
-        # 只看可执行语句（注释里会提到 NewProject 以说明为何不用它）
+        # 只看可执行语句（注释里会提到 NewProject/SaveAs 以说明为何不用）
         code = "\n".join(l for l in text.splitlines()
                          if not l.lstrip().startswith("'"))
         assert "NewProject" not in code  # 实测非法：新建工程由 GUI 完成
+        assert "SaveAs" not in code      # 工程级指令 → 交给 save_*.mcr
         assert "portnum As Integer" not in text  # 参数全部字面量
-        assert 'SaveAs "' in text and f"{project}.cst" in text
         # 只激励本模板的端口，且端口与模式成对（实测 "x"+"All" 会被
         # Solver.Start 拒绝）
         assert f'.StimulationPort "{port}"' in text
@@ -306,7 +311,7 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
         assert '.Zmax "electric"' in text
         assert text.count('"magnetic"') == 5
     # 激励端口互不相同（fwd=1 / bwd=3），且不使用 Excitation 对象
-    fwd, bwd = (p.read_text(encoding="utf-8") for p in paths)
+    fwd, bwd = (p.read_text(encoding="utf-8") for p in runs)
     assert '.StimulationPort "1"' in fwd and '.StimulationPort "3"' not in fwd
     assert '.StimulationPort "3"' in bwd and '.StimulationPort "1"' not in bwd
     # 只看可执行语句（注释里会提到 Excitation 以说明为何不用它）
@@ -317,19 +322,36 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
     assert 'Solver.FrequencyRange "0", "10"' in fwd
 
 
+def test_save_macros_are_control_macros(tmp_path):
+    """另存必须是**控制宏**（.mcr）：工程级指令只在控制宏上下文合法。"""
+    paths = build_all_templates(tmp_path)
+    saves = [p for p in paths if p.suffix == ".mcr"]
+    assert [p.name for p in saves] == ["save_coupler_fwd.mcr",
+                                       "save_coupler_bwd.mcr"]
+    for path, project in zip(saves, ("coupler_fwd", "coupler_bwd")):
+        text = path.read_text(encoding="utf-8")
+        assert 'SaveAs "' in text and f"{project}.cst" in text
+        # SaveAs 必须带第二个参数（实测只给路径报 10097），两种写法都试
+        assert '.cst", "False"' in text and '.cst", "True"' in text
+        # 不改模型：没有建模指令
+        assert "With Brick" not in text and "With Port" not in text
+        code = "\n".join(l for l in text.splitlines()
+                         if not l.lstrip().startswith("'"))
+        assert "NewProject" not in code
+
+
 def test_templates_differ_only_in_stimulation_and_save_path(tmp_path):
     """双模板设计的硬不变量：两个工程必须是同一套几何/端口/监视器/边界，
     只差"激励哪个端口"和另存路径。否则伴随法的正/反向场不在同一个模型上。"""
-    paths = build_all_templates(tmp_path)
+    paths = _model_macros(build_all_templates(tmp_path))
     texts = [p.read_text(encoding="utf-8") for p in paths]
 
     def strip(text):
         out = text.replace('.StimulationPort "1"', '.StimulationPort "X"')
         out = out.replace('.StimulationPort "3"', '.StimulationPort "X"')
-        # 只差激励端口与另存路径（含结尾报告框里的路径/工程名）
+        # 只差激励端口与结尾报告框里的工程名
         return [l for l in out.splitlines()
-                if "SaveAs" not in l and "MsgBox" not in l
-                and not l.lstrip().startswith("'")]
+                if "MsgBox" not in l and not l.lstrip().startswith("'")]
     assert strip(texts[0]) == strip(texts[1])
 
 
@@ -343,19 +365,26 @@ def test_settings_blocks_are_error_guarded(tmp_path):
     # 保护区之外：几何与端口（失败就该中止，不吞错）
     assert guard_at > text.rindex("With Extrude")
     assert guard_at > text.rindex("With Port")
-    # 保护区之内：5 个设置块 + SaveAs（两种写法）= 7 个错误检查
-    assert text.count("If Err.Number <> 0 Then") == 7
-    assert text.count("Err.Clear") == 14  # 5 块 ×2 + SaveAs 两写法 ×2
+    # 保护区之内：5 个设置块（每块 2 次 Err 操作）
+    assert text.count("If Err.Number <> 0 Then") == 5
+    assert text.count("Err.Clear") == 10
     for label in ("Solver", "FrequencyRange", "Monitor Efield",
-                  "Monitor Hfield", "Boundary", "SaveAs"):
+                  "Monitor Hfield", "Boundary"):
         assert f'errLog = errLog & "{label}: ("' in text
-    # SaveAs 必须带第二个参数（CST 2024 实测只给路径报 10097 wrong number
-    # of parameters），两种布尔写法都试
-    assert '.cst", "False"' in text and '.cst", "True"' in text
-    # 顺序：保护开始 → 各块 → SaveAs → 保护结束 → 报告框
-    # （SaveAs 在保护区内，失败了宏也能走到报告框）
-    assert guard_at < text.index('SaveAs "') < release_at < text.index("MsgBox")
     assert "Dim errLog As String" in text
+    # 顺序：各设置块 → 保护结束 → 报告框
+    assert guard_at < release_at < text.index("MsgBox")
+
+
+def test_save_macro_reports_failure_instead_of_aborting(tmp_path):
+    """另存失败（实测 10097 参数个数）要写进报告框，而不是抛出去。"""
+    from eaopt.solver.template_builder import build_save_macro
+
+    text = build_save_macro(tmp_path, "demo").read_text(encoding="utf-8")
+    assert text.count("On Error Resume Next") == 1
+    assert text.count("If Err.Number <> 0 Then") == 2      # 两种写法
+    assert 'errLog = errLog & "SaveAs: ("' in text
+    assert "MsgBox" in text and "SaveAs FAILED" in text
 
 
 def test_macro_code_is_ascii_comments_may_be_chinese(tmp_path):
@@ -371,8 +400,21 @@ def test_macro_code_is_ascii_comments_may_be_chinese(tmp_path):
 
 def test_build_macro_single(tmp_path):
     path = build_macro(tmp_path, "demo", 2)
-    assert path.name == "build_demo.mcr"
-    assert "demo.cst" in path.read_text(encoding="utf-8")
+    assert path.name == "build_demo.mcs"
+    assert '.StimulationPort "2"' in path.read_text(encoding="utf-8")
+
+
+def test_model_macro_is_structure_macro_not_control(tmp_path):
+    """建模宏必须是 .mcs：.mcr（控制宏）的动作不进 History List，
+    存盘重开就是空工程（服务器实测）。"""
+    from eaopt.solver.template_builder import build_save_macro
+
+    assert build_macro(tmp_path, "demo", 1).suffix == ".mcs"
+    assert build_save_macro(tmp_path, "demo").suffix == ".mcr"
+    text = build_macro(tmp_path, "demo", 1).read_text(encoding="utf-8")
+    # 文档/注释里说明为什么必须是结构宏、以及必须从 Macros 菜单运行
+    assert "History List" in text
+    assert "Macros" in text
 
 
 def test_polygon_test_macro_has_two_extrudes(tmp_path):
@@ -380,7 +422,7 @@ def test_polygon_test_macro_has_two_extrudes(tmp_path):
     from eaopt.solver import template_builder as T
 
     path = build_polygon_test_macro(tmp_path)
-    assert path.name == "polygon_test.mcr"
+    assert path.name == "polygon_test.mcs"    # 建模宏 → 结构宏
     text = path.read_text(encoding="utf-8")
     assert text.count("With Extrude") == 2
     assert text.count('.Mode "Pointlist"') == 2

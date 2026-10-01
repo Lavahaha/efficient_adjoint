@@ -1,24 +1,39 @@
-"""CST 双模板宏（.mcr 命令宏）生成（本地可单测，无需 CST）。
+"""CST 双模板宏生成（本地可单测，无需 CST）。
 
-命名与类型的两点约束（均为 CST 2024 实测/文档结论）：
+宏类型（CST 2024 实测 + 官方文档结论）——**这是最容易踩的坑**：
+  - **结构宏 `.mcs`**：建模类指令，动作**写进 History List**，CST 拿它
+    重放生成模型；
+  - **控制宏 `.mcr`**：控制/工程类指令（新建/打开/另存/后处理），
+    动作**不进 History List**。
+
+  服务器实测：用 .mcr 建出来的工程，几何/端口/监视器在会话里都正常，
+  但 **History List 是空的** ⇒ 存盘重开就是空工程（"打开一片空白"的
+  根因）。所以建模必须用 .mcs。
+
+  **另一个同等重要的条件**：即使文件是 .mcs，也**必须在 CST 主界面的
+  Macros 下拉菜单里运行**——在 VBA 编辑器里点运行图标执行，不会写
+  History List。两条都满足才进历史表。
+
+其他约束：
   1. Import Macro 对话框只列 "CST Macro Files (*.mcs; *.mcr)"，.bas 不可见；
-  2. CST 宏分两类——命令宏（.mcr，控制类指令）/ 结构宏（.mcs，建模类指令，
-     动作进 History List）。**工程级指令（新建/打开/另存工程）只在命令宏
-     上下文合法**：在 .mcs 里执行 NewProject 实测报 "Invalid instruction"。
-     故本宏不含 NewProject，只做"建模 + SaveAs"，新建工程由用户在 GUI 中
-     File → New 完成；且所有参数写字面量，不依赖 VBA 变量传参。
-  3. **SaveAs 必须带两个参数**：命令宏里 `SaveAs "<路径>"` 实测报
+  2. **工程级指令只在控制宏上下文合法**：在 .mcs 里执行 NewProject 实测
+     报 "Invalid instruction"。故建模宏（.mcs）不含 NewProject/SaveAs，
+     新建工程由用户在 GUI 中 File → New 完成，另存交给配套的
+     save_<project>.mcr（或 GUI 手工另存）；所有参数写字面量，不依赖
+     VBA 变量传参。
+  3. **SaveAs 必须带两个参数**：`SaveAs "<路径>"` 实测报
      "(10097) ActiveX Automation: wrong number of parameters"，需再给一个
      布尔（见 vba.guarded_alternatives 调用处）。
-  4. 设置类块（激励/监视器/边界/求解器/另存）逐个容错，失败只记入
-     结尾的报告框——CST 2024 实测 `Excitation.Reset` 报 "(10090)"，
-     未加保护会让整个宏中止。
+  4. 设置类块（激励/监视器/边界/求解器）逐个容错，失败只记入结尾的报告
+     框——CST 2024 实测 `Excitation.Reset` 报 "(10090)"，未加保护会让整个
+     宏中止。
 
 用法（每个模板一次，共两次）：
-  CST → File → New（模板 <None>）→ 导入并运行 build_coupler_fwd.mcr
-  → 生成 <输出目录>/coupler_fwd.cst；再 File → New → 运行
-  build_coupler_bwd.mcr → coupler_bwd.cst。
-另有诊断宏 polygon_test.mcr（可选，见 build_polygon_test_macro）。
+  CST → File → New（模板 <None>）→ Macros 菜单运行 build_coupler_fwd.mcs
+  → 确认 History List 非空、几何与 4 个端口都在 → 运行 save_coupler_fwd.mcr
+  （或 File → Save As）→ 得到 <输出目录>/coupler_fwd.cst；
+  再 File → New → build_coupler_bwd.mcs → save_coupler_bwd.mcr → coupler_bwd.cst。
+另有诊断宏 polygon_test.mcs（可选，见 build_polygon_test_macro）。
 
 几何布局（单位 mm，z=0 为基板顶面；按论文 Fig. 5 与 w/d/g 参数）：
     直通线（固定，端口 1-2）：y∈[1.0,2.6]（w=1.6），x 贯通整块板
@@ -203,17 +218,29 @@ TEMPLATES = (
 
 
 def build_macro(outdir: Path, project: str, portnum: int) -> Path:
-    """生成单个命令宏 build_<project>.mcr：在当前空工程中建模并另存。"""
+    """生成**结构宏** build_<project>.mcs：在当前空工程中建模。
+
+    **为什么必须是 .mcs（结构宏）而不是 .mcr（控制宏）**——服务器实测：
+    .mcr 跑完几何/端口/监视器都"看起来"建好了，但 **History List 是空
+    的**。CST 的模型是"历史表重放"出来的：历史为空 ⇒ 存盘出来的工程
+    重开就是空的（这正是"打开一片空白"的根因）。结构宏的动作才会写进
+    History List（见 docs/server_runbook.md 第 2 节）。
+
+    另存不在这里做：SaveAs 是**工程级指令**，只在控制宏上下文合法
+    （在 .mcs 里报 "Invalid instruction"），由配套的 build_save_macro
+    生成的 save_<project>.mcr 负责，或用户在 GUI 里手工 File → Save As。
+    """
     outdir = outdir.resolve()
     outdir.mkdir(parents=True, exist_ok=True)
-    target = (outdir / f"{project}.cst").as_posix()
-    fname = f"build_{project}.mcr"
+    fname = f"build_{project}.mcs"
 
     body = [
         "'#Language \"WWB-COM\"",
-        f"' CST 命令宏：建立 {project} 模型并另存为 {target}",
+        f"' CST **结构宏**（.mcs）：建立 {project} 模型。动作会进 History List。",
         "' 运行前请先 File -> New 新建一个空工程（模板选 <None>）",
-        "' 本宏不含 NewProject（工程级指令在宏上下文非法，见模块头部说明）",
+        "' **必须在 CST 主界面的 Macros 下拉菜单里运行**：在 VBA 编辑器里",
+        "' 点运行图标，即使是结构宏也不写 History List（实测结论）。",
+        "' 本宏不含 NewProject/SaveAs（工程级指令只在控制宏里合法）。",
         "",
         "Sub Main()",
         "    Dim errLog As String",
@@ -231,16 +258,16 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
     body += _ports()
     body += [
         "",
-        "    ' ---- 设置类块：逐块容错。CST 2024 命令宏里设置类命令实测报过",
+        "    ' ---- 设置类块：逐块容错。CST 2024 宏里设置类命令实测报过",
         "    ' (10090) ActiveX Automation error / (10097) wrong number of",
-        "    ' parameters；不加保护的话整个宏会中止、连 SaveAs 都跑不到，",
-        "    ' 而且用户看不到到底哪块失败。几何与端口不加保护：它们失败",
-        "    ' 必须中止（模板建不出来就没有意义）。",
+        "    ' parameters；不加保护的话整个宏会中止，而且用户看不到到底",
+        "    ' 哪块失败。几何与端口不加保护：它们失败必须中止（模板建不",
+        "    ' 出来就没有意义）。",
         "    On Error Resume Next",
     ]
     for block, label in (
         # 只激励本模板指定的端口（fwd→1 / bwd→3）。用 Solver 的
-        # StimulationPort，不用 Excitation 对象（后者在 CST 2024 命令宏里
+        # StimulationPort，不用 Excitation 对象（后者在 CST 2024 里
         # 报 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
         # 端口与模式成对给出（"1"/"1"）：实测 "1" + "All" 会让
         # Solver.Start 报 "Invalid stimulation port, please specify."。
@@ -252,27 +279,20 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
                           "magnetic", "electric"), "Boundary"),
     ):
         body.append(V.guarded(block, label))
-    # 另存：也放进保护区。CST 2024 命令宏里 SaveAs 只给路径会报
-    # "(10097) wrong number of parameters"，需再给一个布尔；两种布尔的
-    # 含义在不同版本文档里说法不一（覆盖开关 / 另存副本），故两种都试。
-    # 放进保护区的另一个作用：SaveAs 若失败，宏仍走到结尾的报告框，
-    # 用户能一次看到所有失败块（上一版 SaveAs 在保护区外，报告框都没弹）。
-    body.append(V.guarded_alternatives(
-        [f'SaveAs "{target}", "False"',
-         f'SaveAs "{target}", "True"'],
-        "SaveAs"))
     body += [
         "    On Error GoTo 0",
         "",
-        "    ' 报告：明确告诉用户宏是否跑完、哪些块要手工补",
+        "    ' 报告：明确告诉用户哪些块要手工补，以及接下来该干什么",
         "    If Len(errLog) > 0 Then",
-        f'        MsgBox "Template saved, but some blocks FAILED and must be '
-        f'set by hand (see docs/server_runbook.md):" & vbCrLf & vbCrLf & '
-        f'errLog & vbCrLf & "saved: {target}", vbExclamation, '
-        f'"{project} template"',
+        f'        MsgBox "Some blocks FAILED and must be set by hand '
+        f'(see docs/server_runbook.md):" & vbCrLf & vbCrLf & errLog, '
+        f'vbExclamation, "{project} structure macro"',
         "    Else",
-        f'        MsgBox "Template saved OK: {target}" & vbCrLf & '
-        f'"all blocks applied", vbInformation, "{project} template"',
+        f'        MsgBox "All blocks applied." & vbCrLf & vbCrLf & '
+        f'"Now: (1) check History List is NOT empty and shows the solids/'
+        f'ports, (2) run save_{project}.mcr (or File -> Save As) to '
+        f'write {project}.cst.", vbInformation, '
+        f'"{project} structure macro"',
         "    End If",
         "End Sub",
     ]
@@ -282,10 +302,59 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
     return path
 
 
+def build_save_macro(outdir: Path, project: str) -> Path:
+    """生成配套的**控制宏** save_<project>.mcr：把当前工程另存为模板。
+
+    与 build_<project>.mcs 分开的原因：SaveAs 是工程级指令，只在控制宏
+    （.mcr）上下文合法。跑完结构宏、在 GUI 里确认几何/端口都在之后，
+    运行本宏即可；也可以直接 File → Save As，效果一样。
+    """
+    outdir = outdir.resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+    target = (outdir / f"{project}.cst").as_posix()
+    body = [
+        "'#Language \"WWB-COM\"",
+        f"' CST 控制宏（.mcr）：把当前工程另存为 {target}",
+        "' 先跑 build_*.mcs（结构宏）并确认 History List 非空，再跑本宏。",
+        "",
+        "Sub Main()",
+        "    Dim errLog As String",
+        '    errLog = ""',
+        "    On Error Resume Next",
+    ]
+    # SaveAs 只给路径会报 "(10097) wrong number of parameters"，需再给
+    # 一个布尔；两种布尔的含义在不同版本文档里说法不一（覆盖开关 /
+    # 另存副本），故两种都试。
+    body.append(V.guarded_alternatives(
+        [f'SaveAs "{target}", "False"',
+         f'SaveAs "{target}", "True"'],
+        "SaveAs"))
+    body += [
+        "    On Error GoTo 0",
+        "    If Len(errLog) > 0 Then",
+        f'        MsgBox "SaveAs FAILED:" & vbCrLf & errLog & vbCrLf & '
+        f'"use File -> Save As by hand.", vbExclamation, '
+        f'"{project} save"',
+        "    Else",
+        f'        MsgBox "Saved: {target}", vbInformation, "{project} save"',
+        "    End If",
+        "End Sub",
+    ]
+    path = outdir / f"save_{project}.mcr"
+    path.write_text("\n".join(body), encoding="utf-8", newline="\r\n")
+    return path
+
+
 def build_all_templates(outdir: Path) -> list[Path]:
-    """生成全部模板命令宏（fwd/bwd 各一个）。"""
-    return [build_macro(outdir, project, portnum)
-            for project, portnum in TEMPLATES]
+    """生成全部模板宏：每个模板一对（结构宏 .mcs + 另存控制宏 .mcr）。
+
+    顺序：fwd 的 .mcs/.mcr，然后 bwd 的 .mcs/.mcr。
+    """
+    out: list[Path] = []
+    for project, portnum in TEMPLATES:
+        out.append(build_macro(outdir, project, portnum))
+        out.append(build_save_macro(outdir, project))
+    return out
 
 
 # ---- 诊断宏：确认 Extrude "Pointlist" 生成的是直边多边形 ----
@@ -298,20 +367,24 @@ POLYGON_TEST_SHAPES = (
 
 
 def build_polygon_test_macro(outdir: Path) -> Path:
-    """生成诊断宏 polygon_test.mcr：用同一个 polygon_extrude 建 L 形 + 方形。
+    """生成诊断**结构宏** polygon_test.mcs：用同一个 polygon_extrude 建
+    L 形 + 方形。
 
     pipeline 每轮迭代都要用 Extrude 重建任意轮廓（design_region），
     所以必须确认该模式生成的是**直边多边形**（尖角保留、首尾以直线
-    闭合），而不是把点列拟合成曲线/样条。在任意空工程里运行本宏后
-    肉眼核对：两个实体都是直边、L 形六个尖角。若出现弧边，则重建
-    方式要改（换曲线对象或改用 Brick 拼）。
+    闭合），而不是把点列拟合成曲线/样条。在任意空工程里（从 Macros
+    菜单）运行本宏后肉眼核对：两个实体都是直边、L 形六个尖角。若出现
+    弧边，则重建方式要改（换曲线对象或改用 Brick 拼）。
+
+    用 .mcs 而非 .mcr：它要建模，必须进 History List（见模块头部）。
     """
     outdir = outdir.resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     body = [
         "'#Language \"WWB-COM\"",
-        "' 诊断宏：检查 Extrude \"Pointlist\" 是否为直边多边形",
-        "' 在任意空工程中运行，然后看模型：L 形与方形都应直边、尖角",
+        "' 诊断结构宏：检查 Extrude \"Pointlist\" 是否为直边多边形",
+        "' 从 CST 主界面的 Macros 菜单运行（在编辑器里点运行不进历史表）",
+        "' 然后看模型：L 形与方形都应直边、尖角，且 History List 非空",
         "",
         "Sub Main()",
         "    With Units",
@@ -323,6 +396,6 @@ def build_polygon_test_macro(outdir: Path) -> Path:
     for name, pts in POLYGON_TEST_SHAPES:
         body.append(V.polygon_extrude(name, "component1", "PEC", pts, METAL_T))
     body.append("End Sub")
-    path = outdir / "polygon_test.mcr"
+    path = outdir / "polygon_test.mcs"
     path.write_text("\n".join(body), encoding="utf-8", newline="\r\n")
     return path
