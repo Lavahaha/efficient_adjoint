@@ -6,19 +6,21 @@
 
 依次验证并打印：
   1. COM 连接（Dispatch / GetActiveObject）；
-  2. 打开模板副本；
+  2. 打开模板副本（并打印模板大小/最后修改时间——旧时间戳说明宏的
+     SaveAs 没覆盖掉旧文件）；
   2b. 模板 .cst 里内嵌的激励相关字符串（看宏到底把什么存了进去）；
   3. 工程状态探针（`GetSolverType` / `Solver.GetNumberOfPorts` /
      `ObjectExists`——CST 的 GetXxx 多为**属性**，加括号调用会报
      "'str' object is not callable"）；
-  3b. 激励设置：逐个候选试到 Solver.Start 成功为止。实测 `"Port 1"` 会报
-     「please specify a positive integer value or "All"」（⇒ 要的是数字），
-     而 `"1"` 报 "Invalid stimulation port" —— 说明**格式对但端口不存在**，
-     所以先看 3 里读到的端口数；
-  4. S 参数读取：列结果树子条目 + 逐候选调用链
-     （GetResultIDsFromTreeItem / GetResultFromTreeItem / GetArray）；
-  5. 结果树中的监视器条目路径（SelectTreeItem 必须能选中）；
-  6. E 场 ASCII 导出：属性探针 + 候选配置（打印文件头——用于核对
+  3b. 激励设置：逐个候选试到 Solver.Start 成功为止；
+  3c. **COM 方法枚举**（问类型库要真实成员表，不再逐个猜 API 名字）；
+  4. S 参数读取：先列结果树真实条目，再用解析到的**真实路径**逐候选读取
+     （GetResultIDsFromTreeItem / GetResultFromTreeItem / GetArray），
+     诊断原始错误一并打印；
+  4b. S 参数曲线（4.5–5.5 GHz，对标论文初始设计）；
+  4c. 备选链 GetFileFromTreeItem + Result1DComplex（不依赖结果树数组布局）；
+  5. 结果树中的监视器条目路径（惯例路径 vs 实际匹配）+ SelectTreeItem；
+  6. E 场 ASCII 导出：属性探针 + 候选配置 + 文件头（用于核对
      ascii_fields.parse_ascii_field 与 CST 2024 真实格式）。
 
 输出即诊断报告：把完整输出贴回给开发者。
@@ -36,6 +38,40 @@ def _short(exc: BaseException, limit: int = 140) -> str:
     """异常信息压成一行（pywin32 的错误元组很长）。"""
     s = str(exc).replace("\n", " ")
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def enum_com_methods(obj, label: str, keyword: str | None = None) -> None:
+    """打印 COM 对象的真实成员名（读 IDispatch 类型库）。
+
+    比逐个猜名字可靠得多：CST 各版本方法名有出入，这里直接问 COM 要
+    成员表。keyword 非空时只打印名字含该串的成员（工程对象有几百个方法，
+    全打印会淹掉输出）。
+    """
+    ole = getattr(obj, "_oleobj_", obj)     # 已包成 PyIDispatch 的也能用
+    try:
+        ti = ole.GetTypeInfo()
+        ta = ti.GetTypeAttr()
+        n = ta.cFuncs
+    except Exception as e:
+        print(f"    {label}: 拿不到类型信息（{_short(e)}）")
+        return
+    names: list[str] = []
+    for i in range(n):
+        try:
+            fd = ti.GetFuncDesc(i)
+            nm = ti.GetNames(fd.memid)[0]
+        except Exception:
+            continue
+        if keyword and keyword.lower() not in nm.lower():
+            continue
+        names.append(nm)
+    names = sorted(set(names))
+    head = f"    {label}: {n} 个成员"
+    if keyword:
+        head += f"，名字含 {keyword!r} 的 {len(names)} 个"
+    print(head)
+    for nm in names:
+        print("      " + nm)
 
 
 def probe_project_bytes(path: Path) -> None:
@@ -80,6 +116,7 @@ def main() -> None:
 
     cfg = CaseConfig.from_yaml(args.config)
     tpl = Path(args.template) if args.template else Path(cfg.solver.template_fwd)
+    f0 = float(cfg.frequency)
 
     import win32com.client
 
@@ -133,7 +170,7 @@ def main() -> None:
         try:
             print(f"    {label} = {expr()!r}")
         except Exception as e:
-            print(f"    {label}: 读不到 ({e})")
+            print(f"    {label}: 读不到 ({_short(e)})")
     try:
         n_ports = int(mws.Solver.GetNumberOfPorts)
         if n_ports <= 0:
@@ -201,22 +238,43 @@ def main() -> None:
             print("    !! 注意：这是兜底写法，场监视器里是四端口叠加场，"
                   "只能用来验证 API，不能用于伴随梯度")
 
+    print("=" * 60)
+    print("3c) COM 方法枚举（直接问类型库，不再猜 API 名字）")
+    print("=" * 60)
     rt = mws.ResultTree
+    for kw in ("Result", "Export", "Tree", "Field", "ASCII"):
+        enum_com_methods(mws, "mws", keyword=kw)
+    enum_com_methods(rt, "mws.ResultTree")
+    enum_com_methods(mws.ASCIIExport, "mws.ASCIIExport")
+    enum_com_methods(mws.Solver, "mws.Solver")
+    enum_com_methods(mws.Solver, "mws.Solver", keyword="Stimulation")
+
     p_in = cfg.objective.from_port
 
-    def s_complex(p_to: int, freq_ghz: float):
+    def resolve_sparam(i_to: int):
+        """S 参数条目的真实路径（先按前缀在结果树里找）。"""
+        folder = "1D Results\\S-Parameters"
         notes: list[str] = []
-        v = cst_api.s_param_at(
-            rt, f"1D Results\\S-Parameters\\S{p_to},{p_in}", freq_ghz, notes)
+        got = cst_api.find_item(rt, folder, f"S{i_to},{p_in}", notes)
+        return (got or f"{folder}\\S{i_to},{p_in}"), notes
+
+    def s_complex(p_to: int, freq_ghz: float):
+        path, notes = resolve_sparam(p_to)
+        notes.append(f"path={path!r}")
+        v = cst_api.s_param_at(rt, path, freq_ghz, notes, project=mws)
         return v, notes
 
     print("=" * 60)
-    print("4) S 参数读取（结果树子条目 + 候选调用链）")
+    print("4) S 参数读取（结果树真实条目 + 候选调用链）")
     print("=" * 60)
-    kids = cst_api.tree_children(rt, "1D Results\\S-Parameters")
-    print(f"    1D Results\\S-Parameters 子条目：{kids if kids else '（空/取不到）'}")
+    for folder in ("1D Results", "1D Results\\S-Parameters"):
+        notes: list[str] = []
+        kids = cst_api.tree_children(rt, folder, notes)
+        print(f"    {folder} 子条目：{kids if kids else '（空/取不到）'}")
+        for n in notes:
+            print(f"      [诊断] {n}")
     for p_to in sorted({p.id for p in cfg.ports}):
-        v, notes = s_complex(p_to, cfg.frequency)
+        v, notes = s_complex(p_to, f0)
         if v is None:
             print(f"    S{p_to},{p_in}: n/a   [{' | '.join(notes)}]")
         else:
@@ -242,28 +300,70 @@ def main() -> None:
     roles = {p.role: p.id for p in cfg.ports}
     p_cpl, p_iso = roles.get("observation"), roles.get("auxiliary")
     if p_cpl and p_iso:
-        c, i = s_db(p_cpl, cfg.frequency), s_db(p_iso, cfg.frequency)
+        c, i = s_db(p_cpl, f0), s_db(p_iso, f0)
         if c is not None and i is not None:
             print(f"    -> 5 GHz: |S{p_cpl},{p_in}| = {c:.1f} dB, "
                   f"|S{p_iso},{p_in}| = {i:.1f} dB, 定向性 = {c - i:.1f} dB"
                   f"（论文初始设计约 4.6 dB，优化后约 17.1 dB）")
 
-    e_path = V.field_result_path("Efield", cfg.frequency)
-    h_path = V.field_result_path("Hfield", cfg.frequency)
     print("=" * 60)
-    print("5) 结果树中监视器条目路径（供 SelectTreeItem 核对）")
+    print("4c) 备选链：GetFileFromTreeItem + Result1DComplex")
     print("=" * 60)
-    print(f"    期望的 E 场条目: {e_path}")
-    print(f"    期望的 H 场条目: {h_path}")
-    for folder in ("2D/3D Results\\E-Field", "2D/3D Results\\H-Field"):
-        kids = cst_api.tree_children(rt, folder)
+    path, _ = resolve_sparam(p_in)
+    try:
+        fpath = rt.GetFileFromTreeItem(path)
+        print(f"    [OK] GetFileFromTreeItem({path!r}) -> {fpath!r}")
+    except Exception as e:
+        fpath = None
+        print(f"    [FAIL] GetFileFromTreeItem({path!r}): {_short(e)}")
+    if fpath is not None:
+        for label, factory in (("mws.Result1DComplex",
+                                lambda: mws.Result1DComplex(fpath)),
+                               ("mws.Result1D", lambda: mws.Result1D(fpath))):
+            try:
+                obj = factory()
+                print(f"    [OK] {label}(file) -> {obj!r}")
+            except Exception as e:
+                print(f"    [FAIL] {label}(file): {_short(e)}")
+                continue
+            for meth in ("GetN", "GetClosestIndexFromX", "GetX", "GetY",
+                         "GetYImag", "GetYReal", "GetYPhase"):
+                try:
+                    print(f"      {meth}() -> {getattr(obj, meth)()!r}")
+                except Exception:
+                    try:
+                        print(f"      {meth}(0) -> {getattr(obj, meth)(0)!r}")
+                    except Exception as e2:
+                        print(f"      {meth}: 不可用 ({_short(e2)})")
+            break
+
+    print("=" * 60)
+    print("5) 结果树中监视器条目的真实路径（供 SelectTreeItem 核对）")
+    print("=" * 60)
+    notes5: list[str] = []
+    for n in cst_api.tree_children(rt, "2D/3D Results", notes5):
+        print(f"    2D/3D Results 子条目：{n}")
+    for n in notes5:
+        print(f"      [诊断] {n}")
+    items: dict[str, str] = {}
+    for ftype in V.FIELD_TYPES:
+        folder = f"2D/3D Results\\{V.FIELD_TYPES[ftype][1]}"
+        notes: list[str] = []
+        kids = cst_api.tree_children(rt, folder, notes)
+        real = cst_api.find_item(rt, folder, V.field_monitor_name(ftype, f0), notes)
+        conventional = V.field_result_path(ftype, f0)
         print(f"    {folder} 子条目：{kids if kids else '（空/取不到）'}")
-    for tag, p in (("E", e_path), ("H", h_path)):
+        for n in notes:
+            print(f"      [诊断] {n}")
+        print(f"      惯例路径: {conventional!r}")
+        print(f"      实际匹配: {real!r}")
+        items[ftype] = real or conventional
+    for tag, p in items.items():
         try:
             ok = mws.SelectTreeItem(p)
-            print(f"    [OK] SelectTreeItem({tag}) -> {ok!r}")
+            print(f"    [OK] SelectTreeItem({tag}) {p!r} -> {ok!r}")
         except Exception as e:
-            print(f"    [FAIL] SelectTreeItem({tag}) {p}: {e}")
+            print(f"    [FAIL] SelectTreeItem({tag}) {p!r}: {_short(e)}")
 
     print("=" * 60)
     print("6) E 场 ASCII 导出")
@@ -275,7 +375,7 @@ def main() -> None:
                             ("FixedWidth", V.ASCII_EXPORT_EXECUTE),
                             ("FixedNumber", "Export")):
         try:
-            mws.SelectTreeItem(e_path)
+            mws.SelectTreeItem(items["Efield"])
             a = mws.ASCIIExport
             a.Reset()
             a.FileName(str(path))
@@ -287,7 +387,7 @@ def main() -> None:
             exported = True
             break
         except Exception as e:
-            print(f"    [FAIL] Mode={mode!r} + {exec_name}(): {e}")
+            print(f"    [FAIL] Mode={mode!r} + {exec_name}(): {_short(e)}")
 
     # 属性存在性探针：CST 2024 没有 XStart/XEnd/...（实测 <unknown>.XStart）。
     # 注意：探针给的值是 "0.1"，对**会校验取值**的属性（如 Mode）会得到

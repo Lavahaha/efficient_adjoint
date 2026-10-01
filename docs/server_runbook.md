@@ -10,7 +10,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 79 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 85 passed（本机可先确认代码完整）
 ```
 
 ## 1. 在服务器上生成模板宏（重要：宏里包含绝对路径，必须在服务器上重新生成）
@@ -126,11 +126,17 @@ python scripts/cst_smoke.py configs/coupler.yaml
    写法不对会**立刻**报 "Invalid stimulation port"（不耗时），试到能跑
    为止（**能跑的那次会真的算完，几分钟**；期间 CST 界面若弹报错
    对话框，点掉即可）；
-4. S 参数读取：先列 `1D Results\S-Parameters` 的子条目（顺带确认端口
-   命名），再用 `GetResultIDsFromTreeItem` + `GetResultFromTreeItem` +
-   `GetArray("x"/"yre"/"yim")` 读 5 GHz 的值；
-5. 结果树中的监视器条目路径 + `SelectTreeItem` 实测；
-6. E 场 ASCII 导出：候选配置逐个试 + **属性探针**（列出哪些
+5. **COM 方法枚举**：直接问类型库要 `mws.ResultTree` / `mws.ASCIIExport`
+   / `mws.Solver` 的**真实成员表**（工程对象按 `Result/Export/Tree/
+   Field/ASCII` 过滤打印）——比逐个猜 API 名字可靠，一轮就能定下来；
+6. S 参数读取：先列 `1D Results` 与 `1D Results\S-Parameters` 的真实
+   子条目（**原始报错一并打印**：列举为空既可能是"真没结果"，也可能是
+   "方法名不对"），再用解析到的真实路径走
+   `GetResultIDsFromTreeItem` + `GetResultFromTreeItem` +
+   `GetArray("x"/"yre"/"yim")`；随后是 4c 备选链
+   `GetFileFromTreeItem` + `Result1DComplex`；
+7. 结果树中监视器条目的**惯例路径 vs 实际匹配** + `SelectTreeItem` 实测；
+8. E 场 ASCII 导出：用实际匹配到的条目名导出 + **属性探针**（列出哪些
    ASCIIExport 属性真的存在）+ 导出文件头 20 行。
 
 **把完整输出贴回给开发者**——用于把 `CstSolver` 的候选 API 列表与
@@ -203,6 +209,18 @@ python scripts/run_coupler.py configs/coupler.yaml
   `GetArray("x"/"yre"/"yim")`；列目录用 `GetFirstChildName(folder)` /
   `GetNextItemName(item)`（返回空串结束）。这些候选链收敛在
   `eaopt/solver/cst_api.py`，生产代码与 smoke 共用。
+  **两个容易踩的点**：① `GetResultIDsFromTreeItem` 要的是**条目**路径
+  （`1D Results\S-Parameters\S1,1`），给文件夹通常返回空列表；② 结果是
+  **读不到就报原始错误**，不再静默返回空——"列举为空"与"方法名不对"
+  是两种病，看 smoke 里 `[诊断] ...` 那几行区分。路径不要硬拼：CST 会给
+  结果条目自动加后缀（`e-field (f=5)` → `… [AC]`），用
+  `cst_api.find_item(rt, 文件夹, 监视器名)` 按前缀找真实路径，找不到才
+  退回惯例路径。
+- **不知道某版本有哪些方法可用**：跑 smoke 第 5 节——它直接读 IDispatch
+  的类型库，把 `mws` / `ResultTree` / `ASCIIExport` / `Solver` 的**真实
+  成员名**打出来（比照文档猜名字可靠）。本地也可以这么干：
+  `obj._oleobj_.GetTypeInfo()` → `GetTypeAttr().cFuncs` → `GetFuncDesc(i)`
+  → `GetNames(fd.memid)`。
 - **ASCIIExport 的属性集（CST 2024 实测）**：只有 `Reset` / `FileName` /
   `Mode` / `StepX` / `StepY` / `StepZ` / `Execute`——**没有
   XStart/XEnd/YStart/YEnd/ZStart/ZEnd**（报 `<unknown>.XStart`）。所以

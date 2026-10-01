@@ -171,18 +171,23 @@ class CstSolver(SolverInterface):
 
         读取链收敛在 cst_api（CST 2024 实测：ResultTree.GetResultItem
         不存在，可用链是 GetResultIDsFromTreeItem + GetResultFromTreeItem
-        + GetArray("x"/"yre"/"yim")）。读不到就抛——宁可直接失败，也不要
-        把 0j 悄悄塞进伴随法。
+        + GetArray("x"/"yre"/"yim")）。路径先在结果树里按前缀找真实条目
+        （CST 会在监视器名后加后缀），找不到才退回按惯例拼的路径。
+        读不到就抛——宁可直接失败，也不要把 0j 悄悄塞进伴随法。
         """
         f = float(self.cfg.frequency)
+        rt = mws.ResultTree
+        folder = "1D Results\\S-Parameters"
         out = {}
         for i in (1, 2, 3, 4):
-            v = cst_api.s_param_at(
-                mws.ResultTree, f"1D Results\\S-Parameters\\S{i},1", f)
+            notes: list[str] = []
+            path = (cst_api.find_item(rt, folder, f"S{i},1", notes)
+                    or f"{folder}\\S{i},1")
+            v = cst_api.s_param_at(rt, path, f, notes, project=mws)
             if v is None:
                 raise RuntimeError(
-                    f"读不到 S{i},1：结果树里没有该条目或数组布局不认识。"
-                    "跑 scripts/cst_smoke.py 看实际输出（第 4 节）")
+                    f"读不到 S{i},1（{path}）：{' | '.join(notes)}。"
+                    "跑 scripts/cst_smoke.py 看实际结果树（第 4 节）")
             out[(i, 1)] = v
         return out
 
@@ -198,13 +203,28 @@ class CstSolver(SolverInterface):
         f = float(self.cfg.frequency)
         path = self._workdir / f"{V.FIELD_TYPES[field_type][0]}.txt"
 
-        mws.SelectTreeItem(V.field_result_path(field_type, f))
+        # 结果条目名由 CST 自动加后缀（"e-field (f=5)" → "… [AC]"），先在
+        # 结果树里按前缀找真实路径；找不到才退回按惯例拼的路径。
+        notes: list[str] = []
+        folder = f"2D/3D Results\\{V.FIELD_TYPES[field_type][1]}"
+        item = (cst_api.find_item(mws.ResultTree, folder,
+                                  V.field_monitor_name(field_type, f), notes)
+                or V.field_result_path(field_type, f))
+        mws.SelectTreeItem(item)
         a = mws.ASCIIExport
         a.Reset()
         a.FileName(str(path))
         for prop, val in V.ascii_export_params(dx):
             getattr(a, prop)(val)
-        getattr(a, V.ASCII_EXPORT_EXECUTE)()
+        try:
+            getattr(a, V.ASCII_EXPORT_EXECUTE)()
+        except Exception as e:
+            raise RuntimeError(
+                f"{field_type} 场导出失败（选中条目 {item!r}）：{e}。"
+                "CST 的 'not available for the current view' 表示选中的条目"
+                "不是可导出的场结果——先跑 scripts/cst_smoke.py 第 5 节看"
+                "结果树里真实的条目名。诊断：" + (" | ".join(notes) or "无")
+            ) from e
 
         data, axes = parse_ascii_field(str(path))
         return FieldGrid(

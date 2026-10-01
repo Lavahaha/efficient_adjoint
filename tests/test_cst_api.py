@@ -77,16 +77,86 @@ def test_s_param_at_falls_back_to_magnitude():
     assert cst_api.s_param_at(tree, "p", 5.0) == complex(0.5, 0.0)
 
 
-def test_s_param_at_reports_missing_api_and_out_of_range():
+def test_s_param_at_reports_raw_error_when_api_missing():
+    """API 不存在时必须留下**原始报错**（区分"没有结果"与"方法名不对"）。"""
     notes: list[str] = []
     assert cst_api.s_param_at(
         FakeResultTree(ids_raise=True), "p", 5.0, notes) is None
-    assert notes and notes[0] == "ids=[]"
+    assert any("GetResultIDsFromTreeItem" in n and "不可用" in n for n in notes)
+    assert "ids=[]" in notes
 
-    notes2: list[str] = []
-    v = cst_api.s_param_at(_s_param_tree(), "p", 12.0, notes2)
+
+def test_s_param_at_reports_out_of_range():
+    notes: list[str] = []
+    v = cst_api.s_param_at(_s_param_tree(), "p", 12.0, notes)
     assert v is not None                      # 端点截断，但不静默
-    assert any("超出数据范围" in n for n in notes2)
+    assert any("超出数据范围" in n for n in notes)
+
+
+def test_s_param_at_flags_implausible_magnitude():
+    """读到坐标轴之类的辅助条目时 |S| 会远大于 1，要留提示。"""
+    tree = FakeResultTree(ids=["x"], results={
+        "x": FakeResult({"x": [4.0, 6.0], "yre": [4.0, 6.0],
+                         "yim": [0.0, 0.0]})})
+    notes: list[str] = []
+    assert cst_api.s_param_at(tree, "p", 5.0, notes) is not None
+    assert any("可疑" in n for n in notes)
+
+
+def test_s_param_at_falls_back_to_result1d_complex():
+    """候选链 1 拿不到 ID 时，试 GetFileFromTreeItem + Result1DComplex。"""
+    class OnlyFile(FakeResultTree):
+        def GetResultIDsFromTreeItem(self, path):
+            raise RuntimeError("<unknown>.GetResultIDsFromTreeItem")
+
+        def GetFileFromTreeItem(self, path):
+            return "S1,1.sig"
+
+    class FakeResult1D:
+        def GetClosestIndexFromX(self, f):
+            return 2
+
+        def GetY(self, i):
+            return 0.25
+
+        def GetYImag(self, i):
+            return -0.5
+
+    class Proj:
+        def Result1DComplex(self, f):
+            return FakeResult1D()
+
+    notes: list[str] = []
+    v = cst_api.s_param_at(OnlyFile(), "p", 5.0, notes, project=Proj())
+    assert v == complex(0.25, -0.5)
+    assert any("Result1DComplex" in n for n in notes)
+
+
+def test_s_param_at_without_project_does_not_try_result1d():
+    """没给工程对象时不该去碰 Result1DComplex（COM 里它挂在工程上）。"""
+    notes: list[str] = []
+    assert cst_api.s_param_at(FakeResultTree(), "p", 5.0, notes) is None
+    assert not any("Result1DComplex" in n for n in notes)
+
+
+def test_find_item_matches_leaf_prefix_and_reports_misses():
+    kids = ["2D/3D Results\\E-Field\\e-field (f=5) [AC]",
+            "2D/3D Results\\E-Field\\e-field (f=5) [pw]"]
+    tree = FakeResultTree(children=kids)
+    assert cst_api.find_item(tree, "f", "e-field (f=5)") == kids[0]
+    notes: list[str] = []
+    assert cst_api.find_item(tree, "f", "h-field (f=5)", notes) is None
+    assert notes and "h-field (f=5)" in notes[0]
+
+
+def test_tree_children_reports_raw_error():
+    class Bad:
+        def GetFirstChildName(self, folder):
+            raise RuntimeError("<unknown>.GetFirstChildName")
+
+    notes: list[str] = []
+    assert cst_api.tree_children(Bad(), "1D Results", notes) == []
+    assert notes and "<unknown>.GetFirstChildName" in notes[0]
 
 
 def test_tree_children_walks_until_empty():
