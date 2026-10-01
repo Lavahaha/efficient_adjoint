@@ -111,11 +111,13 @@ python -m pytest tests/ -v             # 测试
    检查 4 个波导端口（`.Coordinates "Free"` + 边界面名 `xmin/xmax/ymin`，
    端口面下缘贴合接地板、上缘到空气盒顶）、两个 Volume 监视器
    `e-field (f=5)` / `h-field (f=5)`（名字 = 结果树条目名，导出场按它选中，
-   见 `vba.field_monitor_name`）、边界（x/y/zmin 磁、zmax 电）。
-   **设置类块（激励/监视器/边界/求解器）逐块
-   容错**：CST 2024 实测 `Excitation.Reset` 报 "(10090) ActiveX Automation
-   error"，未加保护会中止整个宏；现由宏结尾的报告框列出失败块，照提示
-   在 GUI 手工设置即可（激励：端口对话框勾选，fwd→端口1，bwd→端口3）；
+   见 `vba.field_monitor_name`）、边界（x/y/zmin 磁、zmax 电）、
+   **激励只勾选本模板的端口**（fwd→端口 1，bwd→端口 3；用
+   `Solver.StimulationPort` 设置）+ 频段 0–10 GHz。
+   **设置类块（激励/频段/监视器/边界/求解器/另存）逐块容错**：CST 2024
+   实测设置类命令报过 "(10090) ActiveX Automation error" 与
+   "(10097) wrong number of parameters"，未加保护会中止整个宏；现由宏
+   结尾的报告框列出失败块，照提示在 GUI 手工设置即可；
 3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
    `solver.type: cst`；
 4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、

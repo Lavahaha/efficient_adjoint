@@ -89,6 +89,9 @@ SUB_TOP = THRU_HI + 3.0     # 板上边缘
 # 阻抗不准，见 docs/server_runbook.md 端口一节）
 AIR_H = 4.0
 FREQ = 5.0
+# 时域求解频段：0 ~ 2×f0。显式写进模板，避免"某次在 GUI 里手改过频段"
+# 导致两个模板不一致（频段决定自适应网格与脉冲带宽，会影响 S 参数）。
+FMIN, FMAX = 0.0, 2 * FREQ
 
 
 def _arc(cx: float, cy: float, r: float, a0_deg: float, a1_deg: float,
@@ -228,18 +231,23 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
     body += _ports()
     body += [
         "",
-        "    ' ---- 设置类块：逐块容错（CST 2024 实测 Excitation.Reset 报",
-        "    ' (10090) ActiveX Automation error，未加保护会让整个宏中止、",
-        "    ' SaveAs 都不执行）。几何与端口不加保护：它们失败必须中止。",
+        "    ' ---- 设置类块：逐块容错。CST 2024 命令宏里设置类命令实测报过",
+        "    ' (10090) ActiveX Automation error / (10097) wrong number of",
+        "    ' parameters；不加保护的话整个宏会中止、连 SaveAs 都跑不到，",
+        "    ' 而且用户看不到到底哪块失败。几何与端口不加保护：它们失败",
+        "    ' 必须中止（模板建不出来就没有意义）。",
         "    On Error Resume Next",
     ]
     for block, label in (
-        (V.excitation("excitation1", f'"{portnum}"'), "Excitation"),
+        # 只激励本模板指定的端口（fwd→1 / bwd→3）。用 Solver 的
+        # StimulationPort，不用 Excitation 对象（后者在 CST 2024 命令宏里
+        # 报 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
+        (V.time_domain_solver_setup(str(portnum)), "Solver"),
+        (V.frequency_range(FMIN, FMAX), "FrequencyRange"),
         (V.field_monitor("Efield", FREQ), "Monitor Efield"),
         (V.field_monitor("Hfield", FREQ), "Monitor Hfield"),
         (V.set_boundaries("magnetic", "magnetic", "magnetic", "magnetic",
                           "magnetic", "electric"), "Boundary"),
-        (V.time_domain_solver_setup(), "Solver"),
     ):
         body.append(V.guarded(block, label))
     # 另存：也放进保护区。CST 2024 命令宏里 SaveAs 只给路径会报

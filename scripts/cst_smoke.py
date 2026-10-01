@@ -102,6 +102,36 @@ def main() -> None:
         except Exception as e:
             print(f"[FAIL] GetResultItem({name!r}): {e}")
 
+    def s_db(port_from: int, port_to: int, freq_ghz: float):
+        """|S_{to,from}| 的 dB 值（读不到返回 None）。"""
+        try:
+            item = mws.ResultTree.GetResultItem(
+                f"1D Results\\S-Parameters\\S{port_to},{port_from}")
+            return 20 * np.log10(abs(complex(item.GetValueAtFrequency(freq_ghz))))
+        except Exception:
+            return None
+
+    print("=" * 60)
+    print("4b) S 参数曲线（对标论文初始设计：5 GHz 处 |S31| 约 -17.9 dB、"
+          "定向性约 4.6 dB）")
+    print("=" * 60)
+    p_in = cfg.objective.from_port
+    for p_to in sorted({p.id for p in cfg.ports}):
+        row = [f"S{p_to},{p_in}:"]
+        for f in (4.5, 4.75, 5.0, 5.25, 5.5):
+            v = s_db(p_in, p_to, f)
+            row.append(f"{f:g}GHz " + ("  n/a  " if v is None else f"{v:7.1f}dB"))
+        print("    " + "  ".join(row))
+    # 定向性 = 耦合端口 - 隔离端口（论文优化目标之一）
+    roles = {p.role: p.id for p in cfg.ports}
+    p_cpl, p_iso = roles.get("observation"), roles.get("auxiliary")
+    if p_cpl and p_iso:
+        c, i = s_db(p_in, p_cpl, cfg.frequency), s_db(p_in, p_iso, cfg.frequency)
+        if c is not None and i is not None:
+            print(f"    -> 5 GHz: |S{p_cpl},{p_in}| = {c:.1f} dB, "
+                  f"|S{p_iso},{p_in}| = {i:.1f} dB, 定向性 = {c - i:.1f} dB"
+                  f"（论文初始设计约 4.6 dB，优化后约 17.1 dB）")
+
     e_path = V.field_result_path("Efield", cfg.frequency)
     h_path = V.field_result_path("Hfield", cfg.frequency)
     print("=" * 60)

@@ -64,21 +64,32 @@ def test_port_face_validation():
             V.waveguide_port(1, "p1", bad, 0.0, 0.0, 1.0, 0.0, 1.0)
 
 
-def test_excitation_supports_vba_variable():
-    s = V.excitation("exc", "portnum")
-    assert ".Port portnum" in s  # VBA 变量：不带引号
+def test_solver_stimulation_port_selects_single_port():
+    """"只激励哪个端口"用 Solver.StimulationPort（不用 Excitation 对象：
+    后者在 CST 2024 命令宏里报 10090，且失败静默——S 参数照样对，但场
+    监视器存的是多激励叠加的场）。"""
+    s = V.time_domain_solver_setup("1")
+    assert '.StimulationPort "1"' in s
+    assert '.Method "Hexahedral"' in s and '.CalculationType "TD-S"' in s
+    assert V.time_domain_solver_setup().count('.StimulationPort "All"') == 1
+
+
+def test_frequency_range_is_set_explicitly():
+    """频段写死在宏里：两个模板必须一致（它决定自适应网格与脉冲带宽）。"""
+    assert V.frequency_range(0.0, 10.0) == 'Solver.FrequencyRange "0", "10"\n'
 
 
 def test_guarded_wraps_block_and_reports():
     """guarded()：块内错误记入 errLog 而不抛出（宏继续跑完）。"""
-    s = V.guarded(V.excitation("exc", '"1"'), "Excitation", indent="")
-    assert s.startswith("Err.Clear\nWith Excitation")
+    s = V.guarded(V.set_boundaries(*["magnetic"] * 5, "electric"),
+                  "Boundary", indent="")
+    assert s.startswith("Err.Clear\nWith Boundary")
     assert "If Err.Number <> 0 Then" in s
-    assert 'errLog = errLog & "Excitation: (" & Err.Number & ") "' in s
+    assert 'errLog = errLog & "Boundary: (" & Err.Number & ") "' in s
     assert s.rstrip().endswith("End If")
     # 缩进：块内每行都缩进，便于阅读生成的宏
-    ind = V.guarded(V.excitation("exc", '"1"'), "Excitation")
-    assert "\n    With Excitation" in ind and "\n        .Reset" in ind
+    ind = V.guarded(V.set_boundaries(*["magnetic"] * 5, "electric"), "Boundary")
+    assert "\n    With Boundary" in ind and "\n        .Xmin" in ind
 
 
 def test_field_monitor_is_volume_with_cst_conventional_name():
@@ -245,7 +256,7 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
         assert "NewProject" not in code  # 实测非法：新建工程由 GUI 完成
         assert "portnum As Integer" not in text  # 参数全部字面量
         assert 'SaveAs "' in text and f"{project}.cst" in text
-        assert f'.Port "{port}"' in text
+        assert f'.StimulationPort "{port}"' in text  # 只激励本模板的端口
         assert "Rogers4350B" in text
         # 4 个端口，全部 Free 坐标系；端口面名与几何一致
         assert text.count("With Port") == 4
@@ -263,16 +274,38 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
         # 边界：zmax 电边界、其余磁边界
         assert '.Zmax "electric"' in text
         assert text.count('"magnetic"') == 5
-    # 激励端口互不相同（fwd=1 / bwd=3）
+    # 激励端口互不相同（fwd=1 / bwd=3），且不使用 Excitation 对象
     fwd, bwd = (p.read_text(encoding="utf-8") for p in paths)
-    assert '.Port "1"' in fwd and '.Port "3"' not in fwd
-    assert '.Port "3"' in bwd and '.Port "1"' not in bwd
+    assert '.StimulationPort "1"' in fwd and '.StimulationPort "3"' not in fwd
+    assert '.StimulationPort "3"' in bwd and '.StimulationPort "1"' not in bwd
+    # 只看可执行语句（注释里会提到 Excitation 以说明为何不用它）
+    code_only = lambda t: "\n".join(l for l in t.splitlines()          # noqa: E731
+                                    if not l.lstrip().startswith("'"))
+    assert "Excitation" not in code_only(fwd)
+    assert "Excitation" not in code_only(bwd)
+    assert 'Solver.FrequencyRange "0", "10"' in fwd
+
+
+def test_templates_differ_only_in_stimulation_and_save_path(tmp_path):
+    """双模板设计的硬不变量：两个工程必须是同一套几何/端口/监视器/边界，
+    只差"激励哪个端口"和另存路径。否则伴随法的正/反向场不在同一个模型上。"""
+    paths = build_all_templates(tmp_path)
+    texts = [p.read_text(encoding="utf-8") for p in paths]
+
+    def strip(text):
+        out = text.replace('.StimulationPort "1"', '.StimulationPort "X"')
+        out = out.replace('.StimulationPort "3"', '.StimulationPort "X"')
+        # 只差激励端口与另存路径（含结尾报告框里的路径/工程名）
+        return [l for l in out.splitlines()
+                if "SaveAs" not in l and "MsgBox" not in l
+                and not l.lstrip().startswith("'")]
+    assert strip(texts[0]) == strip(texts[1])
 
 
 def test_settings_blocks_are_error_guarded(tmp_path):
-    """设置类块（激励/监视器/边界/求解器）逐块容错：CST 2024 实测
-    Excitation.Reset 报 (10090)，未加保护会中止整个宏（连 SaveAs 都
-    跑不到）。几何与端口则必须失败即中止。"""
+    """设置类块（激励/频段/监视器/边界/求解器）逐块容错：设置块报错
+    （CST 2024 实测过 10090/10097）时只记入结尾报告，不中止宏。几何与
+    端口则必须失败即中止。"""
     text = build_macro(tmp_path, "demo", 1).read_text(encoding="utf-8")
     guard_at = text.index("On Error Resume Next")
     release_at = text.index("On Error GoTo 0")
@@ -282,8 +315,8 @@ def test_settings_blocks_are_error_guarded(tmp_path):
     # 保护区之内：5 个设置块 + SaveAs（两种写法）= 7 个错误检查
     assert text.count("If Err.Number <> 0 Then") == 7
     assert text.count("Err.Clear") == 14  # 5 块 ×2 + SaveAs 两写法 ×2
-    for label in ("Excitation", "Monitor Efield", "Monitor Hfield",
-                  "Boundary", "Solver", "SaveAs"):
+    for label in ("Solver", "FrequencyRange", "Monitor Efield",
+                  "Monitor Hfield", "Boundary", "SaveAs"):
         assert f'errLog = errLog & "{label}: ("' in text
     # SaveAs 必须带第二个参数（CST 2024 实测只给路径报 10097 wrong number
     # of parameters），两种布尔写法都试

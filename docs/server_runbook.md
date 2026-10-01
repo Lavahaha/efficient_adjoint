@@ -63,9 +63,13 @@ python scripts/build_cst_template.py cst/
      `python scripts/plot_layout.py` 重新生成）。腿与臂在 x=0 / x=12
      处相接，**不应有缝**。若形状不符（例如成了直角、或出现明显
      折线感），把俯视图截图发回
-   - **激励**：端口 1 被勾选（Excitations 下应有 excitation1 → Port 1）。
-     若没有（宏的 Excitation 命令被版本拒绝）：在端口对话框中手工勾选
-     端口 1 的激励，保存
+   - **激励（最关键的一项）**：Simulation → Time Domain Solver 对话框 →
+     Excitation/Stimulation 分组里，**只应勾选端口 1**（其余端口不勾），
+     Frequency range 应为 **0 – 10 GHz**。
+     这一项错了不会让 S 参数变样（S 参数照样是全端口矩阵），但**场监视器里
+     存的会是多个激励叠加的场，伴随梯度就全错了**。宏现在用 Solver 的
+     `.StimulationPort` 设置它（不再用 Excitation 对象——那个对象在
+     CST 2024 命令宏里报 10090、且失败是静默的）
 8. **bwd 工程同样检查，激励改为端口 3**，保存
 
 ## 2.5 （可选）诊断宏 polygon_test.mcr
@@ -132,6 +136,13 @@ python scripts/run_coupler.py configs/coupler.yaml
 输出在 `results/coupler/`（history.jsonl、每轮形状快照、fom.png）。
 对照论文 Fig. 6–8：|S31| 由初始值升至约 −10 dB，定向性升至约 17 dB。
 
+**初始值对不上论文是正常的**：论文初始设计 5 GHz 处 |S31| ≈ −17.9 dB、
+定向性 ≈ 4.6 dB，但 |S31| 对耦合段电长度极敏感（d 接近 λg/4 附近，
+εr、h、金属厚度、端口尺寸的一点点差异都会让耦合电平移动几个 dB），
+而我们的几何是从论文插图上量的、端口尺寸也是按经验取的。判断复现是否
+成功的标准是**趋势与终点**：|S31| 应被显著抬高（约 +8 dB 量级）并收敛
+到 −10 dB 附近、定向性同步升到 17 dB 附近。
+
 ## 常见问题
 
 - **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
@@ -141,10 +152,12 @@ python scripts/run_coupler.py configs/coupler.yaml
   模板建不出来就没有意义）；**设置段**（激励/监视器/边界/求解器）
   已逐块容错，只会出现在结尾报告框里，不会中止。
 - **`(10090) ActiveX Automation error. (.Reset)`**：CST 2024 命令宏
-  上下文里 `Excitation.Reset` 会报这个（实测）。模板宏已用
-  `On Error Resume Next` 包住该类块 → 宏继续跑完并另存，结尾报告框
-  会写明哪个块失败，照提示在 GUI 手工设置该块即可（激励：端口对话框
-  里勾选；监视器：Home → Field Monitors，建 `e-field (f=5)` 与
+  上下文里 `Excitation.Reset` 会报这个（实测两次）。**模板宏已不再使用
+  Excitation 对象**，"只激励哪个端口"改用 Solver 的 `.StimulationPort`
+  （正规写法，实测这个块是成功的）。其余设置类块（频段/监视器/边界/
+  求解器/另存）都用 `On Error Resume Next` 逐个包住 → 失败不中止宏，
+  结尾报告框会点名哪个块失败，照提示在 GUI 手工补（频段：Simulation →
+  Frequency；监视器：Home → Field Monitors，建 `e-field (f=5)` 与
   `h-field (f=5)` 两个 Volume 监视器；边界：Boundaries；求解器：
   Time Domain Solver 对话框）。把报告框截图发回，用于按版本修正宏。
 - **监视器命名不能随便改**：CST 用监视器名命名结果树条目

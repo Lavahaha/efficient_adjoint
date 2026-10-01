@@ -6,9 +6,11 @@
 约定：
   - 波导端口面落在计算域边界面上（.Orientation 取边界面名，见
     waveguide_port 的 docstring）；
-  - 激励用 Excitation 对象（CST 2020+）；若服务器版本不支持，
-    用 guarded() 包住即可让宏不中断，并在结尾报告哪个块失败，
-    再按提示在 GUI 中手工勾选端口激励。
+  - "只激励哪个端口"用 Solver 的 `.StimulationPort`（见
+    time_domain_solver_setup）。**不要用 Excitation 对象**：它在
+    CST 2024 命令宏上下文里实测报 "(10090) ActiveX Automation
+    error"，且失败是静默的——S 参数照样对，但场监视器里存的是多个
+    激励叠加的场，会悄悄毁掉伴随梯度。
 
 编码：CST 宏文件按 ANSI 解码，**可执行语句里不要出现非 ASCII**
 （字符串字面量中的非 ASCII 字节可能吞掉引号造成语法错误）；
@@ -20,9 +22,10 @@ from __future__ import annotations
 __all__ = [
     "material_normal", "brick", "polygon_extrude", "guarded",
     "guarded_alternatives",
-    "waveguide_port", "excitation", "field_monitor", "field_monitor_name",
+    "waveguide_port", "field_monitor", "field_monitor_name",
     "field_result_path", "FIELD_TYPES",
-    "set_boundaries", "time_domain_solver_setup", "select_field_monitor",
+    "set_boundaries", "time_domain_solver_setup", "frequency_range",
+    "select_field_monitor",
     "ascii_export_field",
 ]
 
@@ -204,26 +207,6 @@ def waveguide_port(port_number: int, name: str, face: str, at: float,
     )
 
 
-def excitation(name: str, port: str) -> str:
-    """端口激励（CST 2020+ 的 Excitation 对象，best-effort）。
-
-    port: 已含引号的字面量（如 '"1"'）或 VBA 变量名（如 'portnum'）。
-
-    **实测 CST 2024 上 `.Reset` 会报 "(10090) ActiveX Automation error"**
-    （见 guarded()），故模板宏里必须用 guarded() 包住；失败时按
-    结尾报告在端口对话框中手工勾选激励。
-    """
-    return (
-        "With Excitation\n"
-        "    .Reset\n"
-        f"    .Name \"{name}\"\n"
-        f"    .Port {port}\n"
-        '    .ModeIndex "1"\n'
-        "    .Create\n"
-        "End With\n"
-    )
-
-
 # 场监视器类型 → (结果树条目前缀, 结果树文件夹)。CST 里 E 场监视器的结果
 # 条目名为 "e-field (f=5) [AC]"，归属 "E-Field" 文件夹（H 场同构）。
 FIELD_TYPES = {"Efield": ("e-field", "E-Field"),
@@ -293,13 +276,21 @@ def set_boundaries(xmin: str, xmax: str, ymin: str, ymax: str,
     )
 
 
-def time_domain_solver_setup() -> str:
-    """时域求解器设置（论文用法，默认精度）。"""
+def time_domain_solver_setup(stimulation_port: str = "All") -> str:
+    """时域求解器设置（论文用法，默认精度）。
+
+    stimulation_port: "All" 或端口号字符串（如 "1"）。**这是"只激励哪个
+    端口"的正规、版本稳定的写法**（Excitation 对象在 CST 2024 命令宏里
+    实测报 "(10090) ActiveX Automation error"，见 guarded()）。
+    伴随法要求两个模板各自只激励一个端口（fwd→1，bwd→3）：否则场监视器
+    存的是多个激励叠加的场，梯度就无从谈起（S 参数不受影响，所以光看
+    S 参数发现不了这个问题）。
+    """
     return (
         "With Solver\n"
         '    .Method "Hexahedral"\n'
         '    .CalculationType "TD-S"\n'
-        '    .StimulationPort "All"\n'
+        f'    .StimulationPort "{stimulation_port}"\n'
         '    .StimulationMode "All"\n'
         '    .SteadyStateLimit "-30"\n'
         '    .MeshAdaption "False"\n'
@@ -307,6 +298,14 @@ def time_domain_solver_setup() -> str:
         '    .NormingImpedance "50"\n'
         "End With\n"
     )
+
+
+def frequency_range(fmin_ghz: float, fmax_ghz: float) -> str:
+    """时域求解的频段（决定自适应网格与激励脉冲带宽）。
+
+    模板里显式写死，避免"某次在 GUI 里手改过频段"造成两个模板不一致。
+    """
+    return f'Solver.FrequencyRange "{fmin_ghz:g}", "{fmax_ghz:g}"\n'
 
 
 def select_field_monitor(field_type: str, frequency_ghz: float) -> str:
