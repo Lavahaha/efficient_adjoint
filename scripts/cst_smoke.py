@@ -8,12 +8,13 @@
   1. COM 连接（Dispatch / GetActiveObject）；
   2. 打开模板副本（并打印模板大小/最后修改时间——旧时间戳说明宏的
      SaveAs 没覆盖掉旧文件）；
-  2b. 模板 .cst 里内嵌的激励相关字符串（看宏到底把什么存了进去）；
-  3. 工程状态探针（`GetSolverType` / `Solver.GetNumberOfPorts` /
-     `ObjectExists`——CST 的 GetXxx 多为**属性**，加括号调用会报
-     "'str' object is not callable"）；
+  2b. `.cst` 与**同名文件夹**里的命令字符串（看宏到底把什么存了进去）；
+  3. 工程状态探针（`GetSolverType` / `Solver.GetNumberOfPorts`——CST 的
+     GetXxx 多为**属性**，加括号调用会报 "'str' object is not callable"；
+     `ObjectExists` 是宏宿主内部函数、不是 COM 成员，只能记录这条结论）；
   3b. 激励设置：逐个候选试到 Solver.Start 成功为止；
-  3c. **COM 方法枚举**（问类型库要真实成员表，不再逐个猜 API 名字）；
+  3c. **COM 方法枚举**（问类型库要真实成员表，不再逐个猜 API 名字；含
+     模型/几何查询那一组）；
   4. S 参数读取：先列结果树真实条目，再用解析到的**真实路径**逐候选读取
      （GetResultIDsFromTreeItem / GetResultFromTreeItem / GetArray），
      诊断原始错误一并打印；
@@ -38,14 +39,6 @@ def _short(exc: BaseException, limit: int = 140) -> str:
     """异常信息压成一行（pywin32 的错误元组很长）。"""
     s = str(exc).replace("\n", " ")
     return s if len(s) <= limit else s[:limit] + "…"
-
-
-def _safe_object_exists(mws, name: str) -> bool:
-    """ObjectExists 是属性风格还是方法风格都容忍（读不到一律当 False）。"""
-    try:
-        return bool(mws.ObjectExists(name))
-    except Exception:
-        return False
 
 
 def enum_com_methods(obj, label: str, keyword: str | None = None) -> None:
@@ -82,30 +75,36 @@ def enum_com_methods(obj, label: str, keyword: str | None = None) -> None:
         print("      " + nm)
 
 
-def probe_project_bytes(path: Path) -> None:
-    """打印 .cst 里内嵌的激励相关 ASCII 片段。
+# 在工程数据里搜这些命令串：搜到 => 这条命令真的执行过（宏里几何/端口段
+# 报错就中止，不会"半执行"）。搜不到**不能**当反证——内容可能整体压缩。
+_PROBE_KEYS = ("With Port", "PortNumber", "StimulationPort", "StimulationMode",
+               "With Monitor", "Brick", "Extrude", "SaveAs", "Sub Main",
+               "FrequencyRange", "With Solver")
 
-    CST 工程是复合二进制文件，设置/建模命令以文本内嵌（若整体压缩则
-    找不到——那只是本节无效，不影响其它步骤）。
+
+def probe_project_bytes(path: Path) -> None:
+    """在 `.cst` 与**同名文件夹**里搜命令字符串。
+
+    上一轮实测：只看 `.cst`（0.04 MB，二进制读不动）什么也搜不到，而几何
+    其实在同名文件夹里——所以两处都要搜。
     """
-    raw = path.read_bytes()
-    print(f"    文件大小 {len(raw) / 1e6:.2f} MB")
-    text = raw.decode("latin-1")
-    found = False
-    for key in ("StimulationPort", "StimulationMode", "Excitation",
-                "FrequencyRange"):
-        start = 0
-        for _ in range(6):
-            i = text.find(key, start)
-            if i < 0:
-                break
-            snippet = "".join(c if 32 <= ord(c) < 127 else "."
-                              for c in text[i:i + 60])
-            print(f"    [{key}] {snippet}")
-            found = True
-            start = i + len(key)
-    if not found:
-        print("    未找到可读的激励相关字符串（文件可能整体压缩，本节无效）")
+    from eaopt.solver import cst_project
+
+    sub = cst_project.companion_dir(path)
+    for target, label in ((path, ".cst"), (sub, f"{sub.name}/")):
+        if target.is_file():
+            print(f"    文件大小 {target.stat().st_size / 1e6:.2f} MB")
+        elif not target.is_dir():
+            continue
+        print(f"    --- 在 {label} 里搜命令字符串 ---")
+        rows = cst_project.grep_ascii(target, _PROBE_KEYS)
+        for r in rows[:40]:
+            print(f"      {r}")
+        if len(rows) > 40:
+            print(f"      （…共 {len(rows)} 条，只列前 40）")
+        if not rows:
+            print(f"      （搜不到可读的命令字符串：内容可能整体压缩，"
+                  f"本节对 {label} 无效）")
 
 
 def main() -> None:
@@ -158,8 +157,8 @@ def main() -> None:
             print("    " + line)
     except Exception as e:
         print(f"    模板内容检查失败（继续跑其它步骤）: {_short(e)}")
-    print("    （模型数据应在 .cst 里；同名文件夹是求解结果。若上面报告"
-          "找不到任何模型对象名 => 模板本身是空工程，先重建模板）")
+    print("    （服务器实测：只复制 .cst 打开是空工程，连同名文件夹一起搬"
+          "几何就出来了——所以模型可能在同名文件夹里，上面两处都查了）")
     workdir = Path(cfg.output.dir) / "cst_work"
     workdir.mkdir(parents=True, exist_ok=True)
     # **整份**复制（.cst + 同名文件夹）——只复制 .cst 会打开成空工程
@@ -183,8 +182,9 @@ def main() -> None:
         ("mws.GetSolverType", lambda: mws.GetSolverType),
         ("Solver.GetNumberOfPorts", lambda: mws.Solver.GetNumberOfPorts),
         ("Solver.GetPortNames", lambda: mws.Solver.GetPortNames),
+        # ObjectExists 是 CST **宏宿主内部**的函数，不是 COM 成员（实测
+        # `<unknown>.ObjectExists`）——留着只是记录这条结论。
         ("ObjectExists('substrate')", lambda: mws.ObjectExists("substrate")),
-        ("ObjectExists('Port 1')", lambda: mws.ObjectExists("Port 1")),
     ):
         try:
             print(f"    {label} = {expr()!r}")
@@ -194,21 +194,19 @@ def main() -> None:
     try:
         n_ports = int(mws.Solver.GetNumberOfPorts)
         if n_ports <= 0:
-            print("    !! 端口数为 0 —— 打开的工程里没有端口（模板被存成空壳？），"
-                  "先别管激励，去 GUI 里确认模板内容")
+            print("    !! 端口数为 0 —— 打开的工程里**没有端口**（这条是 CST "
+                  "自己报的，可信）")
         else:
             print(f"    >>> 工程里有 {n_ports} 个端口")
-    except Exception:
-        pass
-    empty = n_ports == 0 or (n_ports < 0 and not _safe_object_exists(mws, "substrate"))
+    except Exception as e:
+        print(f"    !! 端口数读不到（{_short(e)}）—— 工程状态未知")
+    empty = n_ports == 0
     if empty:
         print("    " + "!" * 56)
-        print("    !! 这个工程里没有几何也没有端口 => 模板本身是空的：")
-        print("       先查 `python scripts/cst_inspect_template.py`（不用 CST）"
-              "看模板文件里有没有模型；")
-        print("       空的话重建模板（GUI 里 File → New → 跑宏），重建后"
-              "**立刻在这张 GUI 里确认几何和 4 个端口都在**再保存。")
-        print("       跳过求解，直接去看后面的结果树/导出部分。")
+        print("    !! 端口数为 0 => 模板里没有端口，激励必然设不上、S 参数也")
+        print("       不会有。几何在不在**本条判不出来**（COM 上没有查模型的")
+        print("       成员），先看上一节 describe 的文件扫描结果 + 3c 的成员表。")
+        print("       跳过求解（候选必然全失败，省几分钟）。")
         print("    " + "!" * 56)
 
     print("=" * 60)
@@ -262,7 +260,7 @@ def main() -> None:
         print("   Simulation → Time Domain Solver → Source type 选端口 1 → OK")
         print("   Edit → History List → 选中刚出现的行 → 点 Macro 按钮")
         print("   → 把生成的含 Solver.xxx 的 VBA 贴回给开发者")
-    else:
+    elif winner is not None:
         port, mode = winner
         print(f'    >>> 可用写法：Solver.StimulationPort "{port}" + '
               f'Solver.StimulationMode "{mode}"')
@@ -280,6 +278,16 @@ def main() -> None:
     enum_com_methods(mws.ASCIIExport, "mws.ASCIIExport")
     enum_com_methods(mws.Solver, "mws.Solver")
     enum_com_methods(mws.Solver, "mws.Solver", keyword="Stimulation")
+    # 模型（几何/端口）查询：`ObjectExists` 不是 COM 成员，所以"工程里
+    # 有没有几何"目前只能靠这里问出来的**真名**——不再猜。
+    for kw in ("Object", "Solid", "Model", "Shape", "Component",
+               "Brick", "Port", "Count", "Number"):
+        enum_com_methods(mws, "mws", keyword=kw)
+    for attr in ("Model", "Model3D", "Objects", "Ports", "Component"):
+        try:
+            enum_com_methods(getattr(mws, attr), f"mws.{attr}")
+        except Exception as e:
+            print(f"    mws.{attr}: 拿不到（{_short(e)}）")
 
     p_in = cfg.objective.from_port
 

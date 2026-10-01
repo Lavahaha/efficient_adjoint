@@ -7,8 +7,10 @@
 回答的问题是："打开的工程里没有模型/端口/结果"到底是
   (a) 模板文件本身就是空工程（宏保存出来的东西不完整），还是
   (b) 模板是好的、复制/打开姿势不对（少了同名文件夹）。
-判断依据：新版 .cst 是 zip 容器，这里直接列出内部成员并在里面搜模型
-对象名（substrate / design_region / Port 1 ...）。
+判断依据：**两处都查**——.cst 当作 zip 容器列出成员（读不动就按本地文件
+头恢复、再退回搜原始字节），同名文件夹递归列出并搜对象名
+（substrate / design_region / thru_line / Port 1 ...）。服务器实测：
+几何确实可能只在同名文件夹里，只看 .cst 会得出"空工程"的错误结论。
 """
 
 import argparse
@@ -52,7 +54,7 @@ def main() -> None:
         cfg = CaseConfig.from_yaml(args.config)
         targets = [Path(cfg.solver.template_fwd), Path(cfg.solver.template_bwd)]
 
-    print("模板内容检查（模型数据应该在 .cst 里；同名文件夹是求解结果）")
+    print("模板内容检查（.cst 与同名文件夹两处都查：模型可能在任何一处）")
     for t in targets:
         inspect(t)
 

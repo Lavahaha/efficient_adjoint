@@ -188,23 +188,24 @@ python scripts/run_coupler.py configs/coupler.yaml
 - **打开的工程是个空壳（导航树光秃秃、没几何、没端口、没结果）**：两种
   原因，先分清——
   1. **模板文件本身就是空的**：跑 `python scripts/cst_inspect_template.py`
-     （不用 CST）。它把 `.cst` 当 zip 看，在里面搜 `substrate`/
-     `design_region`/`Port 1` 这些对象名。搜不到 ⇒ 空工程，与读取 API
-     无关，按第 2 节第 9 条重建/手工另存模板；
+     （不用 CST）。它**两处都查**——`.cst` 当 zip 看（读不动就退回搜原始
+     字节）+ 同名文件夹递归搜 `substrate`/`design_region`/`Port 1` 这些
+     对象名。**两处都搜不到** ⇒ 空工程，与读取 API 无关，按第 2 节第 9
+     条重建/手工另存模板；只有 `.cst` 搜不到而同名文件夹搜得到 ⇒ 是下一条
+     的复制姿势问题，模板本身没毛病；
   2. **模板是好的，但复制时丢了配套文件夹**：CST 工程是
      `<名字>.cst` + **同名文件夹**（外部结果目录）**两件东西**，只搬
      `.cst` 会打开成缺结果的工程。项目的复制路径已统一到
      `eaopt/solver/cst_project.py::copy_project`（连同名文件夹一起搬，
      排除 `*.lok`），smoke 与 pipeline 都用它——所以**别再用
      `shutil.copy` 复制 .cst**。
-- **`zipfile.BadZipFile: Bad magic number for central directory`（实测）**：
-  `.cst` 的 zip 中央目录坏了 ⇒ **文件本身被截断/写坏了**，CST 打开它
-  就是个空工程（这正是"打开一片空白"的物理原因，见上一条）。检查
-  工具已容错：`zipfile` 读不了时改按本地文件头 `PK\x03\x04` 扫描，
-  deflate 成员用 `zlib.decompress(raw, -15)` 解出来，照样列成员、搜
-  对象名，并明确提示"容器已损坏，需重建/重存"。**这种文件不要试图
-  修复使用**——按第 2 节第 9 条重建模板、在 GUI 里确认无误后手工
-  **File → Save As** 覆盖。
+- **`zipfile.BadZipFile` / "读不出任何成员"，但工程打开有几何**：检查
+  工具对 `.cst` 的 zip 解析**只是诊断手段，不是判定标准**。实测下来
+  CST 这个版本的 `.cst` 常常既没有本地文件头、也没有可用中央目录
+  （0.04 MB 的私有容器），解析失败**不代表**工程是空的——几何完全可能
+  在**同名文件夹**里。所以 `describe()` 两处都查（`.cst` 成员 + 同名
+  文件夹递归搜对象名），并打印文件头 8 字节（`50 4B 03 04` 才是 zip）。
+  判定以"**两处都搜不到 `substrate`/`design_region` 等对象名**"为准。
 - **"宏建模成功、工程里有几何和端口，但另存出来的文件打开是空的"**：
   CST 的已知案例（宏自动建模 + Save As 后 components 为空）。对策：
   保存后在 GUI 里关掉再重新打开那个 `.cst` 确认一次；确认它是空的就用
