@@ -29,6 +29,7 @@ __all__ = [
     "waveguide_port", "field_monitor", "field_monitor_name",
     "field_result_path", "FIELD_TYPES",
     "set_boundaries", "time_domain_solver_setup", "frequency_range",
+    "MESH_CREATOR",
     "select_field_monitor",
     "ASCII_EXPORT_MODE", "ASCII_EXPORT_EXECUTE", "ascii_export_params",
     "ascii_export_field",
@@ -207,6 +208,14 @@ def waveguide_port(port_number: int, name: str, face: str, at: float,
         f'    .Xrange {rng["x"]}\n'
         f'    .Yrange {rng["y"]}\n'
         f'    .Zrange {rng["z"]}\n'
+        # 下面三条是 GUI 录制宏里跟着出现的（范围附加量，默认全 0）；
+        # 默认值本来就是这个，写上是为了与录制结果逐行一致——出问题时
+        # 可以直接和 CST 自己录的宏对拍。
+        '    .XrangeAdd "0.0", "0.0"\n'
+        '    .YrangeAdd "0.0", "0.0"\n'
+        '    .ZrangeAdd "0.0", "0.0"\n'
+        '    .SingleEnded "False"\n'
+        '    .WaveguideMonitor "False"\n'
         "    .Create\n"
         "End With\n"
     )
@@ -252,6 +261,11 @@ def field_monitor(field_type: str, frequency_ghz: float) -> str:
     Volume 监视器与计算域同大小，因此它的边界自然贴在四个端口面上
     （端口面就是计算域边界面）——这是正常现象，不是"监视器跑到端口
     上去了"。导出场时只按设计区附近的薄层取数（见 cst.py::_export_field）。
+
+    `.UseSubvolume "False"` 按 GUI 录制宏补上：录制结果里它后面还跟着
+    `.Coordinates`/`.SetSubvolume`/`.SetSubvolumeOffset`/
+    `.SetSubvolumeInflateWithOffset` 四条子域设置，但 UseSubvolume=False
+    时它们全是惰性的，故不写（也避免照抄录制里疑似截断的取值）。
     """
     return (
         "With Monitor\n"
@@ -261,6 +275,7 @@ def field_monitor(field_type: str, frequency_ghz: float) -> str:
         '    .Domain "Frequency"\n'
         f'    .FieldType "{field_type}"\n'
         f'    .MonitorValue "{frequency_ghz:g}"\n'
+        '    .UseSubvolume "False"\n'
         "    .Create\n"
         "End With\n"
     )
@@ -298,6 +313,14 @@ def time_domain_solver_setup(stimulation_port: str = "All",
     会让 Solver.Start 报 "Invalid stimulation port, please specify."；
     成对的写法见 Dassault 官方教程 "Scripting the CST Studio Suite with
     the Python"（TD-S 例：`.StimulationPort "1"` + `.StimulationMode "1"`）。
+
+    属性集与顺序照 **GUI 录制宏**对齐（2026-10-01 用户实测录制）：除了我们
+    原来自写的几项，录制结果里还有 CalculateModesOnly / SParaSymmetry /
+    StoreTDResultsInCache / RunDiscretizerOnly / FullDeembedding /
+    SuperimposePLWExcitation / UseSensitivityAnalysis——都是默认值，写上
+    只为与 CST 自己的记录逐行对齐（便于对拍、也避免某台机器上默认值被
+    GUI 手改过）。`.SteadyStateLimit "-40"` 取该版本 GUI 默认值（原写
+    "-30" 是旧版默认）。
     """
     if stimulation_mode is None:
         stimulation_mode = "All" if stimulation_port == "All" else "1"
@@ -307,12 +330,26 @@ def time_domain_solver_setup(stimulation_port: str = "All",
         '    .CalculationType "TD-S"\n'
         f'    .StimulationPort "{stimulation_port}"\n'
         f'    .StimulationMode "{stimulation_mode}"\n'
-        '    .SteadyStateLimit "-30"\n'
+        '    .SteadyStateLimit "-40"\n'
         '    .MeshAdaption "False"\n'
+        '    .CalculateModesOnly "False"\n'
+        '    .SParaSymmetry "False"\n'
+        '    .StoreTDResultsInCache "False"\n'
+        '    .RunDiscretizerOnly "False"\n'
+        '    .FullDeembedding "False"\n'
+        '    .SuperimposePLWExcitation "False"\n'
+        '    .UseSensitivityAnalysis "False"\n'
+        # 下面两项是录制里没有、我们额外保留的：S 参数按 50 Ω 归一，
+        # 不依赖该机器 GUI 里的默认值（|S31| 是我们的目标函数）。
         '    .AutoNormImpedance "False"\n'
         '    .NormingImpedance "50"\n'
         "End With\n"
     )
+
+
+# GUI 录制：打开时域求解器对话框时，CST 会把网格生成器写进历史表。
+# 单独一条历史记录（录制里就是独立一行），故单独成块。
+MESH_CREATOR = 'Mesh.SetCreator "High Frequency"\n'
 
 
 def frequency_range(fmin_ghz: float, fmax_ghz: float) -> str:

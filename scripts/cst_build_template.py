@@ -87,12 +87,22 @@ def probe(app) -> None:
         break
 
 
-def open_new_project(app):
-    """新建一个 MWS 工程并返回其 COM 对象。
+def open_new_project(app, attach: bool = False):
+    """取得要建模的工程对象。
 
-    候选链：app.NewMWS() → 当前活动工程。都拿不到就抛——**不要**在用户
+    默认链：app.NewMWS() → 当前活动工程。都拿不到就抛——**不要**在用户
     已经打开的工程上乱建东西。
+
+    attach=True：只用 GUI 里**当前活动**的工程（不发 NewMWS）。为什么要
+    这个开关：`app.NewMWS()` 建出来的工程与 GUI 里 File → New 建的工程
+    状态可能不同（实测 `AddToHistory` 一律返回 False 时，需要用它来分辨
+    "是新建工程的问题"还是"调用形状的问题"）。
     """
+    if attach:
+        mws = app.GetActiveProject()
+        print("[OK] 工程对象：app.GetActiveProject()（--attach：用 GUI 里"
+              "当前打开的工程，请确认它就是你要建模板的那个空工程）")
+        return mws
     for label, factory in (
         ("app.NewMWS()", lambda: app.NewMWS()),
         ("app.GetActiveProject()", lambda: app.GetActiveProject()),
@@ -172,6 +182,10 @@ def main() -> None:
                     help="只列相关 COM 成员名，不建工程")
     ap.add_argument("--outdir", default=None,
                     help="输出目录（默认取配置里模板所在的目录）")
+    ap.add_argument("--attach", action="store_true",
+                    help="用 GUI 里当前打开的工程（不发 NewMWS）：当"
+                         "AddToHistory 一律 False、要分辨是新建工程的问题"
+                         "还是调用形状的问题时用（先在 GUI 里 File → New）")
     args = ap.parse_args()
 
     from eaopt.config import CaseConfig
@@ -197,7 +211,7 @@ def main() -> None:
     for tag, portnum, path in targets:
         print(f"--- {tag}（激励端口 {portnum}）→ {path} ---")
         print("!! 会新建一个工程；CST 里当前未保存的东西请先存好")
-        mws = open_new_project(app)
+        mws = open_new_project(app, attach=args.attach)
         ok = build(mws, tag, portnum)
         ok = save_as(mws, path) and ok
         results.append((tag, path, ok))

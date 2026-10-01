@@ -128,7 +128,9 @@ def test_field_monitor_is_volume_with_cst_conventional_name():
     assert '.Domain "Frequency"' in s
     assert '.FieldType "Efield"' in s
     assert '.MonitorValue "5"' in s          # CST 惯例写法，不是 "5.0"
-    assert "Subvolume" not in s              # 不用子域（非录制式属性）
+    # 子域显式关闭（录制宏同），但**不写**子域范围那几条（惰性属性）
+    assert '.UseSubvolume "False"' in s
+    assert ".SetSubvolume" not in s
     assert V.field_monitor("Hfield", 5.0).count('.Name "h-field (f=5)"') == 1
     for bad in ("e", "E", "efield", "E_field"):
         with pytest.raises(ValueError):
@@ -317,8 +319,11 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
     # 只看可执行语句（注释里会提到 Excitation 以说明为何不用它）
     code_only = lambda t: "\n".join(l for l in t.splitlines()          # noqa: E731
                                     if not l.lstrip().startswith("'"))
-    assert "Excitation" not in code_only(fwd)
-    assert "Excitation" not in code_only(bwd)
+    # 不用 Excitation **对象**（"SuperimposePLWExcitation" 只是个布尔属性，
+    # 名字里含 Excitation，不能拿子串一刀切）
+    assert "With Excitation" not in code_only(fwd)
+    assert "Excitation.Reset" not in code_only(fwd)
+    assert "With Excitation" not in code_only(bwd)
     assert 'Solver.FrequencyRange "0", "10"' in fwd
 
 
@@ -365,10 +370,11 @@ def test_settings_blocks_are_error_guarded(tmp_path):
     # 保护区之外：几何与端口（失败就该中止，不吞错）
     assert guard_at > text.rindex("With Extrude")
     assert guard_at > text.rindex("With Port")
-    # 保护区之内：5 个设置块（每块 2 次 Err 操作）
-    assert text.count("If Err.Number <> 0 Then") == 5
-    assert text.count("Err.Clear") == 10
-    for label in ("Solver", "FrequencyRange", "Monitor Efield",
+    # 保护区之内：6 个设置块（Mesh/Solver/频段/两个监视器/边界；
+    # 每块 2 次 Err 操作）
+    assert text.count("If Err.Number <> 0 Then") == 6
+    assert text.count("Err.Clear") == 12
+    for label in ("Mesh", "Solver", "FrequencyRange", "Monitor Efield",
                   "Monitor Hfield", "Boundary"):
         assert f'errLog = errLog & "{label}: ("' in text
     assert "Dim errLog As String" in text

@@ -77,6 +77,46 @@ def show_signatures(mws) -> None:
             print(f"      帮助：{s['help']}")
 
 
+def show_modeler_members(mws) -> None:
+    """有没有独立的"建模器/3D 模型"对象？
+
+    官方 CST Python 包里写历史用的是 ``project.model3d.add_to_history(...)``
+    ——即 add_to_history 挂在 **Model3D/建模器**对象上，不一定是工程对象。
+    这里把候选成员列出来；若真拿到对象，就顺手在那个对象上也打一遍矩阵。
+    """
+    print("-" * 64)
+    print("1b. 名字含 model/design 的成员（找独立建模器对象）")
+    print("-" * 64)
+    try:
+        sigs = cst_api.member_signatures(mws, "model")
+    except Exception as e:
+        print(f"  [FAIL] 拿不到类型信息：{_short(e)}")
+        return
+    if not sigs:
+        print("  （没有名字含 model 的成员）")
+    for s in sigs:
+        print(f"  {s['name']}  参数 {s['n_params']} 个：{list(s['params'])}")
+    # 无参、且名字像"取建模器"的，直接调用看返回什么
+    for s in sigs:
+        if s["n_params"] != 0:
+            continue
+        try:
+            obj = getattr(mws, s["name"])()
+        except Exception as e:
+            print(f"    [ -- ] {s['name']}() 调用失败：{_short(e)}")
+            continue
+        print(f"    [ OK ] {s['name']}() -> {obj!r}")
+        try:
+            hist = cst_api.member_signatures(obj, "history")
+        except Exception as e:
+            print(f"           该对象拿不到类型信息：{_short(e)}")
+            continue
+        if hist:
+            print(f"           **该对象上有 history 成员**："
+                  f"{[h['name'] for h in hist]}")
+            run_matrix(obj, f"建模器对象 {s['name']}()")
+
+
 def run_matrix(mws, title: str) -> list[str]:
     """把 CASES 逐个试一遍，返回返回 True 的标签列表。"""
     print("-" * 64)
@@ -185,6 +225,7 @@ def main() -> None:
     print("=" * 64)
     mws = app.NewMWS()
     show_signatures(mws)
+    show_modeler_members(mws)
     run_matrix(mws, "新建工程")
     read_back(mws)
     state_matrix(mws, app, args.config)

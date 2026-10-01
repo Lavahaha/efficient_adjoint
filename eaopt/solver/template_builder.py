@@ -209,6 +209,9 @@ def setting_blocks(portnum: int) -> list[tuple[str, str]]:
     标签是 ASCII（宏里要写进 errLog，见 vba.guarded 的编码说明）。
     """
     return [
+        # 网格生成器：GUI 打开时域求解器对话框时 CST 自己写的那一条
+        # （录制宏里是独立一行），放最前面与录制顺序一致。
+        ("Mesh", V.MESH_CREATOR),
         # 只激励本模板指定的端口（fwd→1 / bwd→3）。用 Solver 的
         # StimulationPort，不用 Excitation 对象（后者在 CST 2024 里
         # 报 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。

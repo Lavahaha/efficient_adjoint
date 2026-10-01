@@ -43,6 +43,17 @@ python scripts/cst_build_template.py configs/coupler.yaml
 那张表贴回开发者即可（`cst_api.member_signatures` 直读 IDispatch 类型库，
 不靠猜）。
 
+**若 `AddToHistory` 一律返回 False**，还有一个开关可以分辨原因：先用
+GUI 的 **File → New** 建好空工程，再
+
+```bash
+python scripts/cst_build_template.py configs/coupler.yaml --attach
+```
+
+`--attach` 不发 `NewMWS()`，直接在**当前活动工程**上建——`app.NewMWS()`
+建出来的工程与 GUI 建的工程状态可能不同，这一条能把"新建工程的问题"和
+"调用形状的问题"分开。
+
 **若每一块都 `[FAIL] ... AddToHistory 返回 False`**（实测遇到过：连只有
 一行、语法显然没问题的块也 False ⇒ 与命令内容无关，是"条目创建本身被拒"
 或"调用形状不对"），跑专门的诊断：
@@ -97,6 +108,20 @@ python scripts/build_cst_template.py cst/   # 生成宏文件
   **空工程**。
 - **必须从 CST 主界面的 Macros 下拉菜单运行**。在 VBA 编辑器里点运行
   图标，即使是结构宏也不写 History List。
+
+**模板里的 VBA 与 CST 自己的录制宏逐行对齐**（2026-10-01 按用户实测录制
+结果改的，出问题时可以拿 GUI 录制的宏和模板对拍）：
+
+- Port 块补了 `XrangeAdd/YrangeAdd/ZrangeAdd`、`SingleEnded`、
+  `WaveguideMonitor`（都是默认值，写上是为了逐行一致）；
+- Monitor 块补了 `UseSubvolume "False"`（子域范围那几条惰性属性不写）；
+- Solver 块补了 `CalculateModesOnly`/`SParaSymmetry`/`StoreTDResultsInCache`/
+  `RunDiscretizerOnly`/`FullDeembedding`/`SuperimposePLWExcitation`/
+  `UseSensitivityAnalysis`，且前面多一条独立的
+  `Mesh.SetCreator "High Frequency"`（GUI 打开 TD 求解器对话框时 CST 自己
+  写的那条）；`SteadyStateLimit` 取该版本默认 **-40 dB**（原写 -30 是旧版
+  默认），另外保留了我们自己的 `AutoNormImpedance "False"` +
+  `NormingImpedance "50"`（S 参数按 50 Ω 归一，不依赖机器默认）。
 
 **宏里不含 NewProject/SaveAs**——工程级指令只在控制宏（.mcr）上下文合法，
 实测在结构宏里报 "Invalid instruction"。所以新建工程由你在 GUI 里做，

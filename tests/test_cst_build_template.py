@@ -175,3 +175,39 @@ def test_probe_read_back_does_not_crash_without_com(probe_mod, capsys):
     """读不回历史表只能算"这条诊断没结果"，不能把整个脚本带崩。"""
     probe_mod.read_back(object())
     assert "拿不到类型信息" in capsys.readouterr().out
+
+
+def test_open_new_project_attach_uses_active_project_only(mod):
+    """--attach：不发 NewMWS（新建工程与 GUI 工程状态可能不同）。"""
+    class App:
+        def __init__(self):
+            self.calls = []
+
+        def NewMWS(self):
+            self.calls.append("NewMWS")
+            return "NEW"
+
+        def GetActiveProject(self):
+            self.calls.append("GetActiveProject")
+            return "ACTIVE"
+
+    app = App()
+    assert mod.open_new_project(app, attach=True) == "ACTIVE"
+    assert app.calls == ["GetActiveProject"]
+    assert mod.open_new_project(app) == "NEW"       # 默认链没变
+
+
+def test_probe_modeler_section_runs_matrix_on_modeler_object(probe_mod, capsys):
+    """工程对象上若有"取建模器"的无参成员，且该对象上也有 history 成员，
+    就对它再打一遍矩阵（官方 Python 包是把 add_to_history 挂在建模器上）。"""
+    class Modeler:
+        def AddToHistory(self, *args):
+            return args[0] == "probe-swap"
+
+    class Mws:
+        _oleobj_ = None            # 没有类型信息 -> 走不了签名分支
+        Model3D = Modeler()
+
+    # 没有类型信息时这一节只打印失败、不抛
+    probe_mod.show_modeler_members(Mws())
+    assert "拿不到类型信息" in capsys.readouterr().out

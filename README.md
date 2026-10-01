@@ -145,6 +145,14 @@ python -m pytest tests/ -v             # 测试
    实测设置类命令报过 "(10090) ActiveX Automation error" 与
    "(10097) wrong number of parameters"，未加保护会中止整个宏；现由宏
    结尾的报告框列出失败块，照提示在 GUI 手工设置即可）；
+   **模板里的 VBA 与 CST 自己的录制宏逐行对齐**（Port 补
+   `XrangeAdd/SingleEnded/WaveguideMonitor`，Monitor 补 `UseSubvolume`，
+   Solver 补 `CalculateModesOnly`/`SParaSymmetry`/… 并有独立的
+   `Mesh.SetCreator "High Frequency"`，`SteadyStateLimit` 取该版本默认
+   -40 dB）；建模板若 `AddToHistory` 一律 False，先跑
+   `scripts/cst_probe_history.py`（签名 + 调用形状矩阵），或换
+   `scripts/cst_build_template.py ... --attach`（在 GUI 里 File → New
+   建的空工程上建）。
 3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
    `solver.type: cst`；
 4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、
