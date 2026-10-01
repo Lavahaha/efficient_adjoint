@@ -127,6 +127,23 @@ def test_guarded_rejects_non_ascii_label():
     for bad in ("激励", "Monitör"):
         with pytest.raises(ValueError):
             V.guarded("", bad)
+        with pytest.raises(ValueError):
+            V.guarded_alternatives(["Cmd"], bad)
+
+
+def test_guarded_alternatives_nests_and_reports():
+    """多种写法嵌套尝试：第一个不报错的即止，全失败才记 errLog。"""
+    s = V.guarded_alternatives(['SaveAs "p", "False"', 'SaveAs "p", "True"'],
+                               "SaveAs")
+    assert s.startswith('    Err.Clear\n    SaveAs "p", "False"\n'
+                        '    If Err.Number <> 0 Then\n        Err.Clear\n'
+                        '        SaveAs "p", "True"\n'
+                        '        If Err.Number <> 0 Then\n')
+    assert '            errLog = errLog & "SaveAs: (" & Err.Number & ") "' in s
+    assert s.rstrip().endswith("        End If\n    End If")   # 2 种写法 → 2 个 If
+    assert s.count("Err.Clear") == 4      # 进入前清 1 + 每种写法失败后清 1
+    with pytest.raises(ValueError):
+        V.guarded_alternatives([], "SaveAs")
 
 
 def test_layout_matches_paper_fig5():
@@ -262,14 +279,18 @@ def test_settings_blocks_are_error_guarded(tmp_path):
     # 保护区之外：几何与端口（失败就该中止，不吞错）
     assert guard_at > text.rindex("With Extrude")
     assert guard_at > text.rindex("With Port")
-    # 保护区之内：5 个设置块，每块 2 次 Err.Clear（进入前清、记录后清）
-    assert text.count("If Err.Number <> 0 Then") == 5
-    assert text.count("Err.Clear") == 10
+    # 保护区之内：5 个设置块 + SaveAs（两种写法）= 7 个错误检查
+    assert text.count("If Err.Number <> 0 Then") == 7
+    assert text.count("Err.Clear") == 14  # 5 块 ×2 + SaveAs 两写法 ×2
     for label in ("Excitation", "Monitor Efield", "Monitor Hfield",
-                  "Boundary", "Solver"):
+                  "Boundary", "Solver", "SaveAs"):
         assert f'errLog = errLog & "{label}: ("' in text
-    # 顺序：保护结束 → SaveAs → 报告（报告时工程一定已存盘）
-    assert guard_at < release_at < text.index('SaveAs "') < text.index("MsgBox")
+    # SaveAs 必须带第二个参数（CST 2024 实测只给路径报 10097 wrong number
+    # of parameters），两种布尔写法都试
+    assert '.cst", "False"' in text and '.cst", "True"' in text
+    # 顺序：保护开始 → 各块 → SaveAs → 保护结束 → 报告框
+    # （SaveAs 在保护区内，失败了宏也能走到报告框）
+    assert guard_at < text.index('SaveAs "') < release_at < text.index("MsgBox")
     assert "Dim errLog As String" in text
 
 

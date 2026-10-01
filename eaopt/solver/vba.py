@@ -19,6 +19,7 @@ from __future__ import annotations
 
 __all__ = [
     "material_normal", "brick", "polygon_extrude", "guarded",
+    "guarded_alternatives",
     "waveguide_port", "excitation", "field_monitor", "field_monitor_name",
     "field_result_path", "FIELD_TYPES",
     "set_boundaries", "time_domain_solver_setup", "select_field_monitor",
@@ -125,6 +126,35 @@ def guarded(block: str, label: str, indent: str = "    ") -> str:
         f"{indent}    Err.Clear\n"
         f"{indent}End If\n"
     )
+
+
+def guarded_alternatives(blocks, label: str, indent: str = "    ") -> str:
+    """依次尝试同一命令的多种写法，第一个不报错的即采用。
+
+    用于"参数个数/含义随版本变"的命令（如 SaveAs：CST 2024 命令宏里
+    只给一个路径会报 "(10097) ActiveX Automation: wrong number of
+    parameters"，需再给一个布尔）。全部写法都失败时，把最后一个错误
+    记入 errLog（与 guarded() 同款报告），不抛出。
+    """
+    if not label.isascii():
+        raise ValueError(f"label 必须为 ASCII（CST 宏按 ANSI 解码）：{label!r}")
+    if not blocks:
+        raise ValueError("blocks 不能为空")
+    lines = [f"{indent}Err.Clear"]
+    lvl = indent
+    for block in blocks:
+        for ln in block.rstrip("\n").split("\n"):
+            lines.append(lvl + ln)
+        lines.append(f"{lvl}If Err.Number <> 0 Then")
+        lvl += indent
+        lines.append(f"{lvl}Err.Clear")
+    lines.append(f'{lvl}errLog = errLog & "{label}: (" & Err.Number & ") " '
+                 f"& Err.Description & vbCrLf")
+    lines.append(f"{lvl}Err.Clear")
+    for _ in blocks:
+        lvl = lvl[:-len(indent)]
+        lines.append(f"{lvl}End If")
+    return "\n".join(lines) + "\n"
 
 
 # 端口所在的计算域边界面（CST 的 .Orientation 只认这组名字）

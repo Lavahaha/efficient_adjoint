@@ -7,6 +7,12 @@
      上下文合法**：在 .mcs 里执行 NewProject 实测报 "Invalid instruction"。
      故本宏不含 NewProject，只做"建模 + SaveAs"，新建工程由用户在 GUI 中
      File → New 完成；且所有参数写字面量，不依赖 VBA 变量传参。
+  3. **SaveAs 必须带两个参数**：命令宏里 `SaveAs "<路径>"` 实测报
+     "(10097) ActiveX Automation: wrong number of parameters"，需再给一个
+     布尔（见 vba.guarded_alternatives 调用处）。
+  4. 设置类块（激励/监视器/边界/求解器/另存）逐个容错，失败只记入
+     结尾的报告框——CST 2024 实测 `Excitation.Reset` 报 "(10090)"，
+     未加保护会让整个宏中止。
 
 用法（每个模板一次，共两次）：
   CST → File → New（模板 <None>）→ 导入并运行 build_coupler_fwd.mcr
@@ -236,10 +242,17 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
         (V.time_domain_solver_setup(), "Solver"),
     ):
         body.append(V.guarded(block, label))
+    # 另存：也放进保护区。CST 2024 命令宏里 SaveAs 只给路径会报
+    # "(10097) wrong number of parameters"，需再给一个布尔；两种布尔的
+    # 含义在不同版本文档里说法不一（覆盖开关 / 另存副本），故两种都试。
+    # 放进保护区的另一个作用：SaveAs 若失败，宏仍走到结尾的报告框，
+    # 用户能一次看到所有失败块（上一版 SaveAs 在保护区外，报告框都没弹）。
+    body.append(V.guarded_alternatives(
+        [f'SaveAs "{target}", "False"',
+         f'SaveAs "{target}", "True"'],
+        "SaveAs"))
     body += [
         "    On Error GoTo 0",
-        "",
-        f'    SaveAs "{target}"',
         "",
         "    ' 报告：明确告诉用户宏是否跑完、哪些块要手工补",
         "    If Len(errLog) > 0 Then",

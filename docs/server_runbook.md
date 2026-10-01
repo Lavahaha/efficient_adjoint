@@ -158,4 +158,11 @@ python scripts/run_coupler.py configs/coupler.yaml
   Xrange/Yrange/Zrange，且端口面下缘要贴合接地板底面。
 - **端口报错（如 "port is too small"）**：把端口面横向余量调大
   （`eaopt/solver/template_builder.py` 的 `_ports()` 中 `m`），重新生成宏。
-- **SaveAs 未生效**：手工 File → Save As 保存两个模板工程。
+- **`(10097) ActiveX Automation: wrong number of parameters. (SaveAs "...")`**：
+  CST 命令宏里 `SaveAs` 必须带**两个**参数（路径 + 布尔）。宏已改成
+  先试 `SaveAs "<路径>", "False"`、失败再试 `"True"`（两种布尔的含义在
+  不同版本文档里说法不一：覆盖开关 / 另存副本），并把这一步放进容错区。
+  若两种都失败，报告框会点名 `SaveAs`，此时手工 File → Save As 保存即可。
+- **模板存出来的工程内容不全**（老版本 CST 有"宏保存的项目丢了端口/监视器"
+  的报告）：跑 smoke 就能发现——参数读不到=端口没存上，结果树里没有
+  `e-field (f=5) [AC]`=监视器没存上。真遇到就手工补后另存。
