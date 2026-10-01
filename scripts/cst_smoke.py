@@ -19,6 +19,7 @@
      诊断原始错误一并打印；
   4b. S 参数曲线（4.5–5.5 GHz，对标论文初始设计）；
   4c. 备选链 GetFileFromTreeItem + Result1DComplex（不依赖结果树数组布局）；
+  4d. 备选：Touchstone 导出（走文件，绕开结果树读取 API）；
   5. 结果树中的监视器条目路径（惯例路径 vs 实际匹配）+ SelectTreeItem；
   6. E 场 ASCII 导出：属性探针 + 候选配置 + 文件头（用于核对
      ascii_fields.parse_ascii_field 与 CST 2024 真实格式）。
@@ -242,7 +243,7 @@ def main() -> None:
     print("3c) COM 方法枚举（直接问类型库，不再猜 API 名字）")
     print("=" * 60)
     rt = mws.ResultTree
-    for kw in ("Result", "Export", "Tree", "Field", "ASCII"):
+    for kw in ("Result", "Export", "Tree", "Field", "ASCII", "Touch"):
         enum_com_methods(mws, "mws", keyword=kw)
     enum_com_methods(rt, "mws.ResultTree")
     enum_com_methods(mws.ASCIIExport, "mws.ASCIIExport")
@@ -336,6 +337,37 @@ def main() -> None:
                     except Exception as e2:
                         print(f"      {meth}: 不可用 ({_short(e2)})")
             break
+
+    print("=" * 60)
+    print("4d) 备选：Touchstone 导出（走文件，绕开结果树读取 API）")
+    print("=" * 60)
+    tsp = workdir / "smoke_sparams.s4p"
+    try:
+        enum_com_methods(mws.TOUCHSTONE, "mws.TOUCHSTONE")
+    except Exception as e:
+        print(f"    mws.TOUCHSTONE 取不到: {_short(e)}")
+    for term in ("Write", "Export", "Execute"):
+        try:
+            t = mws.TOUCHSTONE
+            t.Reset()
+            t.FileName(str(tsp))
+            t.Impedance("50")
+            for meth in ("FrequencyRange", "SetNSamples"):
+                for call in ((str(0.0), str(10.0)), ("1001",)):
+                    try:
+                        getattr(t, meth)(*call)
+                        break
+                    except Exception:
+                        continue
+            getattr(t, term)()
+            print(f"    [OK] TOUCHSTONE.{term}(): "
+                  f"{tsp.stat().st_size / 1e3:.1f} kB -> {tsp}")
+            for ln in tsp.read_text(encoding="utf-8",
+                                    errors="replace").splitlines()[:12]:
+                print("      " + ln)
+            break
+        except Exception as e:
+            print(f"    [FAIL] TOUCHSTONE.{term}(): {_short(e)}")
 
     print("=" * 60)
     print("5) 结果树中监视器条目的真实路径（供 SelectTreeItem 核对）")
