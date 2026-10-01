@@ -67,11 +67,39 @@ def test_port_face_validation():
 def test_solver_stimulation_port_selects_single_port():
     """"只激励哪个端口"用 Solver.StimulationPort（不用 Excitation 对象：
     后者在 CST 2024 命令宏里报 10090，且失败静默——S 参数照样对，但场
-    监视器存的是多激励叠加的场）。"""
+    监视器存的是多激励叠加的场）。端口与模式必须**成对**：CST 2024 实测
+    "1" + "All" 会让 Solver.Start 报 "Invalid stimulation port,
+    please specify."；Dassault 教程的成对写法是 "1" + "1"。"""
     s = V.time_domain_solver_setup("1")
     assert '.StimulationPort "1"' in s
+    assert '.StimulationMode "1"' in s
     assert '.Method "Hexahedral"' in s and '.CalculationType "TD-S"' in s
-    assert V.time_domain_solver_setup().count('.StimulationPort "All"') == 1
+    all_ports = V.time_domain_solver_setup()
+    assert all_ports.count('.StimulationPort "All"') == 1
+    assert all_ports.count('.StimulationMode "All"') == 1
+    assert '.StimulationMode "2"' in V.time_domain_solver_setup("1", "2")
+
+
+def test_ascii_export_uses_only_existing_cst_properties():
+    """CST 2024 实测：ASCIIExport 没有 XStart/XEnd/YStart/YEnd/ZStart/ZEnd
+    （报 <unknown>.XStart）。可用属性只有 Reset / FileName / Mode /
+    StepX / StepY / StepZ / Execute——导出范围是选中结果的整个包围盒，
+    要限制范围只能在解析端裁剪。"""
+    params = V.ascii_export_params(0.2)
+    assert params == [("Mode", "FixedNumber"), ("StepX", "0.2"),
+                      ("StepY", "0.2"), ("StepZ", "0.2")]
+    s = V.ascii_export_field("f.txt", 0.2)
+    assert '.FileName "f.txt"' in s
+    for prop, val in params:
+        assert f'.{prop} "{val}"' in s
+    assert ".Execute" in s
+    for bad in ("XStart", "XEnd", "YStart", "YEnd", "ZStart", "ZEnd",
+                ".Export"):
+        assert bad not in s
+    # 顺序：Reset → FileName → 参数（Reset 必须最先，清掉上一次的残留）
+    assert s.index(".Reset") < s.index(".FileName") < s.index(".Mode")
+    # 模式可覆盖（smoke 用 FixedWidth 候选兜底）
+    assert ("Mode", "FixedWidth") in V.ascii_export_params(0.2, mode="FixedWidth")
 
 
 def test_frequency_range_is_set_explicitly():
@@ -256,7 +284,10 @@ def test_build_macro_each_template_is_self_contained(tmp_path):
         assert "NewProject" not in code  # 实测非法：新建工程由 GUI 完成
         assert "portnum As Integer" not in text  # 参数全部字面量
         assert 'SaveAs "' in text and f"{project}.cst" in text
-        assert f'.StimulationPort "{port}"' in text  # 只激励本模板的端口
+        # 只激励本模板的端口，且端口与模式成对（实测 "x"+"All" 会被
+        # Solver.Start 拒绝）
+        assert f'.StimulationPort "{port}"' in text
+        assert '.StimulationMode "1"' in text
         assert "Rogers4350B" in text
         # 4 个端口，全部 Free 坐标系；端口面名与几何一致
         assert text.count("With Port") == 4

@@ -10,7 +10,11 @@
     time_domain_solver_setup）。**不要用 Excitation 对象**：它在
     CST 2024 命令宏上下文里实测报 "(10090) ActiveX Automation
     error"，且失败是静默的——S 参数照样对，但场监视器里存的是多个
-    激励叠加的场，会悄悄毁掉伴随梯度。
+    激励叠加的场，会悄悄毁掉伴随梯度；
+  - 场导出用 ASCIIExport 的**固定属性集**（见 ascii_export_params），
+    没有 XStart/XEnd 这类范围属性（实测不存在）；
+  - 结果读取的候选 API 收敛在 eaopt/solver/cst_api.py（ResultTree
+    的 GetResultItem/GetAllItems 在 CST 2024 实测不存在）。
 
 编码：CST 宏文件按 ANSI 解码，**可执行语句里不要出现非 ASCII**
 （字符串字面量中的非 ASCII 字节可能吞掉引号造成语法错误）；
@@ -26,6 +30,7 @@ __all__ = [
     "field_result_path", "FIELD_TYPES",
     "set_boundaries", "time_domain_solver_setup", "frequency_range",
     "select_field_monitor",
+    "ASCII_EXPORT_MODE", "ASCII_EXPORT_EXECUTE", "ascii_export_params",
     "ascii_export_field",
 ]
 
@@ -276,22 +281,32 @@ def set_boundaries(xmin: str, xmax: str, ymin: str, ymax: str,
     )
 
 
-def time_domain_solver_setup(stimulation_port: str = "All") -> str:
+def time_domain_solver_setup(stimulation_port: str = "All",
+                             stimulation_mode: str | None = None) -> str:
     """时域求解器设置（论文用法，默认精度）。
 
-    stimulation_port: "All" 或端口号字符串（如 "1"）。**这是"只激励哪个
-    端口"的正规、版本稳定的写法**（Excitation 对象在 CST 2024 命令宏里
-    实测报 "(10090) ActiveX Automation error"，见 guarded()）。
+    stimulation_port: 激励端口，"All" 或端口号字符串（如 "1"）。**这是
+    "只激励哪个端口"的正规、版本稳定的写法**（Excitation 对象在 CST 2024
+    命令宏里实测报 "(10090) ActiveX Automation error"，见 guarded()）。
     伴随法要求两个模板各自只激励一个端口（fwd→1，bwd→3）：否则场监视器
     存的是多个激励叠加的场，梯度就无从谈起（S 参数不受影响，所以光看
     S 参数发现不了这个问题）。
+
+    stimulation_mode: 激励模式，"All" 或模式号字符串（单模端口即 "1"）。
+    None → 与端口取同一值（"All"/"All" 或 "1"/"1"）。**端口与模式必须
+    成对**：CST 2024 实测 `.StimulationPort "1"` + `.StimulationMode "All"`
+    会让 Solver.Start 报 "Invalid stimulation port, please specify."；
+    成对的写法见 Dassault 官方教程 "Scripting the CST Studio Suite with
+    the Python"（TD-S 例：`.StimulationPort "1"` + `.StimulationMode "1"`）。
     """
+    if stimulation_mode is None:
+        stimulation_mode = "All" if stimulation_port == "All" else "1"
     return (
         "With Solver\n"
         '    .Method "Hexahedral"\n'
         '    .CalculationType "TD-S"\n'
         f'    .StimulationPort "{stimulation_port}"\n'
-        '    .StimulationMode "All"\n'
+        f'    .StimulationMode "{stimulation_mode}"\n'
         '    .SteadyStateLimit "-30"\n'
         '    .MeshAdaption "False"\n'
         '    .AutoNormImpedance "False"\n'
@@ -317,24 +332,33 @@ def select_field_monitor(field_type: str, frequency_ghz: float) -> str:
     return f'SelectTreeItem("{field_result_path(field_type, frequency_ghz)}")\n'
 
 
+ASCII_EXPORT_MODE = "FixedNumber"
+ASCII_EXPORT_EXECUTE = "Execute"
+
+
+def ascii_export_params(step_mm: float,
+                        mode: str = ASCII_EXPORT_MODE) -> list[tuple[str, str]]:
+    """ASCIIExport 的设置序列 [(属性名, 值)]——**单一事实来源**。
+
+    vba.ascii_export_field（生成 VBA）与 cst.py / smoke（逐条 COM 调用）
+    共用本函数，避免属性名再次漂移：早期版本写过 XStart/XEnd/YStart/
+    YEnd/ZStart/ZEnd，CST 2024 实测报 `<unknown>.XStart`（这些属性不存在）。
+
+    CST 2024 可用的属性集：Reset / FileName / Mode / StepX / StepY /
+    StepZ / Execute。**没有区域范围属性**——导出范围就是当前选中结果的
+    整个包围盒（Volume 监视器 ⇒ 整个计算域），要限制范围只能在解析端
+    裁剪（或改用 SetPoints 给显式点列，待服务器实测）。
+
+    StepX/Y/Z 的确切含义（步长 mm 还是采样点数）以 smoke 导出文件头为准。
+    """
+    s = f"{step_mm:g}"
+    return [("Mode", mode), ("StepX", s), ("StepY", s), ("StepZ", s)]
+
+
 def ascii_export_field(file_path: str, step_mm: float,
-                       x0: float, x1: float, y0: float, y1: float,
-                       z0: float, z1: float) -> str:
-    """把当前选中的 3D 场结果按固定步长导出为 ASCII 文件。"""
-    return (
-        "With ASCIIExport\n"
-        "    .Reset\n"
-        f"    .FileName \"{file_path}\"\n"
-        '    .Mode "FixedNumber"\n'
-        f"    .StepX \"{step_mm}\"\n"
-        f"    .StepY \"{step_mm}\"\n"
-        f"    .StepZ \"{step_mm}\"\n"
-        f"    .XStart \"{x0}\"\n"
-        f"    .XEnd \"{x1}\"\n"
-        f"    .YStart \"{y0}\"\n"
-        f"    .YEnd \"{y1}\"\n"
-        f"    .ZStart \"{z0}\"\n"
-        f"    .ZEnd \"{z1}\"\n"
-        "    .Export\n"
-        "End With\n"
-    )
+                       mode: str = ASCII_EXPORT_MODE) -> str:
+    """把当前选中的 3D 场结果按固定步长导出为 ASCII（VBA 片段）。"""
+    lines = ["With ASCIIExport", "    .Reset", f'    .FileName "{file_path}"']
+    lines += [f'    .{prop} "{val}"' for prop, val in ascii_export_params(step_mm, mode)]
+    lines += [f"    .{ASCII_EXPORT_EXECUTE}", "End With", ""]
+    return "\n".join(lines)

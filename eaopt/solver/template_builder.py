@@ -242,6 +242,8 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
         # 只激励本模板指定的端口（fwd→1 / bwd→3）。用 Solver 的
         # StimulationPort，不用 Excitation 对象（后者在 CST 2024 命令宏里
         # 报 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
+        # 端口与模式成对给出（"1"/"1"）：实测 "1" + "All" 会让
+        # Solver.Start 报 "Invalid stimulation port, please specify."。
         (V.time_domain_solver_setup(str(portnum)), "Solver"),
         (V.frequency_range(FMIN, FMAX), "FrequencyRange"),
         (V.field_monitor("Efield", FREQ), "Monitor Efield"),

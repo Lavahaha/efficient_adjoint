@@ -40,7 +40,11 @@ eaopt/
 ├── solver/
 │   ├── base.py          # Solution / SolverInterface / make_solver 工厂
 │   ├── mock.py          # MockSolver：2D 拉普拉斯静电场玩具模型（本地验证用）
-│   └── cst.py           # CST 接口（占位，第 6 步在服务器实现）
+│   ├── cst.py           # CstSolver：CST 2024 双模板 + COM 场导出
+│   ├── cst_api.py       # COM 结果读取候选链（版本 API 名称差异收敛在此）
+│   ├── vba.py           # CST VBA 命令串（建模/端口/监视器/求解器/导出）
+│   ├── template_builder.py  # 双模板命令宏生成 build_coupler_{fwd,bwd}.mcr
+│   └── ascii_fields.py  # CST ASCII 场文件解析
 ├── optimize/
 │   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）
 │   ├── step.py          # 固定步长 + 归一化 + active 掩膜
@@ -51,7 +55,7 @@ configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺�
 scripts/run_coupler.py   # 运行入口
 scripts/fd_check.py      # FD 验证命令行工具
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
-tests/                   # 65 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏）
+tests/                   # 79 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
 ```
 
 ## 安装与使用
@@ -93,9 +97,9 @@ python -m pytest tests/ -v             # 测试
 
 ## CST 服务器流程（第 6–7 步，CST 2024）
 
-代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/vba.py` +
-`eaopt/solver/ascii_fields.py` + `eaopt/solver/template_builder.py`，
-65 项本地测试全过）；服务器实测步骤：
+代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/cst_api.py` +
+`eaopt/solver/vba.py` + `eaopt/solver/ascii_fields.py` +
+`eaopt/solver/template_builder.py`，79 项本地测试全过）；服务器实测步骤：
 
 1. 生成模板宏：`python scripts/build_cst_template.py cst/`（产物
    `cst/build_coupler_fwd.mcr` 与 `build_coupler_bwd.mcr`，以及诊断宏
@@ -113,7 +117,9 @@ python -m pytest tests/ -v             # 测试
    `e-field (f=5)` / `h-field (f=5)`（名字 = 结果树条目名，导出场按它选中，
    见 `vba.field_monitor_name`）、边界（x/y/zmin 磁、zmax 电）、
    **激励只勾选本模板的端口**（fwd→端口 1，bwd→端口 3；用
-   `Solver.StimulationPort` 设置）+ 频段 0–10 GHz。
+   `Solver.StimulationPort` + `Solver.StimulationMode` **成对**设置——
+   实测端口配 `"All"` 会让求解直接报 "Invalid stimulation port"）
+   + 频段 0–10 GHz。
    **设置类块（激励/频段/监视器/边界/求解器/另存）逐块容错**：CST 2024
    实测设置类命令报过 "(10090) ActiveX Automation error" 与
    "(10097) wrong number of parameters"，未加保护会中止整个宏；现由宏

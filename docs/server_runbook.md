@@ -10,7 +10,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
 pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 65 passed（本机可先确认代码完整）
+python -m pytest tests/ -q   # 应 79 passed（本机可先确认代码完整）
 ```
 
 ## 1. 在服务器上生成模板宏（重要：宏里包含绝对路径，必须在服务器上重新生成）
@@ -64,12 +64,15 @@ python scripts/build_cst_template.py cst/
      处相接，**不应有缝**。若形状不符（例如成了直角、或出现明显
      折线感），把俯视图截图发回
    - **激励（最关键的一项）**：Simulation → Time Domain Solver 对话框 →
-     Excitation/Stimulation 分组里，**只应勾选端口 1**（其余端口不勾），
-     Frequency range 应为 **0 – 10 GHz**。
+     Stimulation/Excitation 分组里，**Source type 应指向端口 1**
+     （bwd 端口 3），Frequency range 应为 **0 – 10 GHz**。
      这一项错了不会让 S 参数变样（S 参数照样是全端口矩阵），但**场监视器里
-     存的会是多个激励叠加的场，伴随梯度就全错了**。宏现在用 Solver 的
-     `.StimulationPort` 设置它（不再用 Excitation 对象——那个对象在
-     CST 2024 命令宏里报 10090、且失败是静默的）
+     存的会是多个激励叠加的场，伴随梯度就全错了**。宏用 Solver 的
+     `.StimulationPort "1"` + `.StimulationMode "1"` 设置它（不再用
+     Excitation 对象——那个对象在 CST 2024 命令宏里报 10090、且失败是
+     静默的）。**端口与模式必须成对**：实测 `.StimulationPort "1"` +
+     `.StimulationMode "All"` 会让 Solver.Start 直接报
+     "Invalid stimulation port, please specify."
 8. **bwd 工程同样检查，激励改为端口 3**，保存
 
 ## 2.5 （可选）诊断宏 polygon_test.mcr
@@ -107,15 +110,28 @@ solver:
 python scripts/cst_smoke.py configs/coupler.yaml
 ```
 
-它会依次验证并打印：COM 连接 → 打开模板副本 → 时域求解（会真实跑一次
-仿真，几分钟）→ S 参数读取的**每个候选方法**哪个可用 → 结果树中监视器
-条目的实际路径 → E 场 ASCII 导出（含文件头 20 行）。
+它会依次验证并打印：
+
+1. COM 连接 → 打开模板副本；
+2. **2b. 模板 .cst 里内嵌的激励字符串**（看宏究竟把什么存了进去）；
+3. **激励候选闭环**：先读回当前值，再依次试
+   `"1"+"1"` / `"Port 1"+"1"` / `"1"+"All"` / `"All"+"All"`，
+   每个候选都真调一次 `Solver.Start()` —— 写法不对会**立刻**报
+   "Invalid stimulation port"（不耗时），试到能跑为止（**能跑的那次会
+   真的算完，几分钟**；期间 CST 界面若弹报错对话框，点掉即可）；
+4. S 参数读取：先列 `1D Results\S-Parameters` 的子条目（顺带确认端口
+   命名），再用 `GetResultIDsFromTreeItem` + `GetResultFromTreeItem` +
+   `GetArray("x"/"yre"/"yim")` 读 5 GHz 的值；
+5. 结果树中的监视器条目路径 + `SelectTreeItem` 实测；
+6. E 场 ASCII 导出：候选配置逐个试 + **属性探针**（列出哪些
+   ASCIIExport 属性真的存在）+ 导出文件头 20 行。
 
 **把完整输出贴回给开发者**——用于把 `CstSolver` 的候选 API 列表与
 `ascii_fields` 解析器收敛到 CST 2024 真实格式（大概率只需一轮修正）。
 
-自检：smoke 中若求解正常，`GetValueAtFrequency` 可用且给出合理 S31
-（|S31| 约 −18 dB 量级，与布局细节有关），即可进入下一步。
+自检：smoke 中若求解正常且第 4 节能给出合理 S31（|S31| 约 −18 dB
+量级，与布局细节有关），即可进入下一步。若第 3 节所有候选都失败，
+smoke 会打印"改用 GUI 设置 + 录宏"的步骤，照做并把生成的 VBA 贴回。
 
 ## 5. FD 验证（符号裁决）
 
@@ -154,12 +170,33 @@ python scripts/run_coupler.py configs/coupler.yaml
 - **`(10090) ActiveX Automation error. (.Reset)`**：CST 2024 命令宏
   上下文里 `Excitation.Reset` 会报这个（实测两次）。**模板宏已不再使用
   Excitation 对象**，"只激励哪个端口"改用 Solver 的 `.StimulationPort`
-  （正规写法，实测这个块是成功的）。其余设置类块（频段/监视器/边界/
-  求解器/另存）都用 `On Error Resume Next` 逐个包住 → 失败不中止宏，
-  结尾报告框会点名哪个块失败，照提示在 GUI 手工补（频段：Simulation →
-  Frequency；监视器：Home → Field Monitors，建 `e-field (f=5)` 与
-  `h-field (f=5)` 两个 Volume 监视器；边界：Boundaries；求解器：
-  Time Domain Solver 对话框）。把报告框截图发回，用于按版本修正宏。
+  （见下一条：要带模式）。其余设置类块（频段/监视器/边界/求解器/另存）
+  都用 `On Error Resume Next` 逐个包住 → 失败不中止宏，结尾报告框会
+  点名哪个块失败，照提示在 GUI 手工补（频段：Simulation → Frequency；
+  监视器：Home → Field Monitors，建 `e-field (f=5)` 与 `h-field (f=5)`
+  两个 Volume 监视器；边界：Boundaries；求解器：Time Domain Solver
+  对话框）。把报告框截图发回，用于按版本修正宏。
+- **`Invalid stimulation port, please specify.`（Solver.Start 时报）**：
+  激励写法不对。实测 `.StimulationPort "1"` 配 `.StimulationMode "All"`
+  会这样（宏不报错、SaveAs 也正常，只在求解时炸）——**端口与模式必须
+  成对**，正确写法是 `.StimulationPort "1"` + `.StimulationMode "1"`
+  （单模端口）。`scripts/cst_smoke.py` 第 3 节会逐个候选试到能跑为止。
+- **通用兜底：任何 GUI 设置不知道怎么写成宏**——在 GUI 里手工做那一步
+  （比如 Time Domain Solver 对话框里选端口），然后 **Edit → History
+  List**，选中刚出现的行 → 点 **Macro** 按钮 → 生成对应 VBA → 原样贴回。
+  这比查文档可靠（CST 各版本命令名有出入）。
+- **结果读取 API（CST 2024 实测）**：`ResultTree.GetResultItem(...)` 与
+  `ResultTree.GetAllItems()` **都不存在**（报 `<unknown>.xxx`）。可用的是
+  `GetResultIDsFromTreeItem(path)` → `GetResultFromTreeItem(path, id)` →
+  `GetArray("x"/"yre"/"yim")`；列目录用 `GetFirstChildName(folder)` /
+  `GetNextItemName(item)`（返回空串结束）。这些候选链收敛在
+  `eaopt/solver/cst_api.py`，生产代码与 smoke 共用。
+- **ASCIIExport 的属性集（CST 2024 实测）**：只有 `Reset` / `FileName` /
+  `Mode` / `StepX` / `StepY` / `StepZ` / `Execute`——**没有
+  XStart/XEnd/YStart/YEnd/ZStart/ZEnd**（报 `<unknown>.XStart`）。所以
+  导出范围 = 选中结果的整个包围盒（Volume 监视器 ⇒ 整个计算域），要限制
+  范围只能在解析端裁剪。属性清单是 `vba.ascii_export_params()` 一份事实
+  来源，cst.py 与 smoke 共用。
 - **监视器命名不能随便改**：CST 用监视器名命名结果树条目
   （`2D/3D Results\E-Field\e-field (f=5) [AC]`），`CstSolver` 导出场时
   就按这个名字选中条目。名字由 `vba.field_monitor_name()` 统一给出，

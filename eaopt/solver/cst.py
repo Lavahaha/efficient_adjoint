@@ -26,6 +26,7 @@ import numpy as np
 from eaopt.adjoint.fields import FieldGrid
 from eaopt.config import CaseConfig
 from eaopt.geometry.contour import close_open_contours
+from eaopt.solver import cst_api
 from eaopt.solver import vba as V
 from eaopt.solver.ascii_fields import parse_ascii_field
 from eaopt.solver.base import Solution, SolverInterface
@@ -168,63 +169,42 @@ class CstSolver(SolverInterface):
     def _read_sparams(self, mws) -> dict:
         """读 5 GHz 处的 S_{i,1}（i=1..4）。
 
-        读取方法链为候选列表（CST 版本差异），服务器 smoke 实测后
-        收敛到第一个可用的。
+        读取链收敛在 cst_api（CST 2024 实测：ResultTree.GetResultItem
+        不存在，可用链是 GetResultIDsFromTreeItem + GetResultFromTreeItem
+        + GetArray("x"/"yre"/"yim")）。读不到就抛——宁可直接失败，也不要
+        把 0j 悄悄塞进伴随法。
         """
         f = float(self.cfg.frequency)
         out = {}
         for i in (1, 2, 3, 4):
-            try:
-                item = mws.ResultTree.GetResultItem(
-                    f"1D Results\\S-Parameters\\S{i},1"
-                )
-                out[(i, 1)] = self._item_value(item, f)
-            except Exception:
-                out[(i, 1)] = 0j
+            v = cst_api.s_param_at(
+                mws.ResultTree, f"1D Results\\S-Parameters\\S{i},1", f)
+            if v is None:
+                raise RuntimeError(
+                    f"读不到 S{i},1：结果树里没有该条目或数组布局不认识。"
+                    "跑 scripts/cst_smoke.py 看实际输出（第 4 节）")
+            out[(i, 1)] = v
         return out
 
-    def _item_value(self, item, freq_ghz: float) -> complex:
-        for meth, args in (
-            ("GetValueAtFrequency", (freq_ghz,)),
-            ("GetComplexValueAtFrequency", (freq_ghz,)),
-        ):
-            try:
-                v = getattr(item, meth)(*args)
-                return _to_complex(v)
-            except Exception:
-                continue
-        # 回退：取数据数组并挑最近频点（smoke 核实数组布局）
-        try:
-            v = item.GetYData()
-            return complex(np.asarray(v).ravel()[0])
-        except Exception:
-            raise RuntimeError("无法读取 S 参数（所有候选方法失败，见 smoke 输出）")
-
     def _export_field(self, mws, field_type: str) -> FieldGrid:
-        dr = self.cfg.design_region
-        box = dr.box
-        m = dr.field_margin_mm
-        dx = dr.grid_step_mm
+        """导出该监视器结果（ASCII 后端）并解析为 FieldGrid。
+
+        导出范围 = 监视器的整个包围盒（Volume 监视器 ⇒ 整个计算域）：
+        CST 的 ASCIIExport 没有区域范围属性（见 vba.ascii_export_params），
+        设计区的裁剪在采样端按世界坐标做（FieldGrid 自带 origin/spacing），
+        所以这里不影响正确性，只是文件更大。
+        """
+        dx = self.cfg.design_region.grid_step_mm
         f = float(self.cfg.frequency)
-        z0 = self.cfg.sampling.field_z_mm - 0.1
-        z1 = self.cfg.sampling.field_z_mm + 0.1
         path = self._workdir / f"{V.FIELD_TYPES[field_type][0]}.txt"
 
         mws.SelectTreeItem(V.field_result_path(field_type, f))
         a = mws.ASCIIExport
         a.Reset()
         a.FileName(str(path))
-        a.Mode("FixedNumber")
-        a.StepX(str(dx))
-        a.StepY(str(dx))
-        a.StepZ(str(dx))
-        a.XStart(str(box.x[0] - m))
-        a.XEnd(str(box.x[1] + m))
-        a.YStart(str(box.y[0] - m))
-        a.YEnd(str(box.y[1] + m))
-        a.ZStart(str(z0))
-        a.ZEnd(str(z1))
-        a.Export()
+        for prop, val in V.ascii_export_params(dx):
+            getattr(a, prop)(val)
+        getattr(a, V.ASCII_EXPORT_EXECUTE)()
 
         data, axes = parse_ascii_field(str(path))
         return FieldGrid(
@@ -235,12 +215,3 @@ class CstSolver(SolverInterface):
         )
 
 
-def _to_complex(v) -> complex:
-    """把 CST 返回的数值（可能为复数对象/元组/字符串）转 complex。"""
-    try:
-        return complex(v)
-    except (TypeError, ValueError):
-        try:
-            return complex(v[0], v[1])
-        except (TypeError, ValueError, IndexError):
-            return complex(float(v))
