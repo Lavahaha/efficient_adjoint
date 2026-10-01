@@ -229,8 +229,8 @@ def build_macro(outdir: Path, project: str, portnum: int) -> Path:
     ]
     for block, label in (
         (V.excitation("excitation1", f'"{portnum}"'), "Excitation"),
-        (V.field_monitor("e5", "Efield", FREQ), "Monitor Efield"),
-        (V.field_monitor("h5", "Hfield", FREQ), "Monitor Hfield"),
+        (V.field_monitor("Efield", FREQ), "Monitor Efield"),
+        (V.field_monitor("Hfield", FREQ), "Monitor Hfield"),
         (V.set_boundaries("magnetic", "magnetic", "magnetic", "magnetic",
                           "magnetic", "electric"), "Boundary"),
         (V.time_domain_solver_setup(), "Solver"),

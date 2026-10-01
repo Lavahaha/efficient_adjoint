@@ -19,7 +19,8 @@ from __future__ import annotations
 
 __all__ = [
     "material_normal", "brick", "polygon_extrude", "guarded",
-    "waveguide_port", "excitation", "field_monitor",
+    "waveguide_port", "excitation", "field_monitor", "field_monitor_name",
+    "field_result_path", "FIELD_TYPES",
     "set_boundaries", "time_domain_solver_setup", "select_field_monitor",
     "ascii_export_field",
 ]
@@ -193,18 +194,55 @@ def excitation(name: str, port: str) -> str:
     )
 
 
-def field_monitor(name: str, field_type: str, frequency_ghz: float,
-                  subvolume: bool = False) -> str:
-    """频域场监视器。field_type: "Efield" / "Hfield"。"""
+# 场监视器类型 → (结果树条目前缀, 结果树文件夹)。CST 里 E 场监视器的结果
+# 条目名为 "e-field (f=5) [AC]"，归属 "E-Field" 文件夹（H 场同构）。
+FIELD_TYPES = {"Efield": ("e-field", "E-Field"),
+               "Hfield": ("h-field", "H-Field")}
+
+
+def field_monitor_name(field_type: str, frequency_ghz: float) -> str:
+    """监视器名，取 CST 惯例 "e-field (f=5)"。
+
+    **这个名字同时决定结果树里的条目名**（"<name> [AC]"），导出场时
+    要按条目名选中它，所以创建（本模块）与导出（cst.py / 脚本）必须
+    共用本函数，不能各写一份——否则命名漂移会让场导出找不到条目。
+    """
+    if field_type not in FIELD_TYPES:
+        raise ValueError(f"field_type 只能是 {tuple(FIELD_TYPES)}，"
+                         f"收到 {field_type!r}")
+    return f"{FIELD_TYPES[field_type][0]} (f={frequency_ghz:g})"
+
+
+def field_result_path(field_type: str, frequency_ghz: float) -> str:
+    """该监视器在结果树中的条目路径（SelectTreeItem / COM 用，单个反斜杠）。
+
+    注意：这里是**路径本身**（Python/COM 用法）。要生成 VBA 源码里的
+    SelectTreeItem 调用请用 select_field_monitor()——VBA 字符串里反斜杠
+    不做转义，多写一层就会选中一个不存在的条目。
+    """
+    folder = FIELD_TYPES[field_type][1] if field_type in FIELD_TYPES else None
+    if folder is None:
+        raise ValueError(f"field_type 只能是 {tuple(FIELD_TYPES)}，"
+                         f"收到 {field_type!r}")
+    return (f"2D/3D Results\\{folder}\\"
+            f"{field_monitor_name(field_type, frequency_ghz)} [AC]")
+
+
+def field_monitor(field_type: str, frequency_ghz: float) -> str:
+    """频域场监视器（Volume：覆盖整个计算域，没有"位置"参数）。
+
+    Volume 监视器与计算域同大小，因此它的边界自然贴在四个端口面上
+    （端口面就是计算域边界面）——这是正常现象，不是"监视器跑到端口
+    上去了"。导出场时只按设计区附近的薄层取数（见 cst.py::_export_field）。
+    """
     return (
         "With Monitor\n"
         "    .Reset\n"
-        f"    .Name \"{name}\"\n"
+        f'    .Name "{field_monitor_name(field_type, frequency_ghz)}"\n'
         '    .Dimension "Volume"\n'
         '    .Domain "Frequency"\n'
         f'    .FieldType "{field_type}"\n'
-        f'    .MonitorValue "{frequency_ghz}"\n'
-        f'    .UseSubvolume "{"True" if subvolume else "False"}"\n'
+        f'    .MonitorValue "{frequency_ghz:g}"\n'
         "    .Create\n"
         "End With\n"
     )
@@ -242,9 +280,12 @@ def time_domain_solver_setup() -> str:
 
 
 def select_field_monitor(field_type: str, frequency_ghz: float) -> str:
-    """在结果树中选中监视器结果（ASCII 导出前必须执行）。"""
-    return f'SelectTreeItem("2D/3D Results\\\\{field_type}-Field\\\\'
-    f'{field_type.lower()}-field (f={frequency_ghz}) [AC]")\n'
+    """在结果树中选中监视器结果（ASCII 导出前必须执行）。
+
+    VBA 字符串里反斜杠不做转义，故路径按原样写入（早期版本多写了一层
+    反斜杠，会去选一个不存在的条目）。
+    """
+    return f'SelectTreeItem("{field_result_path(field_type, frequency_ghz)}")\n'
 
 
 def ascii_export_field(file_path: str, step_mm: float,

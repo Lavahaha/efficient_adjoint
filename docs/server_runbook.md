@@ -49,7 +49,12 @@ python scripts/build_cst_template.py cst/
      （design_region 组件：横段 + 两端内侧圆角）
    - 4 个波导端口：1/2 在直通线两端（xmin/xmax 面）、3/4 在两腿底
      （ymin 面）；端口面下缘触到接地板底面、上缘到空气盒顶
-   - 5 GHz 的 E-Field / H-Field 监视器各一个
+   - 监视器（Modeling 树 → Field Monitors）：`e-field (f=5)` 与
+     `h-field (f=5)` 各一个，**Dimension = Volume**（覆盖整个计算域，
+     没有"位置"这个设置——所以它必然贴着四个端口面，端口 2 也在其中，
+     这是正常的；导出场时只按设计区附近 z=±0.1 mm 的薄层取数）。若对话框
+     里 Dimension 变成了 Plane/Position，说明宏的 Monitor 块没生效，
+     按报告框提示手工建两个 Volume 监视器
    - 边界：X/Y/Zmin = magnetic，Zmax = electric
    - **检查两端拐弯过渡**（论文 Fig.5 的四分之一圆）：俯视图看，
      耦合臂横段与两条腿的连接应是**平滑等宽圆角**（腿上端外缘向外
@@ -139,8 +144,13 @@ python scripts/run_coupler.py configs/coupler.yaml
   上下文里 `Excitation.Reset` 会报这个（实测）。模板宏已用
   `On Error Resume Next` 包住该类块 → 宏继续跑完并另存，结尾报告框
   会写明哪个块失败，照提示在 GUI 手工设置该块即可（激励：端口对话框
-  里勾选；监视器：Home → Field Monitors；边界：Boundaries；求解器：
+  里勾选；监视器：Home → Field Monitors，建 `e-field (f=5)` 与
+  `h-field (f=5)` 两个 Volume 监视器；边界：Boundaries；求解器：
   Time Domain Solver 对话框）。把报告框截图发回，用于按版本修正宏。
+- **监视器命名不能随便改**：CST 用监视器名命名结果树条目
+  （`2D/3D Results\E-Field\e-field (f=5) [AC]`），`CstSolver` 导出场时
+  就按这个名字选中条目。名字由 `vba.field_monitor_name()` 统一给出，
+  创建与导出共用（有测试锁定），改宏时保持该名字。
 - **端口相关（CST 2024 实测结论，改宏时勿违反）**：
   `.Coordinates` 只认 `"Free"/"Full"/"Picks"`（写 `"Ranges"` 报
   "Invalid coordinate type"）；`.Orientation` 只认**边界面名**

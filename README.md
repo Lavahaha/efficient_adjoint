@@ -109,8 +109,10 @@ python -m pytest tests/ -v             # 测试
    整板 + "⊓"形耦合臂、**设计区两端为四分之一圆过渡**、腿下到板底、
    端口 1/2 在线两端 / 3/4 在腿底；参考图见 `docs/layout_reference.png`）；
    检查 4 个波导端口（`.Coordinates "Free"` + 边界面名 `xmin/xmax/ymin`，
-   端口面下缘贴合接地板、上缘到空气盒顶）、5 GHz E/H 监视器、边界
-   （x/y/zmin 磁、zmax 电）。**设置类块（激励/监视器/边界/求解器）逐块
+   端口面下缘贴合接地板、上缘到空气盒顶）、两个 Volume 监视器
+   `e-field (f=5)` / `h-field (f=5)`（名字 = 结果树条目名，导出场按它选中，
+   见 `vba.field_monitor_name`）、边界（x/y/zmin 磁、zmax 电）。
+   **设置类块（激励/监视器/边界/求解器）逐块
    容错**：CST 2024 实测 `Excitation.Reset` 报 "(10090) ActiveX Automation
    error"，未加保护会中止整个宏；现由宏结尾的报告框列出失败块，照提示
    在 GUI 手工设置即可（激励：端口对话框勾选，fwd→端口1，bwd→端口3）；

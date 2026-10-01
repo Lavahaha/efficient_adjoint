@@ -81,6 +81,47 @@ def test_guarded_wraps_block_and_reports():
     assert "\n    With Excitation" in ind and "\n        .Reset" in ind
 
 
+def test_field_monitor_is_volume_with_cst_conventional_name():
+    """监视器：Volume（覆盖整个计算域，无位置参数），名字取 CST 惯例。"""
+    s = V.field_monitor("Efield", 5.0)
+    assert '.Name "e-field (f=5)"' in s
+    assert '.Dimension "Volume"' in s
+    assert '.Domain "Frequency"' in s
+    assert '.FieldType "Efield"' in s
+    assert '.MonitorValue "5"' in s          # CST 惯例写法，不是 "5.0"
+    assert "Subvolume" not in s              # 不用子域（非录制式属性）
+    assert V.field_monitor("Hfield", 5.0).count('.Name "h-field (f=5)"') == 1
+    for bad in ("e", "E", "efield", "E_field"):
+        with pytest.raises(ValueError):
+            V.field_monitor(bad, 5.0)
+
+
+def test_monitor_name_and_result_path_agree():
+    """创建监视器用的名字必须与导出场时选中的结果树条目同源。
+
+    CST 用监视器名命名结果树条目（"<name> [AC]"）——两处一旦漂移，
+    CstSolver 导出场就会 SelectTreeItem 失败。
+    """
+    assert V.field_monitor_name("Efield", 5.0) == "e-field (f=5)"
+    assert V.field_result_path("Efield", 5.0) == \
+        "2D/3D Results\\E-Field\\e-field (f=5) [AC]"
+    assert V.field_result_path("Hfield", 5.0) == \
+        "2D/3D Results\\H-Field\\h-field (f=5) [AC]"
+    name = V.field_monitor_name("Efield", 5.0)
+    assert name in V.field_monitor("Efield", 5.0)
+    assert name in V.field_result_path("Efield", 5.0)
+    with pytest.raises(ValueError):
+        V.field_result_path("efield", 5.0)
+
+
+def test_select_field_monitor_vba_has_single_backslashes():
+    """VBA 字符串不转义反斜杠：路径原样写入（早期版本多写一层会选不中）。"""
+    s = V.select_field_monitor("Efield", 5.0)
+    assert s == ('SelectTreeItem("2D/3D Results\\E-Field\\'
+                 'e-field (f=5) [AC]")\n')
+    assert V.field_result_path("Efield", 5.0) in s
+
+
 def test_guarded_rejects_non_ascii_label():
     """label 进字符串字面量：必须 ASCII（CST 宏按 ANSI 解码）。"""
     for bad in ("激励", "Monitör"):

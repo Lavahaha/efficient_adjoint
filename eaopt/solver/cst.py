@@ -26,6 +26,7 @@ import numpy as np
 from eaopt.adjoint.fields import FieldGrid
 from eaopt.config import CaseConfig
 from eaopt.geometry.contour import close_open_contours
+from eaopt.solver import vba as V
 from eaopt.solver.ascii_fields import parse_ascii_field
 from eaopt.solver.base import Solution, SolverInterface
 
@@ -153,8 +154,10 @@ class CstSolver(SolverInterface):
     def _solve(self, mws) -> Solution:
         mws.Solver.Start()
         sp = self._read_sparams(mws)
-        e_grid = self._export_field(mws, "E-Field", "e-field")
-        h_grid = self._export_field(mws, "H-Field", "h-field")
+        # 监视器名/结果树路径由 vba 模块统一给出（模板宏创建监视器时用的是
+        # 同一个函数，见 vba.field_monitor_name）
+        e_grid = self._export_field(mws, "Efield")
+        h_grid = self._export_field(mws, "Hfield")
         return Solution(
             s_params=sp,
             e_field=e_grid,
@@ -197,7 +200,7 @@ class CstSolver(SolverInterface):
         except Exception:
             raise RuntimeError("无法读取 S 参数（所有候选方法失败，见 smoke 输出）")
 
-    def _export_field(self, mws, field_type: str, prefix: str) -> FieldGrid:
+    def _export_field(self, mws, field_type: str) -> FieldGrid:
         dr = self.cfg.design_region
         box = dr.box
         m = dr.field_margin_mm
@@ -205,9 +208,9 @@ class CstSolver(SolverInterface):
         f = float(self.cfg.frequency)
         z0 = self.cfg.sampling.field_z_mm - 0.1
         z1 = self.cfg.sampling.field_z_mm + 0.1
-        path = self._workdir / f"{prefix}.txt"
+        path = self._workdir / f"{V.FIELD_TYPES[field_type][0]}.txt"
 
-        mws.SelectTreeItem(f"2D/3D Results\\{field_type}\\{prefix} (f={f}) [AC]")
+        mws.SelectTreeItem(V.field_result_path(field_type, f))
         a = mws.ASCIIExport
         a.Reset()
         a.FileName(str(path))

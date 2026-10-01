@@ -8,9 +8,10 @@
   2. 打开模板副本；
   3. 时域求解；
   4. S 参数读取（逐候选方法打印哪个可用，并给出 5 GHz 处 S31/S21/S11）；
-  5. E 场 ASCII 导出（打印耗时、导出文件头部 20 行——用于核对
-     ascii_fields.parse_ascii_field 与 CST 2024 真实格式）；
-  6. 打印结果树中 E/H 监视器条目的实际路径（供 SelectTreeItem 核对）。
+  5. 结果树条目 + 逐个试选 E/H 监视器条目（模板里的监视器名必须能被
+     选中，否则场导出无从谈起）；
+  6. E 场 ASCII 导出（打印耗时、导出文件头部 20 行——用于核对
+     ascii_fields.parse_ascii_field 与 CST 2024 真实格式）。
 
 输出即诊断报告：把完整输出贴回给开发者，即可收敛 CstSolver 的
 候选 API 列表与场解析器。
@@ -32,6 +33,7 @@ def main() -> None:
     args = ap.parse_args()
 
     from eaopt.config import CaseConfig
+    from eaopt.solver import vba as V
 
     cfg = CaseConfig.from_yaml(args.config)
     tpl = Path(args.template) if args.template else Path(cfg.solver.template_fwd)
@@ -100,20 +102,33 @@ def main() -> None:
         except Exception as e:
             print(f"[FAIL] GetResultItem({name!r}): {e}")
 
+    e_path = V.field_result_path("Efield", cfg.frequency)
+    h_path = V.field_result_path("Hfield", cfg.frequency)
     print("=" * 60)
     print("5) 结果树中监视器条目路径（供 SelectTreeItem 核对）")
     print("=" * 60)
+    print(f"    期望的 E 场条目: {e_path}")
+    print(f"    期望的 H 场条目: {h_path}")
     try:
         items = mws.ResultTree.GetAllItems()
         n = items.GetCount()
         print(f"    结果树条目数: {n}")
-        for k in range(min(n, 30)):
+        for k in range(min(n, 60)):
             try:
-                print(f"    {items.GetItem(k).GetName()}")
+                nm = items.GetItem(k).GetName()
+                mark = "  <== 监视器" if "(f=" in nm else ""
+                print(f"    {nm}{mark}")
             except Exception:
                 pass
     except Exception as e:
         print(f"[FAIL] GetAllItems: {e}")
+    # 逐个试选：模板里的监视器名必须能被选中，否则场导出无从谈起
+    for tag, p in (("E", e_path), ("H", h_path)):
+        try:
+            mws.SelectTreeItem(p)
+            print(f"    [OK] SelectTreeItem({tag}): {p}")
+        except Exception as e:
+            print(f"    [FAIL] SelectTreeItem({tag}) {p}: {e}")
 
     print("=" * 60)
     print("6) E 场 ASCII 导出")
@@ -124,7 +139,7 @@ def main() -> None:
     dx = dr.grid_step_mm
     t0 = time.perf_counter()
     try:
-        mws.SelectTreeItem("2D/3D Results\\E-Field\\e-field (f=5) [AC]")
+        mws.SelectTreeItem(e_path)
         a = mws.ASCIIExport
         a.Reset()
         path = workdir / "smoke_efield.txt"
