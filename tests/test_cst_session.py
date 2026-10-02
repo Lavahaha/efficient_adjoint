@@ -108,6 +108,18 @@ def test_library_candidates_prefers_explicit_and_accepts_both_shapes(tmp_path, m
     assert S.cst_library_candidates(install_dir=lib)[0] == lib
 
 
+def test_library_candidates_sees_a_lib_dir_already_on_sys_path(tmp_path, monkeypatch):
+    """CST 安装时会往解释器塞 .pth，库目录可能已经在 sys.path 上。
+
+    服务器实测就是这样（`sys.path[1] = D:\\CST 2024\\AMD64\\python_cst_libraries`），
+    而安装根扫描一个都没命中——回头看一眼 sys.path 最省事。
+    """
+    lib = tmp_path / "CST 2024" / "AMD64" / "python_cst_libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(S.sys, "path", [str(lib)] + list(sys.path))
+    assert lib in S.cst_library_candidates()
+
+
 def test_module_import_does_not_import_cst():
     """导入本模块**不得**触发 ``import cst``（本地无 CST 时其它模块要能导入）。"""
     code = ("import eaopt.solver.cst_session, sys; "

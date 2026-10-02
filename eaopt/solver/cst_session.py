@@ -52,6 +52,10 @@ _INSTALL_GLOBS = (
     "C:/Program Files (x86)/CST Studio Suite *",
     "C:/Program Files/Dassault Systemes/CST Studio Suite *",
     "D:/Program Files/CST Studio Suite *",
+    # 服务器上的安装是 `D:\CST 2024`（既不在 Program Files 下、名字里也没有
+    # "Studio Suite"），所以还要扫各盘根目录的 `CST *`。
+    "C:/CST *", "D:/CST *", "E:/CST *",
+    "C:/CST Studio Suite *", "D:/CST Studio Suite *",
 )
 
 _ENV_VARS = ("CST_PYTHON_LIBS", "CST_INSTALL_DIR")
@@ -86,6 +90,13 @@ def cst_library_candidates(install_dir=None, extra=()) -> list[Path]:
     _add(install_dir)
     for var in _ENV_VARS:
         _add(os.environ.get(var))
+    # CST 安装时会往解释器里放一个 .pth，把库目录直接加进 sys.path——服务器上
+    # 就是这样（`sys.path[1] = D:\CST 2024\AMD64\python_cst_libraries`），
+    # 而我们的安装根扫描一个都没命中。回头看一眼 sys.path 最省事。
+    for p in list(sys.path):
+        if p.endswith(("python_cst_libraries", "python_cst_libraries\\",
+                       "python_cst_libraries/")):
+            _add(p)
     roots: list[str] = []
     for pattern in _INSTALL_GLOBS:
         roots.extend(sorted(glob.glob(pattern), reverse=True))  # 新版本优先
