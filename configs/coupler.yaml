@@ -19,15 +19,23 @@ name: coupler
 description: 高定向性定向耦合器（论文 III-A）
 
 solver:
-  type: cst            # 本地开发用 mock；服务器上改为 cst
+  type: cst            # 本地开发用 mock；服务器上保持 cst
   port_power_w: 0.5
   # ---- cst（服务器端，本地 mock 忽略）----
-  # 由 scripts/build_cst_template.py 生成的宏在 CST GUI 中执行一次创建；
-  # 把两个模板路径填到这里，并把 type 改为 cst
-  template_fwd: cst/coupler_fwd.cst   # 端口 1 激励
-  template_bwd: cst/coupler_bwd.cst   # 端口 3 激励（观测端口）
-  cst_version: "2024"
-  field_backend: ascii               # 服务器 smoke 实测后可能改为 hdf5
+  # 两个工程由 scripts/cst_init_fwd.py / cst_init_bwd.py 用 CST 官方 Python
+  # API 建立（端口 1 / 端口 3 激励各自写死），之后 scripts/cst_update.py
+  # 每轮只改设计区形状。路径缺省 = <output.dir>/cst/<name>_<tag>.cst，放在
+  # 输出目录里与结果同生共死；**不要**指到仓库根的 cst/（那是宏目录，会被
+  # 当成 Python 命名空间包）。
+  # project_fwd: results/coupler/cst/coupler_fwd.cst
+  # project_bwd: results/coupler/cst/coupler_bwd.cst
+  cst_python_libs: null   # CST 的 AMD64/python_cst_libraries；null = 自动探测
+  attach_gui: false       # true = 只附接运行中的 CST 实例（无 headless 许可时用）
+  export_step_mm: null    # 场导出步长 mm；null = 跟随 sampling.point_spacing_mm
+  solver_timeout_s: null  # 单次求解超时（秒）；null = 不限时
+  # 旧名（COM 时代的人工模板路径）：仅作兼容别名，新配置不要再用
+  # template_fwd: cst/coupler_fwd.cst
+  # template_bwd: cst/coupler_bwd.cst
 
 frequency: 5.0
 

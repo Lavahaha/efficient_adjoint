@@ -26,6 +26,7 @@ from __future__ import annotations
 __all__ = [
     "material_normal", "brick", "polygon_extrude", "guarded",
     "guarded_alternatives",
+    "DESIGN_COMPONENT", "delete_component", "design_region_update",
     "waveguide_port", "field_monitor", "field_monitor_name",
     "field_result_path", "FIELD_TYPES",
     "set_boundaries", "time_domain_solver_setup", "frequency_range",
@@ -105,6 +106,57 @@ def polygon_extrude(name: str, component: str, material: str,
         lines.append(f'    .LineTo "{x:.6g}", "{y:.6g}"')
     lines += ["    .Create", "End With", ""]
     return "\n".join(lines) + "\n"
+
+
+#: 设计区组件名。**模板（template_builder）与每轮重建（cst_driver）必须
+#: 用同一个名字**——名字漂移的话每轮会新建一个组件，而上一轮的金属留在
+#: 模型里，梯度就作用在一个"叠了两层金属"的模型上，且 S 参数照样出数。
+DESIGN_COMPONENT = "design_region"
+
+
+def delete_component(component: str) -> str:
+    """删除整个组件（连同其中所有实体）。
+
+    比"按名字逐个删实体"稳：每轮不需要知道上一轮有几个实体、叫什么。
+
+    ``On Error Resume Next`` 只包住这一条并在其后立刻 ``On Error GoTo 0``
+    复位（成对出现，不会把错误处理状态泄漏给同一条历史记录里的挤出命令）：
+    组件不存在时（首次更新、或工程里本来没有设计区金属）不该让整块失败。
+    """
+    return (
+        "On Error Resume Next\n"
+        f'Component.Delete "{component}"\n'
+        "On Error GoTo 0\n"
+    )
+
+
+def design_region_update(polys, height_mm: float,
+                         component: str = DESIGN_COMPONENT,
+                         material: str = "PEC", z0: float = 0.0) -> str:
+    """一轮形状更新：删掉设计区组件 → 按多边形逐个挤出。
+
+    整段是**一条历史记录**（调用方把它整体交给 ``add_to_history``）：
+    既改当前模型、又写进 History List，所以工程重放历史得到的就是当前
+    形状——这正是旧 COM 路径（直接调 ``Component.Delete``/``Extrude``）
+    做不到、会让梯度作用在错模型上的地方。
+    每轮历史表只增长一条，20 轮量级无压力。
+
+    polys: 可迭代的 (N,2) 世界坐标多边形（mm）。**空列表直接报错**——
+    那会把设计区金属全部删掉、静默产出一个没有可动金属的模型。
+    """
+    polys = list(polys)
+    if not polys:
+        raise ValueError("polys 为空：这会把设计区金属全删掉，拒绝生成该命令")
+    for i, p in enumerate(polys):
+        if len(p) < 3:
+            raise ValueError(f"polys[{i}] 只有 {len(p)} 个点，CST 建不出实体")
+        if any(len(q) < 2 for q in p):
+            raise ValueError(f"polys[{i}] 的元素必须形如 (x, y)")
+    parts = [delete_component(component)]
+    for i, p in enumerate(polys):
+        parts.append(polygon_extrude(f"design_{i}", component, material,
+                                     p, height_mm, z0=z0))
+    return "".join(parts)
 
 
 def guarded(block: str, label: str, indent: str = "    ") -> str:
@@ -369,7 +421,20 @@ def select_field_monitor(field_type: str, frequency_ghz: float) -> str:
     return f'SelectTreeItem("{field_result_path(field_type, frequency_ghz)}")\n'
 
 
-ASCII_EXPORT_MODE = "FixedNumber"
+#: ASCIIExport 的 Mode 取值。**FixedWidth** = 按 StepX/Y/Z 给定的步长
+#: （建模单位，即 mm）均匀取点；导出的 ASCII 文件头三行是
+#: ``x0 x1 nx`` / ``y0 y1 ny`` / ``z0 z1 nz``，正是
+#: ``ascii_fields.parse_ascii_field`` 解析的格式。
+#:
+#: 官方例程用的就是这个组合（Dassault《Scripting the CST Studio Suite
+#: with the Python》的场导出一节：``.Mode "FixedWidth"`` + ``.StepX(0.5)``
+#: + ``.SetFileType("hdf5")``）。早先我们写的是 "FixedNumber"，那是
+#: **采样点数**语义，却把 mm 步长填进去——语义矛盾，导出范围会随包围盒
+#: 大小变（同样"0.2"在大域上点数暴涨），解析端拿到的网格也不是我们以为
+#: 的那个。改用 FixedWidth 后"步长 = mm"自洽。
+ASCII_EXPORT_MODE = "FixedWidth"
+
+#: 执行 ASCIIExport 的方法名（单独列出来，导出路径三处共用一份）。
 ASCII_EXPORT_EXECUTE = "Execute"
 
 
@@ -377,16 +442,19 @@ def ascii_export_params(step_mm: float,
                         mode: str = ASCII_EXPORT_MODE) -> list[tuple[str, str]]:
     """ASCIIExport 的设置序列 [(属性名, 值)]——**单一事实来源**。
 
-    vba.ascii_export_field（生成 VBA）与 cst.py / smoke（逐条 COM 调用）
-    共用本函数，避免属性名再次漂移：早期版本写过 XStart/XEnd/YStart/
-    YEnd/ZStart/ZEnd，CST 2024 实测报 `<unknown>.XStart`（这些属性不存在）。
+    vba.ascii_export_field（生成 VBA）、cst_results（逐条 COM 调用）与
+    smoke 共用本函数，避免属性名再次漂移：早期版本写过 XStart/XEnd/
+    YStart/YEnd/ZStart/ZEnd，CST 2024 实测报 `<unknown>.XStart`（这些
+    属性不存在）。
 
     CST 2024 可用的属性集：Reset / FileName / Mode / StepX / StepY /
-    StepZ / Execute。**没有区域范围属性**——导出范围就是当前选中结果的
-    整个包围盒（Volume 监视器 => 整个计算域），要限制范围只能在解析端
-    裁剪（或改用 SetPoints 给显式点列，待服务器实测）。
+    StepZ / Execute（另有可选的 SetFileType）。**没有区域范围属性**——
+    导出范围就是当前选中结果的整个包围盒（Volume 监视器 => 整个计算域），
+    要限制范围只能在解析端裁剪（see cst_results.crop_grid）。
 
-    StepX/Y/Z 的确切含义（步长 mm 还是采样点数）以 smoke 导出文件头为准。
+    StepX/Y/Z 是**每个轴上的采样步长**，单位 = 建模单位（mm）；取
+    sampling.point_spacing_mm（0.2）量级即可——用网格步长 0.05 会把导出
+    点数放大 64 倍（全计算域 GB 级），而边界采样点间距本来就是 0.2 mm。
     """
     s = f"{step_mm:g}"
     return [("Mode", mode), ("StepX", s), ("StepY", s), ("StepZ", s)]

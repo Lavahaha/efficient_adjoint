@@ -129,10 +129,23 @@ class ConstraintSpec:
 class SolverSpec:
     type: str = "mock"  # "mock" | "cst"
     # --- cst 相关（服务器端使用，本地 mock 忽略） ---
-    template_fwd: Optional[str] = None  # 正向模板 .cst（端口1激励）
-    template_bwd: Optional[str] = None  # 反向模板 .cst（观测端口激励）
-    cst_version: Optional[str] = None
-    field_backend: str = "ascii"  # ascii | hdf5 | resultreader（smoke 实测后定）
+    # 两个 CST 工程文件的路径。**缺省**（推荐）= <output.dir>/cst/<name>_fwd.cst
+    # 与 _bwd.cst —— 放在输出目录里，与结果同生共死，也不会污染仓库。
+    project_fwd: Optional[str] = None   # 正向工程（输入端口激励）
+    project_bwd: Optional[str] = None   # 反向工程（观测端口激励）
+    # 旧名（COM 时代把这两个路径叫"模板"，由人工建好）：仅作兼容别名，
+    # 显式给了 project_* 就以 project_* 为准。新配置不要再用。
+    template_fwd: Optional[str] = None
+    template_bwd: Optional[str] = None
+    # CST 的 Python 库目录（.../AMD64/python_cst_libraries）；None = 自动探测
+    cst_python_libs: Optional[str] = None
+    # True = 只附接运行中的 CST 实例（服务器无 headless 许可、或想看 GUI 时用）
+    attach_gui: bool = False
+    # 场导出的采样步长（mm）；None = 取 sampling.point_spacing_mm（0.2）。
+    # **不要**用 grid_step_mm（0.05）：导出点数按步长的立方增长。
+    export_step_mm: Optional[float] = None
+    # 单次求解的超时（秒）；None = 不限时
+    solver_timeout_s: Optional[float] = None
     port_power_w: float = 0.5  # 端口功率（CST 默认 0.5 W）
 
 
@@ -225,6 +238,49 @@ class CaseConfig:
             raise ValueError("optimizer.max_iterations 必须为正")
         if self.level_set.reinit_every < 1:
             raise ValueError("level_set.reinit_every 至少为 1")
+        if self.solver.type not in ("mock", "cst"):
+            raise ValueError(f"未知求解器类型 {self.solver.type}")
+        if self.solver.export_step_mm is not None and self.solver.export_step_mm <= 0:
+            raise ValueError("solver.export_step_mm 必须为正（mm）")
+        if self.solver.solver_timeout_s is not None and self.solver.solver_timeout_s <= 0:
+            raise ValueError("solver.solver_timeout_s 必须为正（秒）")
+
+    def project_path(self, tag: str) -> Path:
+        """CST 工程文件的路径（tag ∈ {"fwd", "bwd"}）。
+
+        解析顺序：``solver.project_<tag>`` → 兼容别名 ``solver.template_<tag>``
+        → 缺省 ``<output.dir>/cst/<name>_<tag>.cst``。
+
+        缺省值刻意放在输出目录里：工程是**中间产物**，与结果同生共死；
+        放在仓库里既会污染工作区，也会和仓库根的 ``cst/`` 宏目录撞名
+        （那个目录会被当成 Python 命名空间包，见 cst_session 模块头）。
+        """
+        if tag not in ("fwd", "bwd"):
+            raise ValueError(f"tag 只能是 'fwd'/'bwd'，收到 {tag!r}")
+        s = self.solver
+        explicit = (s.project_fwd if tag == "fwd" else s.project_bwd) or \
+                   (s.template_fwd if tag == "fwd" else s.template_bwd)
+        if explicit:
+            return Path(explicit)
+        return Path(self.output.dir) / "cst" / f"{self.name}_{tag}.cst"
+
+    def stimulus_port(self, tag: str) -> int:
+        """该工程只激励哪个端口：fwd = objective.from_port，bwd = to_port。
+
+        激励"烤"在工程里（建工程时写死 StimulationPort），之后 pipeline
+        永不触碰激励 API——多激励叠加的场会让伴随梯度静默失效，
+        而 S 参数照样出数，光看 S 参数发现不了。
+        """
+        if tag == "fwd":
+            return int(self.objective.from_port)
+        if tag == "bwd":
+            return int(self.objective.to_port)
+        raise ValueError(f"tag 只能是 'fwd'/'bwd'，收到 {tag!r}")
+
+    def export_step_mm(self) -> float:
+        """场导出步长（mm）：缺省跟随边界采样点距，不用网格步长。"""
+        v = self.solver.export_step_mm
+        return float(v) if v else float(self.sampling.point_spacing_mm)
 
     def summary(self) -> str:
         """生成便于日志/终端显示的配置摘要。"""

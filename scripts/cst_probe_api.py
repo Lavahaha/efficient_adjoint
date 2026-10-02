@@ -95,6 +95,52 @@ def _brick_cmd(name: str, component: str) -> str:
             f'    .Create\nEnd With\n')
 
 
+def _summarize(v, limit: int = 3) -> str:
+    """把长序列压成一行——上一轮就是被几百个 (freq, complex) 元组刷屏截断的。"""
+    shape = getattr(v, "shape", None)
+    if shape is not None and getattr(v, "size", 0) > 2 * limit + 1:
+        flat = v.ravel()
+        head = ", ".join(repr(x) for x in flat[:limit])
+        tail = repr(flat[-1])
+        return f"{type(v).__name__} shape={shape} [{head} … {tail}]"
+    if isinstance(v, (list, tuple)) and len(v) > 2 * limit + 1:
+        head = ", ".join(repr(x) for x in v[:limit])
+        return f"{type(v).__name__} len={len(v)} [{head} … {v[-1]!r}]"
+    return f"{type(v).__name__} {v!r}"
+
+
+class _Tee:
+    """把 stdout 同时写进日志文件——输出再长也不会丢（上一轮就被截断了）。"""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, s):
+        for st in self.streams:
+            try:
+                st.write(s)
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self):
+        for st in self.streams:
+            try:
+                st.flush()
+            except Exception:
+                pass
+
+    def reconfigure(self, **kw):
+        for st in self.streams:
+            fn = getattr(st, "reconfigure", None)
+            if fn is not None:
+                try:
+                    fn(**kw)
+                except Exception:
+                    pass
+        return None
+
+
 # --------------------------------------------------------------------------- #
 def section_import(args):
     print(HDR)
@@ -169,13 +215,7 @@ def section_project(iface, args):
     if not ok:
         return de, None
     _dump(prj, "prj 全部成员")
-    for obj, label in ((prj, "prj"), (getattr(prj, "model3d", None), "prj.model3d"),
-                       (getattr(prj, "modeler", None), "prj.modeler")):
-        if obj is None:
-            print(f"  {label} = <没有>")
-            continue
-        print(f"  --- {label} ---")
-        _dump(obj, label)
+    _dump(getattr(prj, "model3d", None), "prj.model3d 全部成员")
     return de, prj
 
 
@@ -248,7 +288,6 @@ def section_template(prj, args) -> None:
         print(f"  {tag} {i:2d} {header:<24} 返回 {ret!r}")
         n_ok += ret is not False
     print(f"  → 成功 {n_ok} / 失败 {n_fail}")
-    _dump(prj.model3d, "建完后的 model3d")
 
 
 def section_solve(prj, args, workdir: Path) -> Path | None:
@@ -307,22 +346,18 @@ def section_results(cst, results, path: Path | None, workdir: Path) -> None:
 
     targets = [n for n in seen if "S-Parameter" in n or "\\S" in n]
     targets += [n for n in seen if "field" in n.lower()]
-    for name in targets[:6]:
+    for name in targets[:4]:
         print(f"  --- 读 {name} ---")
         ok, item = _try(f"get_result_item({name!r})", rm.get_result_item, name)
         if not ok:
             continue
-        _dump(item, "  ResultItem")
-        for meth in ("get_xdata", "get_ydata", "get_data", "get_zdata"):
+        for meth in ("get_xdata", "get_ydata", "get_data"):
             f = getattr(item, meth, None)
             if f is None:
                 print(f"    {meth}: **没有**")
                 continue
             try:
-                v = f()
-                shape = getattr(v, "shape", None)
-                print(f"    {meth}() → {type(v).__name__} shape={shape} "
-                      f"{list(v.ravel()[:4]) if shape else v!r}")
+                print(f"    {meth}() → {_summarize(f())}")     # 别把整条曲线刷出来
             except Exception as e:
                 print(f"    {meth}() 失败：{_short(e, 160)}")
 
@@ -333,41 +368,88 @@ def section_results(cst, results, path: Path | None, workdir: Path) -> None:
     print(f"    {hits}")
 
 
+def section_model3d_export(prj, results, path: Path | None, workdir: Path) -> None:
+    """§7.5 场导出走 ``prj.model3d``——**这才是对象模型所在的地方**。
+
+    第二轮最大的发现：``prj`` 上没有 ASCIIExport，但 ``prj.model3d`` 上有
+    **67 个成员**，是完整的 VBA 对象模型（``ASCIIExport`` / ``SelectTreeItem`` /
+    ``ResultTree`` / ``Result1DComplex`` / ``TOUCHSTONE`` / ``SaveAs(文件名, 含结果)``
+    / ``RunAndWait(命令)`` …）。第一轮找错了对象，所以以为"没有导出 API"。
+    """
+    print()
+    print(HDR)
+    print("§7.5 场导出：prj.model3d.ASCIIExport（对象模型在这里）")
+    print(HDR)
+    m3d = prj.model3d
+    for n in ("SelectTreeItem", "ASCIIExport", "ResultTree", "Result1DComplex",
+              "TOUCHSTONE", "SaveAs", "RunAndWait", "get_tree_items"):
+        print(f"    {_sig(m3d, n)}")
+
+    print("  --- model3d.get_tree_items()：结果树条目（找 e-field 的真名）---")
+    ok, items = _try("model3d.get_tree_items()", m3d.get_tree_items)
+    tree_names: list[str] = []
+    if ok and items is not None:
+        names = [getattr(i, "tree_path", None) or str(i) for i in items]
+        tree_names = list(names)
+        print(f"    {len(names)} 条：")
+        for n in names:
+            print(f"      {n}")
+    field_item = next((n for n in tree_names if "e-field" in n.lower()), None)
+
+    print("  --- ASCIIExport 对象 ---")
+    try:
+        ax = m3d.ASCIIExport
+    except Exception as e:
+        print(f"    [FAIL] 取 ASCIIExport：{_short(e)}")
+        return
+    _dump(ax, "ASCIIExport 成员")
+    for n in _all_members(ax):
+        print(f"      {_sig(ax, n)}")
+
+    if field_item is None:
+        print("  !! 结果树里没找到 e-field 条目——先确认 §5 模板建成功、§6 求解成功")
+        return
+    print(f"  --- 选中 {field_item} 并导出 ---")
+    _try(f"model3d.SelectTreeItem({field_item!r})", m3d.SelectTreeItem, field_item)
+    raw = workdir / "probe_field.txt"
+    _try("ASCIIExport.Reset()", ax.Reset)
+    _try(f"ASCIIExport.FileName({raw})", ax.FileName, str(raw))
+    for mode in ("FixedWidth", "FixedNumber"):
+        print(f"    --- Mode={mode}，Step=0.2mm ---")
+        _try(f'Mode("{mode}")', ax.Mode, mode)
+        for axis in ("X", "Y", "Z"):
+            _try(f'Step{axis}("0.2")', getattr(ax, f"Step{axis}"), "0.2")
+        ok, _ = _try("Execute()", ax.Execute)
+        if ok and raw.exists():
+            lines = raw.read_text(errors="replace").splitlines()
+            print(f"    文件 {raw.stat().st_size} 字节，{len(lines)} 行；头 15 行 + 末 3 行：")
+            for ln in lines[:15]:
+                print(f"      {ln}")
+            if len(lines) > 18:
+                print("      …")
+                for ln in lines[-3:]:
+                    print(f"      {ln}")
+            break
+    else:
+        print("    !! 两种 Mode 都没导出成功——把上面的原始报错贴回")
+
+
 def section_export_search(prj) -> None:
     """§8 在场读不出来的情况下，把可能管导出的对象挖一遍。"""
     print()
     print(HDR)
     print("§8 找导出/后处理 API（prj / model3d / modeler 全量成员）")
     print(HDR)
-    keys = ("export", "ascii", "result", "select", "touchstone", "field", "post",
-            "tree", "plot", "get_", "run", "solver", "save")
-    for label, obj in (("prj", prj), ("prj.model3d", getattr(prj, "model3d", None)),
-                       ("prj.modeler", getattr(prj, "modeler", None))):
-        if obj is None:
-            print(f"  {label} = <没有>")
-            continue
-        hits = [n for n in _all_members(obj) if any(k in n.lower() for k in keys)]
-        print(f"  {label} 里相关的（{len(hits)}）：")
-        for n in hits:
-            print(f"    {_sig(obj, n)}")
-
-    print("  --- 有没有通往底层 COM 对象模型的逃生口 ---")
-    for label, obj in (("prj", prj), ("prj.model3d", getattr(prj, "model3d", None)),
-                       ("prj.modeler", getattr(prj, "modeler", None))):
-        if obj is None:
-            continue
-        esc = [n for n in _all_members(obj)
-               if any(k in n.lower() for k in ("com", "ole", "dispatch", "application",
-                                               "vba", "execute", "macro", "script"))]
-        print(f"    {label}: {esc}")
-        for n in esc[:4]:
-            try:
-                v = getattr(obj, n)
-                v = v() if callable(v) else v
-                print(f"      {label}.{n}() → {type(v).__name__}: "
-                      f"{[m for m in _all_members(v)][:15] if v is not None else v!r}")
-            except Exception as e:
-                print(f"      {label}.{n} 调用失败：{_short(e, 100)}")
+    keys = ("export", "ascii", "result", "select", "tree", "field")
+    # prj.modeler 是 prj.model3d 的**废弃别名**（第二轮的 DeprecationWarning 说的），
+    # 成员完全一样，打两遍纯属刷屏。
+    m3d = getattr(prj, "model3d", None)
+    print(f"  prj:{_all_members(prj)}")
+    if m3d is not None:
+        print(f"  prj.model3d 里的候选（{len(_all_members(m3d))} 个成员）：")
+        for n in [x for x in _all_members(m3d) if any(k in x.lower() for k in keys)]:
+            print(f"    {_sig(m3d, n)}")
+    print("  （prj.modeler 是 model3d 的废弃别名，跳过；见上面的 DeprecationWarning）")
 
 
 def section_replay(prj, de, workdir: Path) -> None:
@@ -413,7 +495,6 @@ def section_final(de, args) -> None:
 def main() -> None:
     from eaopt.cli import safe_console
 
-    safe_console()
     ap = argparse.ArgumentParser(
         description="CST 官方 Python API 探针（上服务器第一件事就跑这个）")
     ap.add_argument("config", nargs="?", default="configs/coupler.yaml")
@@ -427,7 +508,20 @@ def main() -> None:
     ap.add_argument("--close", action="store_true")
     ap.add_argument("--reconnect", action="store_true",
                     help="只试 connect_to_any()：看之前的实例还在不在")
+    ap.add_argument("--reuse", default=None, metavar="PROJECT.CST",
+                    help="跳过建模板与求解，直接打开这个**已有结果**的工程测"
+                         "结果读取与场导出（省掉几分钟求解）")
+    ap.add_argument("--log", default=None, metavar="FILE",
+                    help="把完整输出同时写进文件（终端会截断，这个不会）")
     args = ap.parse_args()
+
+    if args.log:
+        # 终端/控制台会截断长输出（上一轮就被截了），日志文件不会。
+        # 放在 safe_console 之前：reconfigure 会经 _Tee 转发到两个流。
+        import sys
+        logfh = open(args.log, "w", encoding="utf-8", errors="replace")
+        sys.stdout = sys.stderr = _Tee(sys.__stdout__, logfh)
+    safe_console()
 
     if args.cst_dir is None or args.lib_dir is None:
         try:
@@ -461,6 +555,36 @@ def main() -> None:
         return
 
     section_environment(iface)
+
+    if args.reuse:
+        # 省掉求解：直接打开一个已有结果的工程，只跑结果读取 + 场导出。
+        print()
+        print(HDR)
+        print(f"§0 复用已有工程 {args.reuse}（跳过建模板与求解）")
+        print(HDR)
+        de, how = _launch(iface, args.launch if args.launch != "auto" else "auto")
+        if de is None:
+            print("  [FAIL] 起不了实例")
+            return
+        print(f"  [ OK ] 实例：{how}")
+        _try("de.list_open_projects()", de.list_open_projects)
+        prj = None
+        ok, prj = _try(f"de.open_project({args.reuse})", de.open_project, args.reuse)
+        if not ok:
+            return
+        tmp = Path(args.tmpdir or tempfile.mkdtemp(prefix="cst_probe_"))
+        tmp.mkdir(parents=True, exist_ok=True)
+        path = Path(args.reuse)
+        try:
+            section_results(cst, results, path, tmp)
+            section_model3d_export(prj, results, path, tmp)
+            section_export_search(prj)
+        except Exception:
+            print("\n!! 探针自己抛了未捕获异常（把它贴回来）：")
+            traceback.print_exc()
+        section_final(de, args)
+        return
+
     de, prj = section_project(iface, args)
     if de is None or prj is None:
         print("\n!! 没有工程对象，后面的都做不了。")
@@ -473,6 +597,7 @@ def main() -> None:
         section_template(prj, args)
         path = section_solve(prj, args, tmp)
         section_results(cst, results, path, tmp)
+        section_model3d_export(prj, results, path, tmp)
         section_export_search(prj)
         section_replay(prj, de, tmp)
     except Exception:

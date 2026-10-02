@@ -56,6 +56,20 @@ class SolverInterface(ABC):
     def solve_backward(self) -> Solution:
         """后向仿真：observation 端口激励（论文的"伴随仿真"）。"""
 
+    # ------------------------------------------------------------------ #
+    # 下面两个是**非抽象**的默认实现：只有需要外部资源/产物目录的求解器
+    # （CST）才覆写。Mock 与既有实现完全不受影响。
+    # ------------------------------------------------------------------ #
+    def begin_iteration(self, iteration: int) -> None:
+        """告知当前轮次（用于把产物写进 iter_NNN/，以及日志）。默认不做任何事。"""
+
+    def close(self) -> None:
+        """释放资源（CST 会话、打开的工程）。默认不做任何事。
+
+        pipeline 在 finally 里调用——异常退出也必须收尾，否则下一次运行
+        会附接到一个状态不明的 CST 实例上。
+        """
+
 
 def make_solver(cfg: CaseConfig, ls=None) -> SolverInterface:
     """按配置构造求解器。ls（水准集）仅供 mock 使用。"""

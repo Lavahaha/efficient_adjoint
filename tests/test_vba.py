@@ -84,9 +84,18 @@ def test_ascii_export_uses_only_existing_cst_properties():
     """CST 2024 实测：ASCIIExport 没有 XStart/XEnd/YStart/YEnd/ZStart/ZEnd
     （报 <unknown>.XStart）。可用属性只有 Reset / FileName / Mode /
     StepX / StepY / StepZ / Execute——导出范围是选中结果的整个包围盒，
-    要限制范围只能在解析端裁剪。"""
+    要限制范围只能在解析端裁剪（cst_results.crop_grid）。
+
+    模式必须是 **FixedWidth**（步长 mm），不能是 FixedNumber（采样点数）：
+    官方例程（Dassault《Scripting the CST Studio Suite with the Python》）
+    用 FixedWidth + StepX/Y/Z，导出的文件头正是
+    ``x0 x1 nx / y0 y1 ny / z0 z1 nz``——也就是 ascii_fields 解析的那一种。
+    写成 FixedNumber 却填 mm 步长会语义矛盾：同样的 "0.2" 在大包围盒上
+    点数暴涨，解析端拿到的网格也不是我们以为的那个。
+    """
+    assert V.ASCII_EXPORT_MODE == "FixedWidth"
     params = V.ascii_export_params(0.2)
-    assert params == [("Mode", "FixedNumber"), ("StepX", "0.2"),
+    assert params == [("Mode", "FixedWidth"), ("StepX", "0.2"),
                       ("StepY", "0.2"), ("StepZ", "0.2")]
     s = V.ascii_export_field("f.txt", 0.2)
     assert '.FileName "f.txt"' in s
@@ -98,8 +107,39 @@ def test_ascii_export_uses_only_existing_cst_properties():
         assert bad not in s
     # 顺序：Reset → FileName → 参数（Reset 必须最先，清掉上一次的残留）
     assert s.index(".Reset") < s.index(".FileName") < s.index(".Mode")
-    # 模式可覆盖（smoke 用 FixedWidth 候选兜底）
-    assert ("Mode", "FixedWidth") in V.ascii_export_params(0.2, mode="FixedWidth")
+    # 模式可覆盖
+    assert ("Mode", "FixedNumber") in V.ascii_export_params(0.2, mode="FixedNumber")
+
+
+def test_design_region_update_is_one_record_with_delete_first():
+    """每轮形状更新 = **一条**历史记录：先删整个组件，再逐个挤出。
+
+    删组件必须排在最前，且要容错（组件不存在时首轮不该失败）；
+    挤出多边形的名字/组件名必须一致，否则会新建组件而把旧金属留在模型里。
+    """
+    polys = [[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)],
+             [(2.0, 0.0), (3.0, 0.0), (3.0, 1.0)]]
+    cmd = V.design_region_update(polys, 0.035)
+    assert cmd.index("Component.Delete") < cmd.index("With Extrude")
+    assert 'Component.Delete "design_region"' in cmd
+    # 容错包夹成对出现，不会把错误处理状态泄漏给后面的挤出
+    assert cmd.count("On Error Resume Next") == cmd.count("On Error GoTo 0") == 1
+    assert cmd.count("With Extrude") == len(polys)
+    assert cmd.count('.Component "design_region"') == len(polys)
+    assert cmd.count('.Material "PEC"') == len(polys)
+    assert '.Height "0.035"' in cmd
+    for i in range(len(polys)):
+        assert f'.Name "design_{i}"' in cmd
+    # 多边形顶点确实写进去了
+    assert '.Point "0", "0"' in cmd and '.LineTo "1", "1"' in cmd
+
+
+def test_design_region_update_rejects_empty_or_degenerate():
+    """空多边形表会把设计区金属全删掉——必须当场拒绝，而不是静默产出空模型。"""
+    with pytest.raises(ValueError, match="polys 为空"):
+        V.design_region_update([], 0.035)
+    with pytest.raises(ValueError, match="只有 2 个点"):
+        V.design_region_update([[(0.0, 0.0), (1.0, 1.0)]], 0.035)
 
 
 def test_frequency_range_is_set_explicitly():

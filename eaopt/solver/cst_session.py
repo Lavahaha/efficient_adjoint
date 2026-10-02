@@ -28,7 +28,10 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
+
+from eaopt.solver import vba as V
 
 __all__ = [
     "CstImportError",
@@ -37,6 +40,21 @@ __all__ = [
     "cst_library_candidates",
     "load_cst",
     "describe_import_state",
+    # 会话 / 工程 / 建模 / 求解
+    "try_calls",
+    "require_callable",
+    "running_design_environments",
+    "ensure_environment",
+    "close_environment",
+    "new_project",
+    "open_projects",
+    "project_filename",
+    "open_or_reuse_project",
+    "save_project",
+    "apply_blocks",
+    "update_design_region",
+    "run_solver",
+    "describe_environment",
 ]
 
 #: 仓库根（``eaopt/solver/cst_session.py`` 往上三层）。
@@ -233,4 +251,376 @@ def describe_import_state() -> list[str]:
             out.append(f"sys.modules : {name:<14} {where or '<空壳命名空间包！>'}")
     for i, p in enumerate(sys.path[:6]):
         out.append(f"sys.path[{i}] : {p}")
+    return out
+
+
+# =========================================================================== #
+# 会话 / 工程 / 建模 / 求解
+#
+# 这一层是 init/update/CstSolver **唯一**能碰 CST 的地方：上面三个脚本
+# 共享同一份实现，不允许各自写一套（否则"哪个脚本先跑过什么"就会变成
+# 隐形状态，出问题时无从复现）。
+#
+# 设计前提（更换方案的原因，见模块头部）：
+#   * 建模一律走 ``model3d.add_to_history(标题, 命令文本)``——它**既执行
+#     又写进 History List**，而直接调 VBA 对象模型只改当前模型、重放历史
+#     时会被打回原形；
+#   * 失败是**可见**的：``add_to_history`` 命令有错时抛 RuntimeError，
+#     原始诊断（形如 ``(&H8000ffff) The specified component does not
+#     exist``）就在消息里。所以本层只管加"第几块、哪一块"的上下文，
+#     然后把原错原样抛出，绝不吞掉。
+# =========================================================================== #
+def try_calls(obj, calls, what: str):
+    """按顺序试几种调用写法，返回第一个不抛异常的结果。
+
+    用于"同一件事在不同 CST 版本里形参名/个数不同"的场合（例如
+    ``Project.save`` 收不收路径、有没有 ``allow_overwrite``）。
+    **不吞错**：全部失败时抛 RuntimeError，把每种写法的原始错误都列出来
+    ——照着报错改代码，比继续猜 API 快得多。
+    """
+    errs: list[str] = []
+    for label, fn in calls:
+        try:
+            return fn()
+        except Exception as e:                      # noqa: BLE001 - 逐条汇报
+            errs.append(f"{label}\n      {type(e).__name__}: {e}")
+    raise RuntimeError(
+        f"{what} 全部失败（试过 {len(calls)} 种写法）：\n    "
+        + "\n    ".join(errs)
+        + f"\n  该对象的成员：{_member_summary(obj)}"
+    )
+
+
+def require_callable(obj, name: str, what: str):
+    """取一个**必须存在**的方法，缺失时给出带成员清单的中文错误。
+
+    比裸 ``AttributeError`` 有用：本机 CST 版本与预期不符时，成员清单
+    能一眼看出该换成哪个名字（或确认这个版本根本没有该能力）。
+    """
+    fn = getattr(obj, name, None)
+    if not callable(fn):
+        raise RuntimeError(
+            f"{what} 需要 `{name}`，但当前对象没有这个方法——本机 CST 的 "
+            f"API 与预期不符。\n  它有的成员：{_member_summary(obj)}"
+        )
+    return fn
+
+
+def _member_summary(obj, limit: int = 60) -> str:
+    try:
+        names = sorted(n for n in dir(obj) if not n.startswith("_"))
+    except Exception:                               # pragma: no cover - 兜底
+        return "<取不到成员表>"
+    head = ", ".join(names[:limit])
+    return head + (f" …（共 {len(names)} 个）" if len(names) > limit else "")
+
+
+def running_design_environments() -> list:
+    """当前机器上运行中的 CST 实例列表（取不到就返回空表，仅供日志）。"""
+    try:
+        _cst, iface, _res = load_cst()
+        return list(iface.running_design_environments())
+    except Exception:                               # pragma: no cover - 有 CST 才走到
+        return []
+
+
+def ensure_environment(*, attach: bool = False, force_new: bool = False,
+                       options=None, install_dir=None, lib_dir=None,
+                       quiet: bool = False, log=print):
+    """拿到一个可用的 ``DesignEnvironment``（CST 实例）。
+
+    三种意图，语义钉死，不允许含糊：
+
+    ``attach=True``
+        只附接**已经运行**的实例（通常就是用户开着的 GUI），连不上直接
+        报错退出——绝不偷偷起新实例，免得用户对着另一个窗口找模型。
+        服务器无 GUI 许可时的退路，也是调试时想"看着模型被改"的用法。
+    ``force_new=True``
+        只新建一个无 GUI 的静态实例。
+    默认（两个都不给）
+        优先附接已运行的实例（复用上一次会话与已打开的工程），没有才新建。
+        **注意**：GUI 里开着 CST 时这会附到那个界面实例上，自动化将在
+        用户的 GUI 会话里建工程——调试时正合适，但也别以为在跑无头模式。
+        日志里会打印附到了哪个实例。
+
+    附接是"抢"的：``connect_to_any()`` 在有多个实例时**随机挑一个**。
+    真要多实例并行，得用 ``connect(pid=...)`` 显式指定，本层暂不支持
+    （两个工程共用一个实例就够，见 cst_driver）。
+    """
+    _cst, iface, _res = load_cst(install_dir=install_dir, lib_dir=lib_dir)
+    de_cls = iface.DesignEnvironment
+
+    if attach:
+        try:
+            de = de_cls.connect_to_any()
+        except Exception as e:
+            raise RuntimeError(
+                "attach 模式要求 CST 已经在运行（GUI 或静态实例），"
+                f"但 connect_to_any() 失败：{e}\n"
+                "  对策：先打开 CST Studio 2024（或去掉 attach，让脚本"
+                "自己起一个静态实例）。"
+            ) from e
+        log(f"[OK] 附接到已运行的 CST 实例（运行的实例："
+            f"{running_design_environments() or '未知'}）")
+        return de
+
+    if not force_new:
+        try:
+            de = de_cls.connect_to_any()
+            log("[OK] 复用已运行的 CST 实例（若这不是本脚本启动的，注意它里面"
+                "可能还有别的工程；本脚本只会碰自己那两个 .cst 文件）")
+            return de
+        except Exception:
+            pass                                    # 没有实例 -> 新建，属正常路径
+
+    kwargs = {}
+    if options:
+        kwargs["options"] = list(options)
+    de = de_cls.new(**kwargs)
+    log(f"[OK] 新建 CST 实例（静态、无 GUI；options={options or '默认'}）")
+    if quiet:
+        set_quiet_mode(True, log=log)
+    return de
+
+
+def set_quiet_mode(enabled: bool = True, log=print) -> bool:
+    """尽力打开/关闭 CST 的静默模式；不同版本挂在不同位置，失败就算了。
+
+    只影响 CST 自己往控制台刷的进度，不影响结果，所以这里不把失败当错误。
+    """
+    try:
+        _cst, iface, _res = load_cst()
+    except Exception:                               # pragma: no cover
+        return False
+    for label, fn in (
+        ("cst.interface.set_quiet_mode", lambda: iface.set_quiet_mode(enabled)),
+        ("DesignEnvironment.set_quiet_mode",
+         lambda: iface.DesignEnvironment.set_quiet_mode(enabled)),
+    ):
+        try:
+            fn()
+            log(f"[OK] 静默模式：{label}({enabled})")
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def close_environment(de, *, save: bool = False, log=print) -> None:
+    """关闭实例（尽力而为；脚本退出前调一次，避免留下孤儿进程）。"""
+    if de is None:
+        return
+    try:
+        if save:
+            for prj in open_projects(de):
+                try:
+                    prj.save()
+                except Exception:
+                    pass
+        de.close()
+        log("[OK] 已关闭 CST 实例")
+    except Exception as e:                          # pragma: no cover - 兜底
+        log(f"[ -- ] 关闭 CST 实例失败（忽略）：{e}")
+
+
+# --------------------------------------------------------------------------- #
+# 工程
+# --------------------------------------------------------------------------- #
+def new_project(de, log=print):
+    """新建一个 Microwave Studio（3D）工程。"""
+    fn = require_callable(de, "new_mws", "新建工程")
+    prj = fn()
+    log("[OK] 新建 MWS 工程")
+    return prj
+
+
+def open_projects(de) -> list:
+    """当前实例里已打开的全部工程（API 名字随版本变，逐个试）。"""
+    for name in ("get_open_projects", "list_open_projects"):
+        fn = getattr(de, name, None)
+        if not callable(fn):
+            continue
+        try:
+            return list(fn())
+        except Exception:
+            continue
+    return []
+
+
+def project_filename(prj) -> str | None:
+    """工程对应的磁盘路径（没存过盘时可能是 None/空串）。"""
+    fn = getattr(prj, "filename", None)
+    if not callable(fn):
+        return None
+    try:
+        v = fn()
+    except Exception:
+        return None
+    return str(v) if v else None
+
+
+def open_or_reuse_project(de, path, log=print):
+    """打开工程；**已经开着就直接复用**，不要重复打开同一个文件。
+
+    重复打开同一个 .cst 会得到第二个工程对象，两边各自改模型、各自存盘，
+    后存的覆盖先存的——排查起来非常费劲。所以先按路径比对已打开的列表。
+    """
+    want = _norm(path)
+    for prj in open_projects(de):
+        got = project_filename(prj)
+        if got and _norm(got) == want:
+            log(f"[OK] 复用已打开的工程：{want}")
+            return prj
+    fn = require_callable(de, "open_project", "打开工程")
+    prj = fn(str(path))
+    log(f"[OK] 打开工程：{want}")
+    return prj
+
+
+def _norm(p) -> str:
+    try:
+        return str(Path(p).resolve()).lower()
+    except (OSError, ValueError):
+        return str(p).lower()
+
+
+def save_project(prj, path, log=print):
+    """把工程另存/保存到 ``path``（父目录自动创建）。
+
+    官方文档的写法是 ``Project.save(path, allow_overwrite=True)``；形参在
+    各版本略有出入，故按"带覆盖 → 不带 → model3d.SaveAs"依次试，全失败
+    时把每种写法的原始错误都报出来（见 try_calls）。
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try_calls(prj, [
+        (f"prj.save({path}, allow_overwrite=True)",
+         lambda: prj.save(str(path), allow_overwrite=True)),
+        (f"prj.save({path})", lambda: prj.save(str(path))),
+        (f"prj.model3d.SaveAs({path}, True)",
+         lambda: prj.model3d.SaveAs(str(path), True)),
+    ], what=f"保存工程到 {path}")
+    log(f"[OK] 保存工程：{path}")
+
+
+# --------------------------------------------------------------------------- #
+# 建模（历史表）
+# --------------------------------------------------------------------------- #
+def apply_blocks(model3d, blocks, *, what: str = "写入模型", log=print) -> int:
+    """把 ``[(标题, VBA 命令文本)]`` 逐块交给 ``model3d.add_to_history``。
+
+    成功的返回值是 ``True``；命令有错时官方库抛 RuntimeError 并把 CST 的
+    原始诊断带在消息里——所以这里只在外面补"第几块 / 哪一块"的上下文
+    （以及失败那一块的命令原文，方便直接对照），然后原样抛出。
+
+    ``add_to_history`` 是**同步执行**的：返回即模型已改好。
+    """
+    add = require_callable(model3d, "add_to_history", what)
+    blocks = list(blocks)
+    for i, (header, cmd) in enumerate(blocks, 1):
+        try:
+            ret = add(header, cmd)
+        except Exception as e:
+            raise RuntimeError(
+                f"{what}：第 {i}/{len(blocks)} 块 {header!r} 失败。\n"
+                f"CST 原始诊断：{e}\n"
+                f"--- 该块命令 ---\n{cmd}"
+            ) from e
+        if ret is False:
+            # 官方库正常是"成功返回 True、失败抛异常"。返回 False 说明
+            # CST 既没执行也没报错——这种最危险，必须当场停下。
+            raise RuntimeError(
+                f"{what}：第 {i}/{len(blocks)} 块 {header!r} 返回 False"
+                f"（CST 没有报错，但命令也没生效）。\n"
+                f"--- 该块命令 ---\n{cmd}"
+            )
+        log(f"    [{i:2d}/{len(blocks)}] {header}")
+    log(f"[OK] {what}：{len(blocks)} 块已写入历史表")
+    return len(blocks)
+
+
+def update_design_region(model3d, polys, *, thickness_mm: float,
+                         material: str = "PEC",
+                         component: str = V.DESIGN_COMPONENT, z0: float = 0.0,
+                         what: str = "更新设计区形状", log=print) -> int:
+    """一轮形状更新：**一条**历史记录 = 删整个组件 + 按多边形重建。
+
+    返回写入的历史记录条数（恒为 1，保留返回值是为了与 apply_blocks 同形）。
+    """
+    polys = list(polys)
+    cmd = V.design_region_update(polys, thickness_mm, component=component,
+                                 material=material, z0=z0)
+    n_pts = sum(len(p) for p in polys)
+    log(f"[ .. ] {what}：{len(polys)} 个多边形 / {n_pts} 个点，"
+        f"历史记录 {len(cmd)} 字符")
+    apply_blocks(model3d, [("design region", cmd)], what=what, log=log)
+    return 1
+
+
+# --------------------------------------------------------------------------- #
+# 求解
+# --------------------------------------------------------------------------- #
+def run_solver(model3d, *, timeout: float | None = None, log=print) -> float:
+    """运行求解器并等它结束，返回耗时（秒）。
+
+    ``run_solver()`` 是**同步**的：返回即求解完成（这与 COM 时代
+    ``Solver.Start()`` 后要自己轮询完全不同）。timeout 按官方文档是秒，
+    ``None`` = 不限；超时抛异常，由调用方决定怎么报。
+    """
+    if is_solver_running(model3d):
+        raise RuntimeError(
+            "求解器已经在运行：可能上一轮还没结束，或上一次崩溃留下了"
+            "跑飞的求解进程。先在 CST 里确认（必要时 abort），再重试。")
+    run = require_callable(model3d, "run_solver", "求解")
+    log("[ .. ] 求解中（同步等待，可能要几分钟）…")
+    t0 = time.perf_counter()
+    try:
+        if timeout is None:
+            run()
+        else:
+            try:
+                run(timeout)
+            except TypeError:                       # 该版本不收 timeout
+                log(f"[ -- ] run_solver 不接受 timeout={timeout}，改为不限时")
+                run()
+    except Exception as e:
+        raise RuntimeError(f"求解失败：{e}") from e
+    dt = time.perf_counter() - t0
+    info = _solver_info(model3d)
+    log(f"[OK] 求解完成，耗时 {dt:.1f} s" + (f"（状态：{info}）" if info else ""))
+    return dt
+
+
+def is_solver_running(model3d) -> bool:
+    fn = getattr(model3d, "is_solver_running", None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn())
+    except Exception:
+        return False
+
+
+def _solver_info(model3d) -> str:
+    fn = getattr(model3d, "get_solver_run_info", None)
+    if not callable(fn):
+        return ""
+    try:
+        return str(fn())
+    except Exception:
+        return ""
+
+
+def describe_environment(de) -> list[str]:
+    """把当前会话/工程状态讲清楚（报告用，不抛异常）。"""
+    out = [f"CST 实例      : {de}"]
+    try:
+        running = running_design_environments()
+        out.append(f"运行中的实例  : {running or '未知'}")
+    except Exception:
+        pass
+    prjs = open_projects(de)
+    out.append(f"已打开的工程  : {len(prjs)} 个")
+    for prj in prjs:
+        out.append(f"    - {project_filename(prj) or '<未存盘>'}")
     return out

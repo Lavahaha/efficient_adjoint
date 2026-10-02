@@ -29,7 +29,7 @@ from eaopt.optimize.constraints import apply_min_gap, build_velocity_mask, inter
 from eaopt.optimize.objective import make_fom
 from eaopt.optimize.step import fixed_step_velocity
 
-__all__ = ["make_level_set", "History", "OptimizerPipeline"]
+__all__ = ["make_level_set", "movable_contours", "History", "OptimizerPipeline"]
 
 
 def make_level_set(cfg: CaseConfig) -> LevelSet2D:
@@ -37,6 +37,27 @@ def make_level_set(cfg: CaseConfig) -> LevelSet2D:
     ls = LevelSet2D(cfg.design_region.box, cfg.design_region.grid_step_mm)
     ls.init_from_polygons([np.asarray(p.vertices, dtype=float) for p in cfg.initial_metal])
     return ls
+
+
+def movable_contours(ls: LevelSet2D, cfg: CaseConfig) -> list[np.ndarray]:
+    """提取可动金属轮廓（排除固定金属，如直通线），按点距重采样。
+
+    **模块级函数**，不是 OptimizerPipeline 的私有方法：cst_init_* 与
+    cst_update 脚本要用同一份"初始轮廓"去建/改 CST 工程，各写一份迟早
+    漂移（脚本里看到的形状 ≠ 迭代里演化的形状，而且不报错）。
+    """
+    contours = extract_contours(ls.xs, ls.ys, ls.phi)
+    fixed_sdf = make_fixed_sdf(ls, cfg)
+    out = []
+    for c in contours:
+        if fixed_sdf is not None and is_fixed_contour(c, fixed_sdf):
+            continue
+        closed = np.allclose(c[0], c[-1])
+        out.append(
+            smooth_resample(c, cfg.sampling.point_spacing_mm,
+                            smoothing=0.0, closed=closed)
+        )
+    return out
 
 
 @dataclass
@@ -63,62 +84,69 @@ class OptimizerPipeline:
     def run(self) -> History:
         cfg = self.cfg
         opt = cfg.optimizer
-        for it in range(opt.max_iterations):
-            t0 = time.perf_counter()
-            movable = self._movable_contours()
-            fixed = [np.asarray(p.vertices, dtype=float) for p in cfg.fixed_region]
+        try:
+            for it in range(opt.max_iterations):
+                t0 = time.perf_counter()
+                # 轮次号告诉求解器，产物（iter_NNN/）才能落在正确的目录里
+                self.solver.begin_iteration(it)
+                movable = movable_contours(self.ls, cfg)
+                fixed = [np.asarray(p.vertices, dtype=float) for p in cfg.fixed_region]
 
-            self.solver.build_model(movable, fixed)
-            sol_f = self.solver.solve_forward()
-            fom = self.fom(sol_f)
-            rec = {
-                "iteration": it,
-                "fom": float(fom),
-                "s31_db": float(20 * np.log10(abs(sol_f.s_params[(3, 1)]))),
-                "s21_db": float(20 * np.log10(abs(sol_f.s_params[(2, 1)]))),
-                "time_s": time.perf_counter() - t0,
-            }
-            self._record(rec)
-            self._snapshot(it)
-            print(f"[iter {it:3d}] FoM={fom:.6f}  |S31|={rec['s31_db']:7.2f} dB  "
-                  f"({rec['time_s']:.2f}s)")
+                self.solver.build_model(movable, fixed)
+                sol_f = self.solver.solve_forward()
+                fom = self.fom(sol_f)
+                rec = {
+                    "iteration": it,
+                    "fom": float(fom),
+                    "s31_db": float(20 * np.log10(abs(sol_f.s_params[(3, 1)]))),
+                    "s21_db": float(20 * np.log10(abs(sol_f.s_params[(2, 1)]))),
+                    "time_s": time.perf_counter() - t0,
+                }
+                self._record(rec)
+                self._snapshot(it)
+                print(f"[iter {it:3d}] FoM={fom:.6f}  |S31|={rec['s31_db']:7.2f} dB  "
+                      f"({rec['time_s']:.2f}s)")
 
-            if self._converged():
-                self.history.converged = True
-                self.history.stop_reason = "converged"
-                break
+                if self._converged():
+                    self.history.converged = True
+                    self.history.stop_reason = "converged"
+                    break
 
-            # ---- 形状导数 -> 速度 -> 几何更新 ----
-            sol_b = self.solver.solve_backward()
-            pts, nrm = sample_boundary(movable, self.ls, cfg)
-            pts3 = np.column_stack([pts, np.full(len(pts), cfg.sampling.field_z_mm)])
-            nrm3 = np.column_stack([nrm, np.zeros(len(nrm))])
-            e_f = sol_f.e_field.interp(pts3)
-            h_f = sol_f.h_field.interp(pts3)
-            e_b = sol_b.e_field.interp(pts3)
-            h_b = sol_b.h_field.interp(pts3)
-            dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin, self.omega, self.eps_r)
+                # ---- 形状导数 -> 速度 -> 几何更新 ----
+                sol_b = self.solver.solve_backward()
+                pts, nrm = sample_boundary(movable, self.ls, cfg)
+                pts3 = np.column_stack([pts, np.full(len(pts), cfg.sampling.field_z_mm)])
+                nrm3 = np.column_stack([nrm, np.zeros(len(nrm))])
+                e_f = sol_f.e_field.interp(pts3)
+                h_f = sol_f.h_field.interp(pts3)
+                e_b = sol_b.e_field.interp(pts3)
+                h_b = sol_b.h_field.interp(pts3)
+                dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin, self.omega, self.eps_r)
 
-            v_mask_grid = build_velocity_mask(self.ls, cfg)
-            # 栅格化必须回填到边界点（bnd，偏移前），否则落在速度延拓
-            # 种子带（|φ|≤0.75·dx）之外，速度场无法播种
-            side = 1.0 if cfg.sampling.sample_side == "outside" else -1.0
-            bnd = pts - side * cfg.sampling.sample_offset_mm * nrm
-            # 掩膜先于归一化：被禁点（角点奇异性、固定区邻域）不参与
-            # max|δp|，否则它们会劫持速度尺度拖慢全场
-            active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
-            v = fixed_step_velocity(dp, opt.velocity_sign, active)
-            v_boundary = scatter_to_grid(self.ls, bnd, v)
-            V = self.ls.extend_velocity(v_boundary, cfg.level_set.extension_band_mm)
-            V *= v_mask_grid
+                v_mask_grid = build_velocity_mask(self.ls, cfg)
+                # 栅格化必须回填到边界点（bnd，偏移前），否则落在速度延拓
+                # 种子带（|φ|≤0.75·dx）之外，速度场无法播种
+                side = 1.0 if cfg.sampling.sample_side == "outside" else -1.0
+                bnd = pts - side * cfg.sampling.sample_offset_mm * nrm
+                # 掩膜先于归一化：被禁点（角点奇异性、固定区邻域）不参与
+                # max|δp|，否则它们会劫持速度尺度拖慢全场
+                active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
+                v = fixed_step_velocity(dp, opt.velocity_sign, active)
+                v_boundary = scatter_to_grid(self.ls, bnd, v)
+                V = self.ls.extend_velocity(v_boundary, cfg.level_set.extension_band_mm)
+                V *= v_mask_grid
 
-            steps = max(1, round(opt.step_size / (0.4 * self.ls.dx)))
-            self.ls.update(V, steps=steps, cfl=0.4)
-            apply_min_gap(self.ls, cfg)
-            if it % cfg.level_set.reinit_every == 0:
-                self.ls.reinitialize(band=2.0 * cfg.level_set.extension_band_mm, iters=40)
-        else:
-            self.history.stop_reason = "max_iterations"
+                steps = max(1, round(opt.step_size / (0.4 * self.ls.dx)))
+                self.ls.update(V, steps=steps, cfl=0.4)
+                apply_min_gap(self.ls, cfg)
+                if it % cfg.level_set.reinit_every == 0:
+                    self.ls.reinitialize(band=2.0 * cfg.level_set.extension_band_mm, iters=40)
+            else:
+                self.history.stop_reason = "max_iterations"
+        finally:
+            # 求解器持有外部资源（CST 会话、打开的工程）——异常退出也要收尾，
+            # 否则下一次运行会附接到一个状态不明的实例上。
+            self.solver.close()
 
         self._plot_fom()
         print(f"\n优化结束（{self.history.stop_reason}）：{len(self.history.records)} 次迭代，"
@@ -126,21 +154,6 @@ class OptimizerPipeline:
         return self.history
 
     # ------------------------------------------------------------------ #
-    def _movable_contours(self) -> list[np.ndarray]:
-        """提取可动金属轮廓（排除固定金属，如直通线），按点距重采样。"""
-        contours = extract_contours(self.ls.xs, self.ls.ys, self.ls.phi)
-        fixed_sdf = make_fixed_sdf(self.ls, self.cfg)
-        out = []
-        for c in contours:
-            if fixed_sdf is not None and is_fixed_contour(c, fixed_sdf):
-                continue
-            closed = np.allclose(c[0], c[-1])
-            out.append(
-                smooth_resample(c, self.cfg.sampling.point_spacing_mm,
-                                smoothing=0.0, closed=closed)
-            )
-        return out
-
     def _converged(self) -> bool:
         opt = self.cfg.optimizer
         w = opt.convergence_window
