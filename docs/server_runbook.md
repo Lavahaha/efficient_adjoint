@@ -1,299 +1,125 @@
-# 服务器操作手册（第 7 步：CST 2024 实测与复现）
+# 服务器操作手册（第 6 步：CST 2024 验收与复现）
 
-按顺序执行。任何一步报错：把完整输出（含报错）贴回给开发者。
+按顺序执行。任何一步报错：把**完整输出**（含报错原文）贴回给开发者。
+
+CST 交互全部走**官方 Python 库**（`cst.interface` / `cst.results`，随 CST
+安装包提供），没有 COM/pywin32。所有几何改动都经
+`model3d.add_to_history(标题, 命令文本)`——**既执行、又写进 History
+List**，坏 VBA 会当场抛 `RuntimeError`（失败完全可见，这是换官方库最大
+的收益）。
+
+CST 侧的一切参数（频点/材料/端口/会话/工程路径）都在
+`eaopt/solver/cst_setup.py` 的 `COUPLER`——服务器上要调试时改那里，
+不要在 YAML 里找（YAML 只有优化侧配置）。
 
 ## 0. 环境准备（一次性）
 
 ```bash
-# 服务器上（需 64 位 Python 3.10+；CST 2024 已安装且许可证正常）
+# 服务器上（官方库只支持 64 位 Python 3.6–3.11；CST 2024 已安装且许可证正常）
 git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
-pip install -e .[server]      # numpy/scipy/pyyaml/matplotlib + pywin32/h5py
-pip install pytest            # 可选：验证安装
-python -m pytest tests/ -q   # 应 137 passed（本机可先确认代码完整）
+pip install -e .            # numpy/scipy/pyyaml/matplotlib
+pip install pytest          # 可选：验证安装
+python -m pytest tests/ -q  # 应 155 passed（不装 CST 也能全绿）
+
+# 官方 Python 库（不在 PyPI 上，CST 安装包自带）
+pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
+    cst-studio-suite-link
+python -c "import cst.interface; print(cst.interface.__file__)"
 ```
 
-## 1. 生成模板工程（**方式 A 优先**：Python + COM）
+> **导入守卫**：仓库根目录下**不要**有叫 `cst/` 的文件夹——它会被 Python
+> 当成命名空间包、遮蔽官方库，`import cst` "成功"而 `cst.interface` 报错。
+> 三个 `scripts/cst_*.py` 与 `eaopt/solver/cst.py` 在**顶层**直接
+> `import cst.interface`（不封装官方库的代价），失败时给的就是这段提示；
+> `tests/test_cst_contract.py` 也把"仓库根没有 `cst/`"锁成合同。
 
-> **为什么模型必须落到 History List 里**：CST 的模型是"历史表重放"出来
-> 的。历史表为空 ⇒ 存盘写出的工程重开就是**空的**（"打开一片空白"的
-> 根因）。所以判成功的唯一标准是第 2 节那两条。
-
-### 方式 A（推荐）：`scripts/cst_build_template.py`
+## 1. 建两个工程（分步；也可跳过直接跑第 2 节，它会自动建）
 
 ```bash
-# 先决：CST Studio 2024 GUI 已启动并保持打开（脚本附接运行实例）
-python scripts/cst_build_template.py configs/coupler.yaml
-# 只建一个（调试用）：  ... --which fwd
-# 只查 API 不建东西：  ... --probe
+python scripts/cst_init_fwd.py configs/coupler.yaml   # 端口 1 激励 → iter_000/
+python scripts/cst_init_bwd.py configs/coupler.yaml   # 端口 3 激励
 ```
 
-它逐块调用 CST 文档里的 `AddToHistory(标题, 命令文本)`——**既执行命令、
-又写进 History List**，而且每一块都打印**原始返回值**：失败会打印
-`[FAIL] 序号 标题` + 原始错误（哪一块、错误号是什么），不会再像宏那样
-只弹一个"遇到不适当的参数"对话框。命令文本与宏路径共用
-`eaopt/solver/template_builder.py::template_blocks`（单一事实来源），
-两条路建出来的模型一模一样。
+产物：`results/coupler/cst/coupler_fwd.cst`（工程，含模型历史）与
+`results/coupler/iter_000/`（S 参数；`--save-fields` 时另有 E/H 场）。
 
-**工程对象从哪儿来**（上一轮的实测教训）：建完工程后一律**从活动工程**
-取对象（`cst_api.get_project` → `app.Active3D()`），不用 `NewMWS()` 的
-返回值——后者上 `AddToHistory` 不生效。这条已固化在共享层，脚本不用改。
+每个块都写进 History List 并**立刻存盘**；工程已存在时脚本会拒绝覆盖
+（要重建就自己删掉 `.cst` **连同同名文件夹**）。
 
-**⚠️ 返回值不能当判据**：晚绑定（`Dispatch`）下 `AddToHistory` 返回
-**None**（pywin32 拿不到返回值），脚本会打 `[ ?? ]`；早绑定
-（`gencache.EnsureDispatch`，连接那行会写明）才可能看到 True/False。
-**唯一可靠的判据是**：① 结尾自动跑的**文件层检查**（`cst_project.describe`
-不用 CST 直接读文件，打印"文件里有模型"才算过）；② 第 2 节那两条。
+### 模板验证清单（判定建工程成功的唯一标准）
 
-跑完先看它最后打印的验证清单（= 下面第 2 节）。
-
-推倒重来之前要知道的两个开关：
-
-```bash
-# 不删任何东西，只列 app/工程对象上相关成员的真实名字与形参名
-python scripts/cst_build_template.py configs/coupler.yaml --probe
-# 不新建工程，直接在 GUI 里当前打开的那个活动工程上建（先 File → New）
-python scripts/cst_build_template.py configs/coupler.yaml --attach
-```
-
-`--probe` 的输出（`cst_api.member_signatures` 直读 IDispatch 类型库）就是
-"这个版本里方法到底叫什么、参数几个"的权威答案，贴回开发者即可。
-
-**若每一块都失败**（实测遇到过：连只有一行、语法显然没问题的块也一样
-⇒ 与命令内容无关），跑专门的诊断：
-
-```bash
-python scripts/cst_probe_history.py
-```
-
-它一次问清四件事：① Application 上所有"取工程对象 / 建工程 / 保存"相关
-成员的**真实签名**；② **三个候选对象**（建之前的活动工程 /
-`app.NewMWS()` 的返回值 / 建之后的活动工程）各自打一遍调用形状矩阵
-（空内容 / 单行 / LF / CRLF / 末尾换行 / **参数换序** / 分号 / 单参数）；
-③ 另存到临时文件后再试一遍（"未存盘的工程不许写历史"这一怀疑）；
-④ 把工程对象上所有能读的 history 成员读回来。
-
-**矩阵里的命令是"看得见"的**（建一个名叫 `probeA-brick-lf` 之类的
-Brick）——**跑完请到 CST 模型树里看 component `probe` 下出现了哪几个
-Brick**，这是唯一可靠的判据：
-- 有 `probeC-*`（建之后的活动工程）而没有 `probeB-*` ⇒ 必须用活动工程
-  对象（正是现在的做法）；
-- 一个都没有 ⇒ 连可见命令都没执行，请把输出贴回，并做下面的对照实验；
-- 只有 CRLF 那几个出现 ⇒ 是**换行符**问题，按结果改 `vba.py` 的行尾；
-- 只有 G（参数换序）出现 ⇒ 这台机器的形参顺序与文档相反。
-
-**同时请在 GUI 里做一次对照实验**：手工画一个 Brick（或改一下单位），看
-History List 里**有没有出现那一条**——
-- 手工操作也不进历史表 ⇒ 这个 CST 会话/安装的记录功能本身有问题；
-- 手工操作进历史表 ⇒ 是 API 调用侧的问题，按矩阵结果改。
-
-两种情况的完整输出/截图（含模型树里 probe 组件的样子）都贴回开发者。
-
-### 方式 B（备用）：GUI 宏
-
-```bash
-python scripts/build_cst_template.py cst/   # 生成宏文件
-# 产物: cst/build_coupler_fwd.mcs（结构宏：端口 1 激励的模型）
-#       cst/save_coupler_fwd.mcr （控制宏：另存为 coupler_fwd.cst）
-#       cst/build_coupler_bwd.mcs / save_coupler_bwd.mcr（端口 3 激励）
-#       cst/polygon_test.mcs（诊断宏，可选，见第 2.5 节）
-```
-
-## 2. 验证模板（判定成功的唯一标准）
-
-> 方式 A 的脚本跑完会直接打印这个清单，**并且已经自动跑过第 3 条**
-> （存完立刻做文件层检查）；方式 B（GUI 宏）要从第 3 条开始。
-
-1. **History List 必须非空**（Modeling 树 / Home → History List）：应看到
+1. **History List 非空**（Modeling 树 / Home → History List）：应看到
    Units / Material / Brick / Extrude / Port / Monitor / Boundary 一条条
    记录。**空的就停下来**，把完整输出贴回开发者。
-2. **关掉工程再重新打开那个 `.cst`**，确认几何与 4 个端口还在。
-   历史表为空的话这一步就会变空——那才是问题所在。
-3. `python scripts/cst_inspect_template.py`（不用 CST，文件层再确认；
-   方式 A 已自动做过，可跳过）
-4. `python scripts/cst_smoke.py configs/coupler.yaml`
+2. **关掉工程再重新打开那个 `.cst`**，确认几何与 4 个端口还在
+   （历史表为空的话这一步就会变空——那才是问题所在）。
+3. 文件层再确认（不用 CST）：`.cst` 是 `<名字>.cst` + **同名文件夹**两件
+   东西，搬运/复制时只搬 `.cst` 会打开成缺模型的工程——连文件夹一起搬。
 
-以下细节供第 3、4 步对照检查：
+以下细节供核对：
 
-### 方式 B（GUI 宏）逐步操作
+- 模型（论文 Fig.5）：基板（Rogers4350B 30mil，x∈[−5.6,17.6]
+  y∈[−7,5.6]）、接地 PEC、空气盒（Vacuum，z 到 4.0）、直通线（上方横贯
+  整板）、"⊓"形耦合臂（横段 + 两条腿下到板底）、设计区金属
+  （`design_region` 组件：横段 + 两端内侧圆角）；
+- **两端拐弯过渡**（论文 Fig.5 的四分之一圆）：俯视图看，耦合臂横段与
+  两条腿的连接应是**平滑等宽圆角**（腿上端外缘向外弯、臂端下缘向内弯，
+  二者同心），而不是直角。对照 `docs/layout_reference.png`（本地渲染的
+  同一几何；可随时用 `python scripts/plot_layout.py` 重新生成）。腿与臂
+  在 x=0 / x=12 处相接，**不应有缝**。若形状不符，把俯视图截图发回；
+- **4 个波导端口**：1/2 在直通线两端（xmin/xmax 面）、3/4 在两腿底
+  （ymin 面）；端口面下缘触到接地板底面、上缘到空气盒顶；
+- **监视器**（Modeling 树 → Field Monitors）：`e-field (f=5)` 与
+  `h-field (f=5)` 各一个，**Dimension = Volume**（覆盖整个计算域，没有
+  "位置"这个设置——所以它必然贴着四个端口面，端口 2 也在其中，这是正常
+  的；导出场时只取设计区 ± 余量内的数据）。**名字不要改**：CST 用监视器
+  名命名结果树条目，导出场按它选中，名字由 `cst_model.field_monitor_name()`
+  统一给出（创建与导出共用，有测试锁定）；
+- **边界**：X/Y/Zmin = magnetic，Zmax = electric；
+- **激励（最关键的一项）**：Simulation → Time Domain Solver 对话框 →
+  Stimulation/Excitation 分组里，**Source type 应指向端口 1**
+  （fwd；bwd 为端口 3），Frequency range 应为 **0 – 10 GHz**。这一项错了
+  不会让 S 参数变样（S 参数照样是全端口矩阵），但**场监视器里存的会是
+  多个激励叠加的场，伴随梯度就全错了**。模板用 `Solver` 的
+  `.StimulationPort "1"` + `.StimulationMode "1"` 设置它（不用 Excitation
+  对象——那个对象在 CST 2024 报 10090、且失败是静默的）。**端口与模式
+  必须成对**：实测 `.StimulationPort "1"` + `.StimulationMode "All"` 会让
+  `Solver.Start` 直接报 "Invalid stimulation port, please specify."
 
-走宏这条路，**两个条件必须同时满足，缺一个 History List 就是空的**
-（实测踩过）：
-
-- **建模必须是结构宏 `.mcs`**（不是控制宏 `.mcr`）：控制宏的动作**不写进
-  History List**，会话里看着几何/端口/监视器都建好了，但存盘重开就是
-  **空工程**。
-- **必须从 CST 主界面的 Macros 下拉菜单运行**。在 VBA 编辑器里点运行
-  图标，即使是结构宏也不写 History List。
-
-**模板里的 VBA 与 CST 自己的录制宏逐行对齐**（2026-10-01 按用户实测录制
-结果改的，出问题时可以拿 GUI 录制的宏和模板对拍）：
-
-- Port 块补了 `XrangeAdd/YrangeAdd/ZrangeAdd`、`SingleEnded`、
-  `WaveguideMonitor`（都是默认值，写上是为了逐行一致）；
-- Monitor 块补了 `UseSubvolume "False"`（子域范围那几条惰性属性不写）；
-- Solver 块补了 `CalculateModesOnly`/`SParaSymmetry`/`StoreTDResultsInCache`/
-  `RunDiscretizerOnly`/`FullDeembedding`/`SuperimposePLWExcitation`/
-  `UseSensitivityAnalysis`，且前面多一条独立的
-  `Mesh.SetCreator "High Frequency"`（GUI 打开 TD 求解器对话框时 CST 自己
-  写的那条）；`SteadyStateLimit` 取该版本默认 **-40 dB**（原写 -30 是旧版
-  默认），另外保留了我们自己的 `AutoNormImpedance "False"` +
-  `NormingImpedance "50"`（S 参数按 50 Ω 归一，不依赖机器默认）。
-
-**宏里不含 NewProject/SaveAs**——工程级指令只在控制宏（.mcr）上下文合法，
-实测在结构宏里报 "Invalid instruction"。所以新建工程由你在 GUI 里做，
-另存交给配套的 `save_*.mcr`（或手工 File → Save As）。
-
-1. 打开 CST Studio 2024（GUI）
-2. **File → New**（模板选 `<None>`）新建一个空工程
-3. 把 `cst/build_coupler_fwd.mcs` 放进 CST 能看到的宏目录，或
-   Home → Macros → Import Macro...（对话框里把**文件类型切到
-   "CST Macro Files (\*.mcs; \*.mcr)"**，默认过滤器看不到宏文件），
-   选中 `cst/build_coupler_fwd.mcs`
-4. **从主界面 Macros 下拉菜单里运行它**（不要进 VBA 编辑器点运行）
-   → 结尾弹**报告框**：
-   - "All blocks applied." = 全部成功；
-   - "Some blocks FAILED ..." = 括号里那些块（激励/监视器/边界/求解器）
-     **没生效**，按报告里的名字在 GUI 手工补。**把这张报告框截图发回
-     开发者**（用于按版本修正宏）。
-5. **立刻检查 History List 不为空**（Modeling 树 / Home → History List）：
-   应能看到 Units/Brick/Extrude/Port/Monitor/Boundary 一条条记录。
-   **空的就停下来**——上面两个条件有一条没满足（多半是运行方式）。
-   若还弹过别的对话框（如"遇到不适当的参数"），**换成第 1 节的方式 A
-   （COM）**：那条路会把失败块和原始错误逐条打印出来。
-6. **另存**：运行 `cst/save_coupler_fwd.mcr`（同样从 Macros 菜单），
-   或直接在 GUI 里 File → Save As → `cst/coupler_fwd.cst`
-7. **再 File → New**，重复 3–6，用 bwd 那两个宏 → `cst/coupler_bwd.cst`
-8. 检查产物：两个 .cst 都已生成
-9. **打开 fwd 工程检查**（布局 = 论文 Fig.5）：
-   - 模型：基板（Rogers4350B 30mil，x∈[−5.6,17.6] y∈[−7,5.6]）、
-     接地 PEC、空气盒（Vacuum，z 到 4.0）、直通线（上方横贯整板）、
-     "⊓"形耦合臂（横段 + 两条腿下到板底）、设计区金属
-     （design_region 组件：横段 + 两端内侧圆角）
-   - 4 个波导端口：1/2 在直通线两端（xmin/xmax 面）、3/4 在两腿底
-     （ymin 面）；端口面下缘触到接地板底面、上缘到空气盒顶
-   - 监视器（Modeling 树 → Field Monitors）：`e-field (f=5)` 与
-     `h-field (f=5)` 各一个，**Dimension = Volume**（覆盖整个计算域，
-     没有"位置"这个设置——所以它必然贴着四个端口面，端口 2 也在其中，
-     这是正常的；导出场时只按设计区附近 z=±0.1 mm 的薄层取数）。若对话框
-     里 Dimension 变成了 Plane/Position，说明宏的 Monitor 块没生效，
-     按报告框提示手工建两个 Volume 监视器
-   - 边界：X/Y/Zmin = magnetic，Zmax = electric
-   - **检查两端拐弯过渡**（论文 Fig.5 的四分之一圆）：俯视图看，
-     耦合臂横段与两条腿的连接应是**平滑等宽圆角**（腿上端外缘向外
-     弯、臂端下缘向内弯，二者同心），而不是直角。对照
-     `docs/layout_reference.png`（本地渲染的同一几何；可随时用
-     `python scripts/plot_layout.py` 重新生成）。腿与臂在 x=0 / x=12
-     处相接，**不应有缝**。若形状不符（例如成了直角、或出现明显
-     折线感），把俯视图截图发回
-   - **激励（最关键的一项）**：Simulation → Time Domain Solver 对话框 →
-     Stimulation/Excitation 分组里，**Source type 应指向端口 1**
-     （bwd 端口 3），Frequency range 应为 **0 – 10 GHz**。
-     这一项错了不会让 S 参数变样（S 参数照样是全端口矩阵），但**场监视器里
-     存的会是多个激励叠加的场，伴随梯度就全错了**。宏用 Solver 的
-     `.StimulationPort "1"` + `.StimulationMode "1"` 设置它（不再用
-     Excitation 对象——那个对象在 CST 2024 命令宏里报 10090、且失败是
-     静默的）。**端口与模式必须成对**：实测 `.StimulationPort "1"` +
-     `.StimulationMode "All"` 会让 Solver.Start 直接报
-     "Invalid stimulation port, please specify."
-10. **bwd 工程同样检查，激励改为端口 3**，另存
-11. **回头验一下保存出来的模板文件本身**（不用 CST，纯 Python）：
-    ```bash
-    python scripts/cst_inspect_template.py
-    ```
-    它两处都查（`.cst` 内部 + 同名文件夹），并打印文件头 8 字节。
-    **两处都搜不到 `substrate`/`design_region` 等对象名才叫空工程**；
-    若 `.cst` 搜不到而同名文件夹搜得到，那是检查工具早先只盯 `.cst`
-    造成的误判（已修）。
-
-## 2.5 （可选）诊断宏 polygon_test.mcs
-
-pipeline 每轮迭代都用 `Extrude "Pointlist"` 重建任意轮廓（design_region
-组件），所以必须确认这个模式生成的是**直边多边形**（尖角保留），而不是
-把点列拟合成曲线。
-
-- 在任意**空工程**里从 **Macros 菜单**运行 `cst/polygon_test.mcs`
-  （File → New → 运行），会建出两个实体：L 形（6 点、含 90° 内角）和方形
-- 俯视图看：两者都应是直边、尖角；History List 应出现两条 Extrude
-- **只在第 9 步看到弧边时才需要做这一步**；把结果（或截图）发回开发者。
-  若确实出现弧边，重建方式要改（这是 pipeline 的硬依赖）
-
-> 若宏在某条指令上报错（如 "Invalid instruction (xxx)" 或
-> "no such property (xxx)"）：把那条指令贴回来即可。**建模是逐条执行的，
-> 报错前的部分已经建好**，多数情况只需在 GUI 里手工补那一步，不必重跑。
-
-## 3. 修改配置
-
-编辑 `configs/coupler.yaml` 的 solver 段：
-
-```yaml
-solver:
-  type: cst                # 由 mock 改为 cst
-  template_fwd: cst/coupler_fwd.cst   # 若路径不同按实际改
-  template_bwd: cst/coupler_bwd.cst
-  cst_version: "2024"
-  field_backend: ascii
-```
-
-## 4. Smoke 测试（关键诊断步骤）
-
-```bash
-python scripts/cst_smoke.py configs/coupler.yaml
-```
-
-它会依次验证并打印：
-
-1. COM 连接 → 打开模板副本（同时打印模板 .cst 的大小与**最后修改时间**：
-   若是旧时间戳，说明宏的 SaveAs 没覆盖掉旧文件，你打开的是陈旧工程）；
-2. **2b. 模板 .cst 里内嵌的激励字符串**（看宏究竟把什么存了进去）；
-3. **工程状态探针**：读 `mws.GetSolverType`（**属性**，别加括号——
-   加了报 `'str' object is not callable`）、`Solver.GetNumberOfPorts`、
-   `Solver.GetPortNames`、`ObjectExists("substrate")`、`ObjectExists("Port 1")`。
-   **端口数为 0 会大声报警**——那说明模板被存成了空壳，先别管激励；
-4. **激励候选闭环**：再依次试
-   `"1"+"1"` / `"Port 1"+"1"` / `1+1` / `"1"+"All"` / `"All"+"All"`，
-   每个 COM 调用单独 try/except（报告会点明失败在 StimulationPort、
-   StimulationMode 还是 Start），每个候选都真调一次 `Solver.Start()` ——
-   写法不对会**立刻**报 "Invalid stimulation port"（不耗时），试到能跑
-   为止（**能跑的那次会真的算完，几分钟**；期间 CST 界面若弹报错
-   对话框，点掉即可）；
-5. **COM 方法枚举**：直接问类型库要 `mws.ResultTree` / `mws.ASCIIExport`
-   / `mws.Solver` 的**真实成员表**（工程对象按 `Result/Export/Tree/
-   Field/ASCII` 过滤打印）——比逐个猜 API 名字可靠，一轮就能定下来；
-6. S 参数读取：先列 `1D Results` 与 `1D Results\S-Parameters` 的真实
-   子条目（**原始报错一并打印**：列举为空既可能是"真没结果"，也可能是
-   "方法名不对"），再用解析到的真实路径走
-   `GetResultIDsFromTreeItem` + `GetResultFromTreeItem` +
-   `GetArray("x"/"yre"/"yim")`；随后是 4c 备选链
-   `GetFileFromTreeItem` + `Result1DComplex`；
-7. 结果树中监视器条目的**惯例路径 vs 实际匹配** + `SelectTreeItem` 实测；
-8. E 场 ASCII 导出：用实际匹配到的条目名导出 + **属性探针**（列出哪些
-   ASCIIExport 属性真的存在）+ 导出文件头 20 行。
-
-**把完整输出贴回给开发者**——用于把 `CstSolver` 的候选 API 列表与
-`ascii_fields` 解析器收敛到 CST 2024 真实格式（大概率只需一轮修正）。
-
-自检：smoke 中若求解正常且第 4 节能给出合理 S31（|S31| 约 −18 dB
-量级，与布局细节有关），即可进入下一步。若第 3 节所有候选都失败，
-smoke 会打印"改用 GUI 设置 + 录宏"的步骤，照做并把生成的 VBA 贴回。
-
-## 5. FD 验证（符号裁决）
-
-```bash
-python scripts/fd_check.py configs/coupler.yaml
-```
-
-注意：CST 端的 fd_check 扰动实现（轮廓偏移→重建）在 mock 版基础上需要
-按 smoke 结果适配后才能跑；先把 smoke 输出给开发者，此步在修正后执行。
-
-## 6. 正式优化复现
+## 2. 正式优化复现（一条命令）
 
 ```bash
 python scripts/run_coupler.py configs/coupler.yaml
+# 服务器无 GUI 许可时：--attach（附接已开着的 CST）或 --new（强制静态实例）
+# 想把 E/H 场也存下来复盘：--save-fields
 ```
 
-预期：约 20–30 次迭代（每次 = 2 次 CST 仿真 + 场导出，论文参考 55 min/20 次），
-输出在 `results/coupler/`（history.jsonl、每轮形状快照、fom.png）。
+工程不存在时**自动初始化**（和两个 init 脚本等价的路径）；两个工程都齐
+就直接进主循环。预期：约 20–30 次迭代（每次 = 2 次 CST 仿真 + 场导出，
+论文参考 55 min/20 次），输出在 `results/coupler/`。
+
+**第一次跑先小步数**：把 `configs/coupler.yaml` 的
+`optimizer.max_iterations` 改成 3、`convergence_window` 保持较大，盯
+`history.jsonl` 里 `fom` 的走向（见第 4 节），确认方向对了再放开步数。
+
+## 3. 产物清单（每轮验收）
+
+每轮 `<output.dir>/iter_NNN/` 应同时有：
+
+| 文件 | 内容 | 缺了说明 |
+|---|---|---|
+| `shape.json` | 该轮**真正施加**的多边形（mm） | 形状更新没走到落盘 |
+| `s_params_fwd.json` | fwd 工程（端口 1 激励）的 S 参数 | 读结果失败或没求解 |
+| `s_params_bwd.json` | bwd 工程（端口 3 激励）的 S 参数 | 同上（bwd 没跑） |
+| `meta.json` | 该轮的标签清单 | 半截轮次 |
+| `ls_phi.npz` | 产生该轮形状的 φ 快照（`cst_update --from-ls` 用） | pipeline 没跑到 |
+
+外加 `<output.dir>/history.jsonl`（逐轮 FoM）与 `fom.png`（收敛曲线）。
+
+**验证**：CST 里看第 N 轮，设计区形状应逐轮变化，且 History List 每轮
+只**多一条**记录（删+重建合成一条）。若形状没变或历史表暴涨，贴回输出。
+
 对照论文 Fig. 6–8：|S31| 由初始值升至约 −10 dB，定向性升至约 17 dB。
 
 **初始值对不上论文是正常的**：论文初始设计 5 GHz 处 |S31| ≈ −17.9 dB、
@@ -303,140 +129,92 @@ python scripts/run_coupler.py configs/coupler.yaml
 成功的标准是**趋势与终点**：|S31| 应被显著抬高（约 +8 dB 量级）并收敛
 到 −10 dB 附近、定向性同步升到 17 dB 附近。
 
+## 4. 一等 TODO：`velocity_sign` 尚未裁决
+
+形状导数 → 速度的符号（论文式 (24)/(31) 之间有符号矛盾）目前只能靠有限
+差分验证定夺，而 FD 工具已随本地玩具模型一并删除，**CST 端还没有复核过**。
+缺省 `velocity_sign: 1.0`。符号错的表现是 FoM **反向跑**（下降）且不报错，
+所以第一次正式运行必须小步数盯 `history.jsonl`：若 FoM 单调下降，把它改成
+`-1.0` 再跑。定论之后应补一个基于 CST 的 FD 校验脚本（对比单轮形状导数
+与"扰动边界后重算 FoM"的差商）。
+
+## 5. 断点续跑
+
+`run_coupler.py --resume` **尚未实现**。当前的容错方式是：每轮都存盘 +
+`iter_NNN/` 完整落盘，中断后可以
+① `python scripts/cst_update.py configs/coupler.yaml --from-ls`（用最近一轮
+φ 快照手工推一轮），或 ② 直接重跑 `run_coupler.py`（工程还在，会从第 0 轮
+重新迭代，旧的 `iter_NNN/` 被覆盖）。
+
 ## 常见问题
 
-- **COM 连接失败**：先启动 CST GUI 保持运行（脚本会附接运行实例）；
-  或确认许可证正常、CST 可以独立打开。
-- **"`AddToHistory` 每一块都失败 / 返回 False"**：**先确认返回值到底是
-  什么**——晚绑定下 pywin32 拿不到返回值，打印出来是 `None`（脚本先按
-  `[ ?? ]` 标出），**那不是失败**。真正的判据是模型树、History List、
-  以及脚本结尾自动跑的文件层检查（`cst_project.describe`）。
-  若确实是明确的 `False`：False = 条目没建成**或** contents 没执行成功，
-  **每一块都 False（含单行块）说明与命令内容无关**——先跑
-  `python scripts/cst_probe_history.py`（Application 成员签名 + 三个候选
-  对象各打一遍调用形状矩阵 + 读回历史表），**并按矩阵里给的 Brick 名字到
-  模型树里核对**，再在 GUI 里手工画个 Brick 看历史表是否记录，两者输出
-  一起贴回。
-- **"建了工程但模型没进去"**：上一轮实测的两个根因都已固化——① 工程对象
-  必须从**活动工程**取（`app.Active3D()`），`app.NewMWS()` 的返回值上调
-  `AddToHistory` 不生效；CST 2024 里 `GetActiveProject` / `ActiveProject`
-  **不存在**。② 早绑定（`gencache.EnsureDispatch`）才拿得到返回值。
-  两条都在 `cst_api.get_project` / `connect_app` 里，脚本只需看输出。
-- **"宏跑完工程里几何/端口/监视器都好好的，但 History List 是空的"**
-  （→ 存盘重开就是空工程，**这是"打开一片空白"最常见的根因**）：
-  **最快的出路是改用第 1 节的方式 A（COM + `AddToHistory`）**——它不走
-  宏菜单，每块都返回成功/失败与原始错误。如果坚持用宏，两个条件必须
-  同时满足——
-  1. **建模宏必须是结构宏 `.mcs`**。CST 的模型是"历史表重放"出来的：
-     控制宏（`.mcr`）的动作**不写 History List**，会话里看着都建好了，
-     存盘却没有模型。我们早期生成的正是 `.mcr`，实测踩了这个坑；现在
-     建模走 `build_<project>.mcs`，另存走 `save_<project>.mcr`。
-  2. **必须从 CST 主界面的 Macros 下拉菜单运行**。在 VBA 编辑器里点运行
-     图标，即使文件是结构宏也不写 History List。
-  判别：跑完先看 History List，空的就是上面某条没满足。
-- **打开的工程是个空壳（导航树光秃秃、没几何、没端口、没结果）**：三种
-  原因，先分清——
-  1. **历史表是空的**（上一条）：模板存盘时模型就没存下来。跑
-     `python scripts/cst_inspect_template.py` 判别，按上一条重建；
-  2. **模板文件本身就是空的**：跑 `python scripts/cst_inspect_template.py`
-     （不用 CST）。它**两处都查**——`.cst` 当 zip 看（读不动就退回搜原始
-     字节）+ 同名文件夹递归搜 `substrate`/`design_region`/`Port 1` 这些
-     对象名。**两处都搜不到** ⇒ 空工程，与读取 API 无关，按第 2 节重建
-     模板；只有 `.cst` 搜不到而同名文件夹搜得到 ⇒ 是下一条的复制姿势
-     问题，模板本身没毛病；
-  3. **模板是好的，但复制时丢了配套文件夹**：CST 工程是
-     `<名字>.cst` + **同名文件夹**（外部结果目录）**两件东西**，只搬
-     `.cst` 会打开成缺结果的工程。项目的复制路径已统一到
-     `eaopt/solver/cst_project.py::copy_project`（连同名文件夹一起搬，
-     排除 `*.lok`），smoke 与 pipeline 都用它——所以**别再用
-     `shutil.copy` 复制 .cst**。
-- **`zipfile.BadZipFile` / "读不出任何成员"，但工程打开有几何**：检查
-  工具对 `.cst` 的 zip 解析**只是诊断手段，不是判定标准**。实测下来
-  CST 这个版本的 `.cst` 常常既没有本地文件头、也没有可用中央目录
-  （0.04 MB 的私有容器），解析失败**不代表**工程是空的——几何完全可能
-  在**同名文件夹**里。所以 `describe()` 两处都查（`.cst` 成员 + 同名
-  文件夹递归搜对象名），并打印文件头 8 字节（`50 4B 03 04` 才是 zip）。
-  判定以"**两处都搜不到 `substrate`/`design_region` 等对象名**"为准。
-- **"宏建模成功、工程里有几何和端口，但另存出来的文件打开是空的"**：
-  **先看 History List**——空的话就是上面那条（宏类型/运行方式），不是
-  另存的问题。历史表非空却仍存空，才考虑 CST 的"宏建模 + Save As 后
-  components 为空"老案例：在 GUI 里关掉再重新打开那个 `.cst` 确认，
-  确认是空的就用 **File → Save As** 手工另存覆盖。
-  `scripts/cst_inspect_template.py` 能在不打开 CST 的情况下告诉你文件里
-  到底有没有模型。
-- **宏运行到某条命令报错**：把宏日志/报错截图或文本贴回，按 2024
-  版本命令名修正宏生成器。**几何/端口段**的报错会中止宏（这是故意的：
-  模板建不出来就没有意义）；**设置段**（激励/监视器/边界/求解器）
-  已逐块容错，只会出现在结尾报告框里，不会中止。
-- **`(10090) ActiveX Automation error. (.Reset)`**：CST 2024 命令宏
-  上下文里 `Excitation.Reset` 会报这个（实测两次）。**模板宏已不再使用
-  Excitation 对象**，"只激励哪个端口"改用 Solver 的 `.StimulationPort`
-  （见下一条：要带模式）。其余设置类块（频段/监视器/边界/求解器/另存）
-  都用 `On Error Resume Next` 逐个包住 → 失败不中止宏，结尾报告框会
-  点名哪个块失败，照提示在 GUI 手工补（频段：Simulation → Frequency；
-  监视器：Home → Field Monitors，建 `e-field (f=5)` 与 `h-field (f=5)`
-  两个 Volume 监视器；边界：Boundaries；求解器：Time Domain Solver
-  对话框）。把报告框截图发回，用于按版本修正宏。
+- **`import cst.interface` 失败（脚本顶层就退出）**：按提示逐条排查——
+  解释器是不是 3.6–3.11（官方库不支持更新版本）、`pip install ...
+  cst-studio-suite-link` 装过没有、仓库根有没有 `cst/` 文件夹遮蔽官方包。
+  **没有 `--lib-dir`**：顶层 import 发生在命令行解析之前，运行期再指定库
+  路径不可能生效；让解释器找到它只有两条路——CST 安装时写入的 `.pth`
+  （`python -c "import sys; print(sys.path)"` 里应能看到
+  `...\AMD64\python_cst_libraries`），或设 `PYTHONPATH` 指向它。
+- **打开的工程是个空壳（导航树光秃秃、没几何、没端口、没结果）**：先看
+  History List 是不是空的——空的就是建工程时模型没写进去（第 1 节判据 1）；
+  历史表有记录但导航树没东西，则多半是工程只存了 `.cst`、同名文件夹没跟
+  着搬（CST 工程是**两件东西**）。
+- **`zipfile.BadZipFile` / "读不出任何成员"，但工程打开有几何**：这个
+  诊断**不是判定标准**。CST 这个版本的 `.cst` 常常既没有 zip 本地文件头、
+  也没有可用中央目录（0.04 MB 的私有容器），解析失败**不代表**工程是空
+  的——几何完全可能在**同名文件夹**里。
+- **`add_to_history` 抛 `RuntimeError`**：官方库会把 CST 的诊断原样抛出
+  （哪一块、什么错都在里面），把原始报错贴回开发者即可。历史上 CST 2024
+  报过的两类设置错误：`(10090) ActiveX Automation error`（`Excitation`
+  对象——模板已不用它）与 `(10097) wrong number of parameters`（`SaveAs`
+  参数个数——`prj.save()` 已做成两段式：先按文档的
+  `save(path, allow_overwrite=True)`，形参不存在（`TypeError`）再退回
+  `save(path)`）。
 - **`Invalid stimulation port, please specify.`（Solver.Start 时报）**：
   两种原因，报错文本能区分——
   - 带 **`please specify a positive integer value or "All"`** ⇒ 值格式错
     （`"Port 1"` 这种就报这个）；
   - **不带**这半句 ⇒ 格式对（`"1"` 是数字字符串）但**该端口不存在**，
-    先用 smoke 第 3 节的 `Solver.GetNumberOfPorts` 看工程里到底有几个端口。
-  另外实测 `.StimulationPort "1"` 配 `.StimulationMode "All"` 也会炸：
-  **端口与模式必须成对**（`.StimulationPort "1"` + `.StimulationMode "1"`，
-  单模端口）。宏本身不报错、SaveAs 也正常，只在求解时炸。
-  `scripts/cst_smoke.py` 第 3/4 节会逐个候选试到能跑为止。
-- **通用兜底：任何 GUI 设置不知道怎么写成宏**——在 GUI 里手工做那一步
-  （比如 Time Domain Solver 对话框里选端口），然后 **Edit → History
-  List**，选中刚出现的行 → 点 **Macro** 按钮 → 生成对应 VBA → 原样贴回。
-  这比查文档可靠（CST 各版本命令名有出入）。
-- **结果读取 API（CST 2024 实测）**：`ResultTree.GetResultItem(...)` 与
-  `ResultTree.GetAllItems()` **都不存在**（报 `<unknown>.xxx`）。可用的是
-  `GetResultIDsFromTreeItem(path)` → `GetResultFromTreeItem(path, id)` →
-  `GetArray("x"/"yre"/"yim")`；列目录用 `GetFirstChildName(folder)` /
-  `GetNextItemName(item)`（返回空串结束）。这些候选链收敛在
-  `eaopt/solver/cst_api.py`，生产代码与 smoke 共用。
-  **两个容易踩的点**：① `GetResultIDsFromTreeItem` 要的是**条目**路径
-  （`1D Results\S-Parameters\S1,1`），给文件夹通常返回空列表；② 结果是
-  **读不到就报原始错误**，不再静默返回空——"列举为空"与"方法名不对"
-  是两种病，看 smoke 里 `[诊断] ...` 那几行区分。路径不要硬拼：CST 会给
-  结果条目自动加后缀（`e-field (f=5)` → `… [AC]`），用
-  `cst_api.find_item(rt, 文件夹, 监视器名)` 按前缀找真实路径，找不到才
-  退回惯例路径。
-- **不知道某版本有哪些方法可用**：跑 smoke 第 5 节——它直接读 IDispatch
-  的类型库，把 `mws` / `ResultTree` / `ASCIIExport` / `Solver` 的**真实
-  成员名**打出来（比照文档猜名字可靠）。本地也可以这么干：
-  `obj._oleobj_.GetTypeInfo()` → `GetTypeAttr().cFuncs` → `GetFuncDesc(i)`
-  → `GetNames(fd.memid)`。
+    到 Modeling 树里数一下端口。
+  另外 `.StimulationPort "1"` 配 `.StimulationMode "All"` 也会炸：**端口
+  与模式必须成对**（`.StimulationPort "1"` + `.StimulationMode "1"`，单模
+  端口）。建工程时不报错、存盘也正常，只在求解时炸。
+- **端口报错（如 "port is too small"）**：把端口面横向余量调大
+  （`eaopt/solver/cst_model.py` 的 `_ports()` 中 `m`），重新建工程。
+- **结果怎么读（CST 2024 实测）**：走**磁盘**结果文件，不用活工程的
+  ResultTree（`ResultTree.GetResultItem(...)` / `GetAllItems()` 在这个版本
+  根本不存在，报 `<unknown>.xxx`）：
+
+  ```python
+  import cst.results
+  rm = cst.results.ProjectFile(str(工程路径), allow_interactive=True).get_3d()
+  item = rm.get_result_item("1D Results\\S-Parameters\\S3,1")
+  item.get_xdata(), item.get_ydata()
+  ```
+
+  实现在 `eaopt/solver/cst_results.py`（`read_s_params`）。**三个容易踩的
+  点**：① 读的是**磁盘**结果——必须先 `prj.save()`，"求解→存盘→读"这个
+  顺序反了会一直读到上一轮的值且不报错；② 条目路径不要硬拼后缀（CST 会
+  给结果条目自动加 `[AC]` 之类），全路径读不到时按**叶子名**再试一次是
+  唯一的兜底；③ 场条目路径来自 `cst_model.field_result_path()`（创建监视器
+  与导出用同一个名字，有测试锁定）。读不到一律抛错并把**原始错误**写进
+  诊断——绝不返回 0（伴随法对场是线性的，一个 0 会静默污染整个梯度）。
 - **ASCIIExport 的属性集（CST 2024 实测）**：只有 `Reset` / `FileName` /
   `Mode` / `StepX` / `StepY` / `StepZ` / `Execute`——**没有
   XStart/XEnd/YStart/YEnd/ZStart/ZEnd**（报 `<unknown>.XStart`）。所以
   导出范围 = 选中结果的整个包围盒（Volume 监视器 ⇒ 整个计算域），要限制
-  范围只能在解析端裁剪。属性清单是 `vba.ascii_export_params()` 一份事实
-  来源，cst.py 与 smoke 共用。
-- **监视器命名不能随便改**：CST 用监视器名命名结果树条目
-  （`2D/3D Results\E-Field\e-field (f=5) [AC]`），`CstSolver` 导出场时
-  就按这个名字选中条目。名字由 `vba.field_monitor_name()` 统一给出，
-  创建与导出共用（有测试锁定），改宏时保持该名字。
-- **端口相关（CST 2024 实测结论，改宏时勿违反）**：
+  范围只能在解析端裁剪（`cst_results.export_field_cropped`）。属性清单是
+  `cst_model.ascii_export_params()` 一份事实来源。
+- **端口相关（CST 2024 实测结论，改模板时勿违反）**：
   `.Coordinates` 只认 `"Free"/"Full"/"Picks"`（写 `"Ranges"` 报
   "Invalid coordinate type"）；`.Orientation` 只认**边界面名**
   `"xmin"/"xmax"/"ymin"/"ymax"`；微带类端口必须 `"Free"` + 显式
   Xrange/Yrange/Zrange，且端口面下缘要贴合接地板底面。
-- **端口报错（如 "port is too small"）**：把端口面横向余量调大
-  （`eaopt/solver/template_builder.py` 的 `_ports()` 中 `m`），重新生成宏。
-- **`(10097) ActiveX Automation: wrong number of parameters. (SaveAs "...")`**：
-  CST 命令宏里 `SaveAs` 必须带**两个**参数（路径 + 布尔）。宏已改成
-  先试 `SaveAs "<路径>", "False"`、失败再试 `"True"`（两种布尔的含义在
-  不同版本文档里说法不一：覆盖开关 / 另存副本），并把这一步放进容错区。
-  若两种都失败，报告框会点名 `SaveAs`，此时手工 File → Save As 保存即可。
-- **模板存出来的工程内容不全 / 像是空壳**（老版本 CST 有"宏保存的项目丢了
-  端口/监视器"的报告）：跑 smoke 就能发现——模板 .cst 只有 0.04 MB、
-  `Solver.GetNumberOfPorts` 为 0、`ObjectExists("substrate")` 为 False、
-  结果树里没有 `e-field (f=5) [AC]`=监视器没存上。**先看 smoke 第 2 节打印的
-  模板最后修改时间**：若是旧时间戳，说明宏的 `SaveAs` 没能覆盖旧文件（第二
-  个布尔参数在不同版本里可能是"覆盖开关"而不是"另存副本"），此时宏报告框
-  仍会写 "saved OK"——只要在 GUI 里 **File → Save As 手工覆盖**一次（或干脆
-  删掉旧 .cst 再跑宏）即可。若时间戳是新的但内容仍缺，就手工补端口/监视器
-  后另存，并把 GUI 里 Ports 树和 Field Monitors 的截图发回。
+- **任何 GUI 设置不知道怎么写成 VBA**：在 GUI 里手工做那一步（比如 Time
+  Domain Solver 对话框里选端口），然后 **Edit → History List**，选中刚
+  出现的行 → 点 **Macro** 按钮 → 生成对应 VBA → 原样贴回。这比查文档
+  可靠（CST 各版本命令名有出入）。模板里的 VBA 已与录制结果逐行对齐
+  （Port 的 `XrangeAdd/SingleEnded/WaveguideMonitor`、Monitor 的
+  `UseSubvolume`、Solver 的 `CalculateModesOnly`/`SParaSymmetry`/… 与
+  独立的 `Mesh.SetCreator "High Frequency"`，`SteadyStateLimit` 取该版本
+  默认 −40 dB）。

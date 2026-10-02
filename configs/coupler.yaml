@@ -1,64 +1,24 @@
 # ======================================================================
-# 算例：高定向性定向耦合器（复现论文 III-A）
-# 论文参数：5 GHz；Rogers4350B (30 mil, eps_r=3.66, tan_d=0.0037)；
-#           初始 w=1.6 mm, d=12 mm, g=1 mm；金属 35 um；
-#           目标 max |S31|：初始 -17.9 dB -> 优化后约 -10 dB，
-#           定向性 4.6 -> 17.1 dB，插入损耗 < 1 dB，约 20 次迭代。
+# 算例：高定向性定向耦合器（复现论文 III-A）—— 优化配置
 #
-# 几何布局（设计平面 x-y，单位 mm；y 正向朝直通线一侧，按论文 Fig.5）：
-#   直通线（through, 端口1-2, 固定）:  y in [1.0, 2.6]（w=1.6 mm），x 贯通整板
-#   耦合臂（coupled, 端口3-4）:  "⊓" 形——横段 y in [-1.6, 0.0]（w=1.6 mm）,
-#       两端各一条腿 x in [-1.6, 0] / [12, 13.6] 垂直下到板底（腿固定）；
-#       拐弯处为四分之一圆过渡（Fig.5）：等宽条带圆角拐弯，中心线半径 1.2
-#   间隙 g = 1.0 mm（耦合臂上边缘 y=0 到直通线下边缘 y=1.0）
-#   耦合长度 d = 12 mm = 两腿内边缘间距 = 设计区 x 范围 [0, 12]
-#   设计区红框（Fig.5）：x in [0,12]，上边到直通线下缘、下边在臂下缘下方
+# 本文件只描述**优化问题**（设计区、初始金属、采样、优化器……）。
+# CST 侧的一切（模板布局、5 GHz 频点、Rogers4350B 基板、35 um 金属、
+# 4 个端口的端口面、场导出步长、求解设置）在
+# eaopt/solver/cst_setup.py 的 COUPLER —— 改 CST 模型改那里。
+#
+# 论文参数（供对照）：5 GHz；Rogers4350B (30 mil, eps_r=3.66, tan_d=0.0037)；
+#   初始 w=1.6 mm, d=12 mm, g=1 mm；金属 35 um；
+#   目标 max |S31|：初始 -17.9 dB -> 优化后约 -10 dB，
+#   定向性 4.6 -> 17.1 dB，插入损耗 < 1 dB，约 20 次迭代。
 # ======================================================================
 
 name: coupler
 description: 高定向性定向耦合器（论文 III-A）
 
-solver:
-  type: cst            # 本地开发用 mock；服务器上保持 cst
-  port_power_w: 0.5
-  # ---- cst（服务器端，本地 mock 忽略）----
-  # 两个工程由 scripts/cst_init_fwd.py / cst_init_bwd.py 用 CST 官方 Python
-  # API 建立（端口 1 / 端口 3 激励各自写死），之后 scripts/cst_update.py
-  # 每轮只改设计区形状。路径缺省 = <output.dir>/cst/<name>_<tag>.cst，放在
-  # 输出目录里与结果同生共死；**不要**指到仓库根的 cst/（那是宏目录，会被
-  # 当成 Python 命名空间包）。
-  # project_fwd: results/coupler/cst/coupler_fwd.cst
-  # project_bwd: results/coupler/cst/coupler_bwd.cst
-  cst_python_libs: null   # CST 的 AMD64/python_cst_libraries；null = 自动探测
-  attach_gui: false       # true = 只附接运行中的 CST 实例（无 headless 许可时用）
-  export_step_mm: null    # 场导出步长 mm；null = 跟随 sampling.point_spacing_mm
-  solver_timeout_s: null  # 单次求解超时（秒）；null = 不限时
-  # 旧名（COM 时代的人工模板路径）：仅作兼容别名，新配置不要再用
-  # template_fwd: cst/coupler_fwd.cst
-  # template_bwd: cst/coupler_bwd.cst
-
-frequency: 5.0
-
-substrate:
-  height_mm: 0.762      # 30 mil
-  eps_r: 3.66
-  loss_tangent: 0.0037
-
-metal:
-  thickness_mm: 0.035   # 35 um
-  material: pec         # 推导假设 PEC；FD 验证不达标再换 copper
-
-ports:
-  - {id: 1, role: input}
-  - {id: 2, role: through}
-  - {id: 3, role: observation}   # 反向仿真激励端口、FoM 观测端口
-  - {id: 4, role: auxiliary}
-
 objective:
   type: transmission
-  from_port: 1
-  to_port: 3
-  frequency: 5.0
+  from_port: 1     # 正向仿真激励端口（工程 fwd）
+  to_port: 3       # 反向仿真激励端口（工程 bwd）= FoM 观测端口
 
 design_region:
   box:
@@ -66,7 +26,7 @@ design_region:
     y: [-2.5, 3.0]      # 上界 3.0：让直通线完整落在域内（作为固定障碍）；
                         # 下界 -2.5：内圆角最低到 y=-2.0，再留 0.5 mm 余量
                         # 注意：CST 模板的腿内边缘必须与此 x 范围一致，
-                        # 由 tests/test_vba.py::test_config_design_box_agrees_with_template 锁定
+                        # 由 tests/test_cst_model.py::test_config_design_box_agrees_with_template 锁定
   grid_step_mm: 0.05
   field_margin_mm: 1.0
 
@@ -74,8 +34,8 @@ initial_metal:
   # 耦合臂横段 + 两端内侧四分之一圆过渡（论文 Fig.5：等宽条带圆角拐弯，
   # 中心线半径 1.2，内缘 R=0.4、外缘 R=2.0 同心）。切点落在设计区边角：
   # 左 (0,-2.0)->(0.4,-1.6)，右 (12,-2.0)->(11.6,-1.6)。
-  # **必须与 eaopt/solver/template_builder.py::_arm_design_polygon() 一致**
-  # （tests/test_vba.py::test_config_initial_metal_matches_template 锁定）。
+  # **必须与 eaopt/solver/cst_model.py::_arm_design_polygon() 一致**
+  # （tests/test_cst_model.py::test_config_initial_metal_matches_template 锁定）。
   - vertices: [
       [0.0000, -2.0000], [0.0136, -1.8965], [0.0536, -1.8000],
       [0.1172, -1.7172], [0.2000, -1.6536], [0.2965, -1.6136],
@@ -101,7 +61,7 @@ constraints:
     y: [-2.5, 1.0]
 
 sampling:
-  point_spacing_mm: 0.2   # 论文经验值 0.1~0.5
+  point_spacing_mm: 0.2   # 论文经验值 0.1~0.5（同时是场导出步长的缺省值）
   sample_offset_mm: 0.05
   sample_side: outside    # PEC：金属外侧采样
   field_z_mm: 0.0         # 基板顶面（金属底面）平面
@@ -109,7 +69,8 @@ sampling:
 optimizer:
   step_size: 0.02
   velocity_sign: 1.0   # 形状导数→速度的符号开关（±1）；mock 世界已确认 +1，
-                       # CST 端由 FD 验证裁决
+                       # **CST 端尚未做 FD 裁决**：首次正式运行要小步数盯
+                       # FoM 单调性，符号错会让优化反向跑且不报错（见 runbook）
   max_iterations: 30
   fom_tolerance: 1.0e-4
   convergence_window: 5
@@ -120,4 +81,3 @@ level_set:
 
 output:
   dir: results/coupler
-  save_fields: false

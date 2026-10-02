@@ -5,8 +5,9 @@
   steps = max(1, round(step_size / (cfl·dx)))
 折算成 HJ 演化步数（V=±1 处的位移 = cfl·dx·steps ≈ step_size）。
 
-符号开关 velocity_sign（±1）：论文式 (24)/(31) 的符号矛盾由
-有限差分验证裁决，mock 世界已验证 sign=+1 使 FoM 上升。
+符号开关 velocity_sign（±1）：论文式 (24)/(31) 的符号矛盾要靠有限差分
+验证裁决（当前缺省 +1，**CST 端尚未复核**：先小步数跑、盯 FoM 是否单调
+上升，符号错会让它反向跑且不报错；见 docs/server_runbook.md）。
 """
 
 from __future__ import annotations

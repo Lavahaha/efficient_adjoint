@@ -5,7 +5,7 @@
     initial_metal 各多边形（只描红边，不填充）
   - 模板侧（CST 宏会建出来的实体）：基板、直通线、两条腿、4 个端口
 
-模板侧的布局常量目前在 eaopt/solver/template_builder.py（仍与耦合器
+模板侧的布局常量目前在 eaopt/solver/cst_model.py（仍与耦合器
 算例耦合，见该模块头部 TODO）。
 
 用法:
@@ -27,7 +27,7 @@ from matplotlib.patches import Polygon as MplPolygon             # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eaopt.config import CaseConfig                              # noqa: E402
-from eaopt.solver import template_builder as T                   # noqa: E402
+from eaopt.solver import cst_model as T                   # noqa: E402
 
 DEFAULT_CONFIG = Path("configs/coupler.yaml")
 DEFAULT_OUT = Path("docs/layout_reference.png")

@@ -1,11 +1,15 @@
-"""算例配置系统。
+"""算例配置系统（**只描述优化问题**）。
 
-设计原则：一个算例 = 一份 YAML 配置。核心模块只依赖 CaseConfig 数据，
-不含任何算例硬编码；耦合器、功分器等仅表现为 configs/ 下不同的文件。
+分工：本模块管优化侧——设计区、初始/固定金属、采样、约束、优化器、水准集、
+目标函数与输出目录；**CST 侧的一切**（模板布局、频点、基板/金属材料、端口、
+求解设置、场导出步长）在 ``eaopt/solver/cst_setup.py``，不在这里出现。
+两者共享的物理量（频点、εr）以 cst_setup 为单一来源，pipeline 从那取值。
+
+一个算例 = 一份 YAML（优化配置）+ 一个 ``CstSetup``（CST 配置）。
 
 坐标约定（全局）：
   - 设计平面为 x-y 平面，单位 mm；
-  - 金属层沿 z 向挤出，厚度由 MetalSpec.thickness_mm 给定；
+  - 金属层沿 z 向挤出（厚度在 cst_setup）；
   - 水准集定义域为设计区域包围盒 DesignRegionSpec.box。
 """
 
@@ -21,9 +25,9 @@ from typing import Any, Optional, get_args, get_origin
 import yaml
 
 __all__ = [
-    "BoxSpec", "PolygonSpec", "PortSpec", "SubstrateSpec", "MetalSpec",
-    "ObjectiveSpec", "DesignRegionSpec", "SamplingSpec", "OptimizerSpec",
-    "LevelSetSpec", "ConstraintSpec", "SolverSpec", "OutputSpec", "CaseConfig",
+    "BoxSpec", "PolygonSpec", "ObjectiveSpec", "DesignRegionSpec",
+    "SamplingSpec", "OptimizerSpec", "LevelSetSpec", "ConstraintSpec",
+    "OutputSpec", "CaseConfig",
 ]
 
 
@@ -59,32 +63,12 @@ class PolygonSpec:
 
 
 @dataclass
-class PortSpec:
-    id: int
-    role: str  # input / through / observation / auxiliary
-
-
-@dataclass
-class SubstrateSpec:
-    height_mm: float
-    eps_r: float
-    loss_tangent: float = 0.0
-
-
-@dataclass
-class MetalSpec:
-    thickness_mm: float
-    material: str  # "pec" | "copper"
-    # copper 时的电导率（S/m），论文原型为 5.8e7
-    conductivity_s_per_m: Optional[float] = None
-
-
-@dataclass
 class ObjectiveSpec:
+    """优化目标：最大化 |S_{to,from}|（频点与端口表在 cst_setup）。"""
+
     type: str = "transmission"  # 目前实现: maximize |S_ij|
     from_port: int = 1
     to_port: int = 3
-    frequency: float = 5.0
 
 
 @dataclass
@@ -126,33 +110,8 @@ class ConstraintSpec:
 
 
 @dataclass
-class SolverSpec:
-    type: str = "mock"  # "mock" | "cst"
-    # --- cst 相关（服务器端使用，本地 mock 忽略） ---
-    # 两个 CST 工程文件的路径。**缺省**（推荐）= <output.dir>/cst/<name>_fwd.cst
-    # 与 _bwd.cst —— 放在输出目录里，与结果同生共死，也不会污染仓库。
-    project_fwd: Optional[str] = None   # 正向工程（输入端口激励）
-    project_bwd: Optional[str] = None   # 反向工程（观测端口激励）
-    # 旧名（COM 时代把这两个路径叫"模板"，由人工建好）：仅作兼容别名，
-    # 显式给了 project_* 就以 project_* 为准。新配置不要再用。
-    template_fwd: Optional[str] = None
-    template_bwd: Optional[str] = None
-    # CST 的 Python 库目录（.../AMD64/python_cst_libraries）；None = 自动探测
-    cst_python_libs: Optional[str] = None
-    # True = 只附接运行中的 CST 实例（服务器无 headless 许可、或想看 GUI 时用）
-    attach_gui: bool = False
-    # 场导出的采样步长（mm）；None = 取 sampling.point_spacing_mm（0.2）。
-    # **不要**用 grid_step_mm（0.05）：导出点数按步长的立方增长。
-    export_step_mm: Optional[float] = None
-    # 单次求解的超时（秒）；None = 不限时
-    solver_timeout_s: Optional[float] = None
-    port_power_w: float = 0.5  # 端口功率（CST 默认 0.5 W）
-
-
-@dataclass
 class OutputSpec:
     dir: str = "results/default"  # 输出目录（迭代日志、形状快照、图）
-    save_fields: bool = False
 
 
 @dataclass
@@ -161,11 +120,6 @@ class CaseConfig:
 
     name: str = ""
     description: str = ""
-    solver: SolverSpec = field(default_factory=SolverSpec)
-    frequency: float = 5.0  # GHz，优化频点
-    substrate: Optional[SubstrateSpec] = None
-    metal: Optional[MetalSpec] = None
-    ports: list[PortSpec] = field(default_factory=list)
     objective: ObjectiveSpec = field(default_factory=ObjectiveSpec)
     design_region: Optional[DesignRegionSpec] = None
     # 设计区内的初始金属多边形（金属在 φ<0 侧）
@@ -195,29 +149,13 @@ class CaseConfig:
     def validate(self) -> None:
         if not self.name:
             raise ValueError("缺少算例名称 name")
-        if self.frequency <= 0:
-            raise ValueError("frequency 必须为正")
-        if self.substrate is None:
-            raise ValueError("缺少 substrate 配置")
-        if self.metal is None:
-            raise ValueError("缺少 metal 配置")
-        if self.metal.material not in ("pec", "copper"):
-            raise ValueError(f"未知金属材料 {self.metal.material}")
         if self.design_region is None:
             raise ValueError("缺少 design_region 配置")
         self.design_region.box.validate("design_region.box")
         if self.design_region.grid_step_mm <= 0:
             raise ValueError("design_region.grid_step_mm 必须为正")
-        ids = [p.id for p in self.ports]
-        if len(set(ids)) != len(ids):
-            raise ValueError("端口 id 重复")
-        roles = {p.role for p in self.ports}
-        if "input" not in roles or "observation" not in roles:
-            raise ValueError("至少需要一个 input 端口和一个 observation 端口")
-        if self.objective.to_port not in ids:
-            raise ValueError(f"objective.to_port={self.objective.to_port} 不是已定义的端口")
-        if abs(self.objective.frequency - self.frequency) > 1e-12:
-            raise ValueError("objective.frequency 与顶层 frequency 不一致")
+        # 端口表在 CST 模板里（cst_setup.ports）；objective 的端口合法性由
+        # CstSetup.validate_objective 在装配点校验（这里不知道模板）。
         for i, poly in enumerate(self.initial_metal):
             poly.validate(f"initial_metal[{i}]")
         for i, poly in enumerate(self.fixed_region):
@@ -238,63 +176,14 @@ class CaseConfig:
             raise ValueError("optimizer.max_iterations 必须为正")
         if self.level_set.reinit_every < 1:
             raise ValueError("level_set.reinit_every 至少为 1")
-        if self.solver.type not in ("mock", "cst"):
-            raise ValueError(f"未知求解器类型 {self.solver.type}")
-        if self.solver.export_step_mm is not None and self.solver.export_step_mm <= 0:
-            raise ValueError("solver.export_step_mm 必须为正（mm）")
-        if self.solver.solver_timeout_s is not None and self.solver.solver_timeout_s <= 0:
-            raise ValueError("solver.solver_timeout_s 必须为正（秒）")
-
-    def project_path(self, tag: str) -> Path:
-        """CST 工程文件的路径（tag ∈ {"fwd", "bwd"}）。
-
-        解析顺序：``solver.project_<tag>`` → 兼容别名 ``solver.template_<tag>``
-        → 缺省 ``<output.dir>/cst/<name>_<tag>.cst``。
-
-        缺省值刻意放在输出目录里：工程是**中间产物**，与结果同生共死；
-        放在仓库里既会污染工作区，也会和仓库根的 ``cst/`` 宏目录撞名
-        （那个目录会被当成 Python 命名空间包，见 cst_session 模块头）。
-        """
-        if tag not in ("fwd", "bwd"):
-            raise ValueError(f"tag 只能是 'fwd'/'bwd'，收到 {tag!r}")
-        s = self.solver
-        explicit = (s.project_fwd if tag == "fwd" else s.project_bwd) or \
-                   (s.template_fwd if tag == "fwd" else s.template_bwd)
-        if explicit:
-            return Path(explicit)
-        return Path(self.output.dir) / "cst" / f"{self.name}_{tag}.cst"
-
-    def stimulus_port(self, tag: str) -> int:
-        """该工程只激励哪个端口：fwd = objective.from_port，bwd = to_port。
-
-        激励"烤"在工程里（建工程时写死 StimulationPort），之后 pipeline
-        永不触碰激励 API——多激励叠加的场会让伴随梯度静默失效，
-        而 S 参数照样出数，光看 S 参数发现不了。
-        """
-        if tag == "fwd":
-            return int(self.objective.from_port)
-        if tag == "bwd":
-            return int(self.objective.to_port)
-        raise ValueError(f"tag 只能是 'fwd'/'bwd'，收到 {tag!r}")
-
-    def export_step_mm(self) -> float:
-        """场导出步长（mm）：缺省跟随边界采样点距，不用网格步长。"""
-        v = self.solver.export_step_mm
-        return float(v) if v else float(self.sampling.point_spacing_mm)
 
     def summary(self) -> str:
-        """生成便于日志/终端显示的配置摘要。"""
+        """优化侧配置摘要（CST 侧常量见 ``cst_setup.CstSetup``）。"""
         dr = self.design_region.box
         lines = [
             f"算例        : {self.name} — {self.description}",
-            f"频率        : {self.frequency} GHz（优化频点）",
-            f"基板        : h={self.substrate.height_mm} mm, "
-            f"eps_r={self.substrate.eps_r}, tan_d={self.substrate.loss_tangent}",
-            f"金属        : {self.metal.thickness_mm} mm, {self.metal.material}",
             f"设计区域    : x∈{dr.x} y∈{dr.y} mm, 网格步长 {self.design_region.grid_step_mm} mm",
-            f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}| "
-            f"@ {self.objective.frequency} GHz",
-            f"端口角色    : {[(p.id, p.role) for p in self.ports]}",
+            f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}|",
             f"边界采样    : 点距 {self.sampling.point_spacing_mm} mm, "
             f"偏移 {self.sampling.sample_offset_mm} mm ({self.sampling.sample_side}), "
             f"z={self.sampling.field_z_mm} mm",
@@ -302,7 +191,6 @@ class CaseConfig:
             + (f", 活动范围 {self.constraints.allowed_region}" if self.constraints.allowed_region else ""),
             f"优化        : 固定步长 {self.optimizer.step_size}, "
             f"最大 {self.optimizer.max_iterations} 次迭代",
-            f"求解器      : {self.solver.type}",
             f"输出目录    : {self.output.dir}",
         ]
         return "\n".join(lines)
@@ -325,6 +213,14 @@ def _build(tp: Any, value: Any) -> Any:
         inner = next(a for a in get_args(tp) if a is not type(None))
         return _build(inner, value)
     if dataclasses.is_dataclass(tp) and isinstance(value, dict):
+        known = {f.name for f in dataclasses.fields(tp)}
+        unknown = sorted(set(value) - known)
+        if unknown:
+            # 拒绝而不是忽略：旧 YAML（solver/substrate/metal/ports 已被删）
+            # 若被静默丢弃，跑出来的就是"看着对、其实是默认值"的结果。
+            raise ValueError(
+                f"{tp.__name__} 不认识这些键：{unknown}；"
+                f"合法键：{sorted(known)}")
         kwargs = {}
         for f in dataclasses.fields(tp):
             if f.name in value:

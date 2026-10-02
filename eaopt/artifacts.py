@@ -134,8 +134,9 @@ def save_shape(outdir, n: int, polys, extra: dict | None = None) -> Path:
 def load_shape(path_or_dir) -> list[np.ndarray]:
     """读形状：给 ``shape.json`` 本身或它所在的目录（``iter_NNN/``）都行。
 
-    容忍两种写法：本模块写出的 ``{"polygons": [...]}`` 字典，以及裸的
-    ``[[[x,y],...], ...]`` 列表（手工准备形状文件时最省事）。
+    容忍两种写法：本模块写出的 ``{"polygons": [...]}`` 字典，以及裸列表
+    （手工准备形状文件时最省事）——``[[[x,y],...], ...]`` 是多边形表，
+    ``[[x,y], ...]`` 是单个多边形（手写一个矩形时很自然）。
     """
     path = Path(path_or_dir)
     if path.is_dir():
@@ -149,6 +150,12 @@ def load_shape(path_or_dir) -> list[np.ndarray]:
             raise ValueError(f"{path} 里没有 polygons 字段（键：{list(data)}）")
     else:
         polys = data
+    try:                                    # 裸列表：按第一个元素的维度认写法
+        single = bool(polys) and np.ndim(polys[0]) == 1
+    except (ValueError, TypeError, KeyError):   # 参差不齐/不是列表：交给校验
+        single = False
+    if single:
+        polys = [polys]
     out = [np.asarray(p, dtype=float) for p in polys]
     for i, p in enumerate(out):
         if p.ndim != 2 or p.shape[1] != 2:

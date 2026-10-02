@@ -15,7 +15,7 @@
 每轮迭代（论文 Fig. 4）：
 
 ```
-正向仿真（input 端口激励）   → E, H, S 参数, P_in
+正向仿真（input 端口激励）      → E, H, S 参数, P_in
 后向仿真（observation 端口激励）→ E_back, H_back
 形状导数 δp_i = Re[−2jω/P_in·(ε E_⊥·E_⊥^back + μ0 H_∥·H_∥^back)]   ← 式(25)
 梯度下降（固定步长 + 符号开关）→ 水准集 HJ 演化 → 最小间距投影 → 重建几何
@@ -28,155 +28,125 @@ Hamilton–Jacobi 方程 ∂φ/∂t + V|∇φ| = 0（Godunov 一阶上风格式�
 
 ```
 eaopt/
-├── config.py            # 算例配置系统（一个算例 = 一份 YAML）
+├── config.py            # 算例配置（一个算例 = 一份 YAML，**只描述优化问题**）
+├── pipeline.py          # 优化主循环（Fig. 4）+ 日志/快照/φ 快照
+├── artifacts.py         # iter_NNN/ 产物读写（shape / s_params / meta / ls_phi）
 ├── geometry/
 │   ├── levelset.py      # 水准集：SDF 初始化、HJ 演化、重初始化、速度延拓、法向
 │   └── contour.py       # 零等值面提取（marching squares）与 B 样条平滑重采样
 ├── adjoint/
 │   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + 法/切分解
 │   ├── derivative.py    # 形状导数（论文式 25）
-│   ├── sampling.py      # 边界采样（排除固定金属）与导数栅格化
-│   └── fd_check.py      # 有限差分验证（符号裁决 + 数值一致性）
-├── solver/
-│   ├── base.py          # Solution / SolverInterface / make_solver 工厂
-│   ├── mock.py          # MockSolver：2D 拉普拉斯静电场玩具模型（本地验证用）
-│   ├── cst.py           # CstSolver：CST 2024 双模板 + COM 场导出
-│   ├── cst_api.py       # COM 结果读取候选链（版本 API 名称差异收敛在此）
-│   ├── vba.py           # CST VBA 命令串（建模/端口/监视器/求解器/导出）
-│   ├── template_builder.py  # 双模板宏生成（建模 .mcs + 另存 .mcr）
-│   └── ascii_fields.py  # CST ASCII 场文件解析
+│   └── sampling.py      # 边界采样（排除固定金属）与导数栅格化
 ├── optimize/
 │   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）
 │   ├── step.py          # 固定步长 + 归一化 + active 掩膜
 │   └── constraints.py   # 速度掩膜（固定区边距/允许区/边缘 taper）、最小间距投影
-└── pipeline.py          # 优化主循环（Fig. 4）+ 日志/快照
+├── solver/              # 6 个文件；**不再封装官方库**
+│   ├── base.py          # Solution / SolverInterface（pipeline 只认这个契约）
+│   ├── cst_setup.py     # **CST 侧单一事实来源**：布局/频点/材料/端口/工程路径
+│   ├── cst_model.py     # 模板命令块（VBA 文本 + 几何常量；纯文本，不 import cst）
+│   ├── cst_results.py   # S 参数（cst.results）+ 场导出/解析/裁剪（顶层 import）
+│   └── cst.py           # CstSolver：pipeline ↔ 两个工程的适配器（顶层 import）
 
-configs/coupler.yaml     # 算例配置（论文 III-A 耦合器；设计区尺寸按 Fig.5 定稿）
-scripts/run_coupler.py   # 运行入口
-scripts/fd_check.py      # FD 验证命令行工具
-scripts/cst_build_template.py  # 建模板工程（COM + AddToHistory，推荐路径；存完自动做文件层检查）
-scripts/cst_probe_history.py   # 诊断 AddToHistory 不生效（成员签名 + 三种工程对象的调用形状矩阵）
-scripts/build_cst_template.py  # 生成模板宏 .mcs/.mcr（备用路径）
-scripts/cst_inspect_template.py # 模板文件检查（空工程判定；不用 CST）
-scripts/cst_smoke.py     # CST 端 smoke（候选 API 收敛）
+configs/coupler.yaml     # 算例配置（论文 III-A 耦合器）
+scripts/cst_init_fwd.py  # 建前向工程（端口 1 激励）+ 首次仿真 → iter_000/
+scripts/cst_init_bwd.py  # 建反向工程（端口 3 激励）+ 首次仿真
+scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 iter_NNN/
+scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
-tests/                   # 137 项测试（水准集数值、导数、mock、FD、端到端、VBA 宏、CST API）
+docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
+tests/                   # 155 项测试（不装 CST 也全绿：含假 CST 库的端到端）
 ```
+
+三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层
+`import cst.interface`，自己连实例/开工程/写历史表/求解/取数，中间没有封装层
+（流程代码重复几份是这条路的代价）。`cst_init_fwd.py` 与 `cst_init_bwd.py`
+逐字相同，只有文件顶部 `TAG` 常量区不同（`tests/test_cst_contract.py` 锁定，
+防两份悄悄漂移）。
 
 ## 安装与使用
 
 ```bash
 pip install -e .            # 本地（numpy/scipy/pyyaml/matplotlib）
 pip install -e .[dev]       # + pytest
-pip install -e .[server]    # 服务器端 + pywin32/h5py（CST COM）
 
-python scripts/run_coupler.py          # 跑优化（solver.type=mock 时本地）
-python scripts/fd_check.py             # FD 验证（符号裁决）
+# CST 官方 Python 库（cst.interface / cst.results）不在 PyPI 上，由 CST
+# 安装包自带；服务器上装（路径按实际安装目录）：
+pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
+    cst-studio-suite-link
+
+python scripts/run_coupler.py          # 跑优化（缺工程会自动初始化，约 20 轮）
 python scripts/plot_layout.py          # 渲染布局参考图（核对 CST 模型用）
-python -m pytest tests/ -v             # 测试
+python -m pytest tests/ -q             # 测试（不需要 CST）
 ```
 
-## 配置要点（configs/coupler.yaml）
+## CST 侧参数在哪（`eaopt/solver/cst_setup.py`）
 
-- 坐标约定：设计平面 x-y（mm），金属沿 z 挤出（35 µm）；φ<0 为金属
-- 边界条件（论文）：x、y、z-min 磁边界，z-max 电边界；频点 5 GHz
-- `sampling.sample_offset_mm` 必须 **> 半网格步长**（插值窗口跨金属边界会压掉一半场）
-- `optimizer.velocity_sign`：导数→速度的符号开关；mock 世界 FD 已验证 +1 正确，
-  CST 端待服务器 FD 验证裁决
-- 约束：`min_gap_mm`（硬投影）、`allowed_region`（速度掩膜）、固定区自动外扩
-  `max(min_gap, 2dx)` 边距防速度泄漏
+YAML 只管优化问题（设计区、初始/固定金属、采样、约束、优化器、水准集、
+目标、输出目录）——CST 侧要用的信息**不在 YAML 里**，而在
+`eaopt/solver/cst_setup.py` 的 `COUPLER = CstSetup(...)`：
 
-## 已验证的性质
+- 物理/材料（论文 III-A）：频点 5 GHz（= 监视器 = 扫频 = S 参数读取）、
+  εr = 3.66、tanδ = 0.0037、基板 0.762 mm、金属 35 µm PEC、端口表 (1,2,3,4)；
+- 会话/运行：`attach_gui`、`port_power_w`、`export_step_mm`（缺省跟随
+  `sampling.point_spacing_mm`）、`save_fields`、`project_dir`（缺省
+  `<output.dir>/cst`）；
+- 规则：`project_path()`、`stimulus()`（fwd=from_port / bwd=to_port）、
+  `validate_objective()`。
 
-- **FD 一致性（mock，解析级）**：式(25) 整条链退化为 Hadamard 电容形状导数，
-  实测/预测比值与理论值 0.3·P_in/(2ω·C0) 偏差 14%（`scripts/fd_check.py`）
+模板命令块（`cst_model.py`）与 pipeline 的 ω、εr 都从这里取值：
+**改 `frequency_ghz` 时监视器频点、扫频带、S 参数读取与形状导数同时跟着变**。
+算例数据（几何布局说明）也写在那个模块的 docstring 里。
+
+## 关键约定（错了不会报错，只出错数据）
+
+- **激励"烤死"在模板里**：fwd 工程激励端口 1、bwd 激励端口 3，建工程时
+  写死（`Solver.StimulationPort` + `StimulationMode` 成对设置），pipeline
+  全程不触碰激励 API——多激励叠加的场会让伴随梯度静默失效而 S 参数照常出数；
+- **建模必走历史表**：所有几何改动都经 `model3d.add_to_history(标题, 命令)`
+  （每轮每工程一条记录：删 `design_region` + 重建）。直接调对象模型只改当前
+  会话，重放历史时旧形状会复活；
+- **先存盘再读结果**：`cst.results` 读的是磁盘结果文件，顺序反了会一直读到
+  上一轮的值；
+- **读不到就抛**：S 参数/场读失败一律报错，绝不把 0 塞进伴随法；
+- **场要裁到设计区** ± `design_region.field_margin_mm`（监视器导出的是整个
+  计算域）；
+- **`shape.json` = 真正施加的形状**：两个工程都改成功后才写、每次覆盖写，
+  它是事后复盘"第 N 轮模型长什么样"的唯一依据；
+- **`iter_NNN/` 只有一个写入口**：脚本链与 pipeline 都走 `eaopt.artifacts`
+  （脚本在轮次已知时调它，pipeline 经 `CstSolver.begin_iteration(n)` 告诉
+  求解器本轮号）。
+
+判定模板是否建对：**History List 非空** → 关掉工程再重开 → 几何与 4 个
+端口还在。几何布局按论文 Fig. 5（直通线横贯整板 + "⊓"形耦合臂、设计区
+两端为四分之一圆过渡、腿下到板底、端口 1/2 在线两端 / 3/4 在腿底；参考图
+见 `docs/layout_reference.png`）。逐步操作、判据与常见故障见
+`docs/server_runbook.md`。
+
+## 已验证的性质（本地，不装 CST）
+
+- **端到端**：用假 CST 库（照官方 API 形状搭）跑通"初始化 → 形状更新 →
+  求解 → 读 S 参数/导场裁剪"整条链，以及一轮完整 pipeline（`iter_000/` 落下
+  `shape.json`、`s_params_{fwd,bwd}.json`、`meta.json`、`ls_phi.npz`）；
 - 水准集：SDF 初始化误差 <1e-10；均匀速度平移精确；Godunov 上风重初始化稳定
-  （中心差分方案会振荡，勿用）；凸角附近收敛慢是 PDE 法固有特性
-- 符号：mock 世界 velocity_sign=+1（V>0 金属扩张）使 FoM 上升
-
-## MockSolver 的已知局限（不影响 CST 端）
-
-- 电容-几何曲线有栅格化锯齿（固定网格 + 单元翻转），FoM 非严格单调、
-  可能过早触发收敛窗口——真实求解器的平滑 S 参数无此问题
-- 量化台阶使 FD 验证需要 h_eff 校准（脚本自动完成）
-
-## CST 服务器流程（第 6–7 步，CST 2024）
-
-代码已就绪（`eaopt/solver/cst.py` + `eaopt/solver/cst_api.py` +
-`eaopt/solver/vba.py` + `eaopt/solver/ascii_fields.py` +
-`eaopt/solver/template_builder.py`，137 项本地测试全过）；服务器实测步骤：
-
-1. 生成模板工程（**推荐方式 A**）：CST GUI 启动着，直接跑
-   `python scripts/cst_build_template.py configs/coupler.yaml` —— 它逐块
-   调用 CST 的 `AddToHistory(标题, 命令文本)`，**既执行命令又写进
-   History List**，每块打印成功/失败与原始错误（不再像宏那样只弹一个
-   "遇到不适当的参数"对话框）。命令文本与宏路径共用
-   `template_builder.template_blocks`（单一事实来源）。
-   备用方式 B：`python scripts/build_cst_template.py cst/` 生成宏
-   （`build_coupler_{fwd,bwd}.mcs` = 建模**结构宏**、
-   `save_coupler_{fwd,bwd}.mcr` = 另存**控制宏**、诊断宏
-   `polygon_test.mcs`），在 GUI 里从 **Macros 下拉菜单**运行——**建模
-   必须是结构宏**：CST 的模型是"历史表重放"出来的，控制宏的动作不进
-   History List，会话里几何/端口都正常、存盘重开却是空工程（实测踩过，
-   "打开一片空白"的根因）。另存是工程级指令、只在控制宏里合法，故拆成
-   两个文件；
-2. 验证模板（**判定成功的唯一标准**）：**History List 非空** → 关掉工程
-   再重新打开那个 `.cst`，几何与 4 个端口还在 → `cst_inspect_template.py`
-   → `cst_smoke.py`。
-   （方式 B 的 GUI 操作：**File → New**（模板 `<None>`）→
-   **从主界面 Macros 下拉菜单**
-   运行 `build_coupler_fwd.mcs`（**不要**在 VBA 编辑器里点运行图标——
-   那样即使是结构宏也不写历史表）→ 结尾弹报告框 →
-   **先确认 History List 非空** → 运行 `save_coupler_fwd.mcr`（或手工
-   File → Save As）→ `coupler_fwd.cst`（端口 1 激励）；
-   **再 File → New** → 同样跑 bwd 那两个宏 → `coupler_bwd.cst`
-   （端口 3 激励）。几何布局按论文 Fig.5（直通线横贯
-   整板 + "⊓"形耦合臂、**设计区两端为四分之一圆过渡**、腿下到板底、
-   端口 1/2 在线两端 / 3/4 在腿底；参考图见 `docs/layout_reference.png`）；
-   检查 4 个波导端口（`.Coordinates "Free"` + 边界面名 `xmin/xmax/ymin`，
-   端口面下缘贴合接地板、上缘到空气盒顶）、两个 Volume 监视器
-   `e-field (f=5)` / `h-field (f=5)`（名字 = 结果树条目名，导出场按它选中，
-   见 `vba.field_monitor_name`）、边界（x/y/zmin 磁、zmax 电）、
-   **激励只勾选本模板的端口**（fwd→端口 1，bwd→端口 3；用
-   `Solver.StimulationPort` + `Solver.StimulationMode` **成对**设置——
-   实测端口配 `"All"` 会让求解直接报 "Invalid stimulation port"）
-   + 频段 0–10 GHz。
-   **设置类块（激励/频段/监视器/边界/求解器/另存）逐块容错**：CST 2024
-   实测设置类命令报过 "(10090) ActiveX Automation error" 与
-   "(10097) wrong number of parameters"，未加保护会中止整个宏；现由宏
-   结尾的报告框列出失败块，照提示在 GUI 手工设置即可）；
-   **模板里的 VBA 与 CST 自己的录制宏逐行对齐**（Port 补
-   `XrangeAdd/SingleEnded/WaveguideMonitor`，Monitor 补 `UseSubvolume`，
-   Solver 补 `CalculateModesOnly`/`SParaSymmetry`/… 并有独立的
-   `Mesh.SetCreator "High Frequency"`，`SteadyStateLimit` 取该版本默认
-   -40 dB）。
-   **取工程对象必须走活动工程**（`cst_api.get_project` → `app.Active3D()`）
-   ——`app.NewMWS()` 的返回值上调 `AddToHistory` 不生效；CST 2024 里
-   `GetActiveProject`/`ActiveProject` 都不存在。**返回值不能当判据**：
-   晚绑定下 `AddToHistory` 返回 `None`（脚本标 `[ ?? ]`），所以存完立刻
-   自动做一次**文件层检查**（`cst_project.describe`，不用 CST）。
-   建模板若每一块都失败，先跑 `scripts/cst_probe_history.py`（Application
-   成员签名 + 三个候选对象各打一遍调用形状矩阵，矩阵里建的是**看得见的**
-   Brick，跑完到模型树里核对），或换
-   `scripts/cst_build_template.py ... --attach`（在 GUI 里 File → New
-   建的空工程上建）。
-3. 把两个模板路径填入 `configs/coupler.yaml` 的 `solver` 段，
-   `solver.type: cst`；
-4. 先跑 smoke：`python scripts/cst_smoke.py`——输出 COM 连接、求解、
-   S 参数读取候选方法、结果树条目、场导出文件头（用于核对
-   `ascii_fields` 解析器与 CST 2024 真实格式），把完整输出贴回给开发者
-   收敛候选 API；
-5. `python scripts/fd_check.py`（CST 上 FD 验证，重新裁决符号）→
-   `python scripts/run_coupler.py` 正式优化（预期约 20 次迭代，
-   参考论文 55 min）。
+  （中心差分方案会振荡，勿用）；凸角附近收敛慢是 PDE 法固有特性；
+- 配置系统：未知键（旧 YAML 的 `solver`/`substrate`/`ports` 等）**报错而非
+  静默丢弃**——迁移期的护栏；
+- 仓库合同（`tests/test_cst_contract.py`）：仓库根没有遮蔽官方库的 `cst/`；
+  `cst_setup`/`cst_model`/`pipeline` 等模块导入后 `sys.modules` 里没有
+  `cst`（没装 CST 的机器也能用它们）；两个 init 脚本除 `TAG` 常量区外逐字节
+  相同。
 
 ## 路线图
 
 - [x] 第 1 步：项目骨架 + 配置系统
 - [x] 第 2 步：几何核心（水准集 + 轮廓）
 - [x] 第 3 步：场与导数（FieldGrid + 式 25）
-- [x] 第 4 步：求解器抽象 + MockSolver + 优化闭环
-- [x] 第 5 步：本地端到端验证 + FD 检查工具
-- [x] 第 6 步：CST 接口代码（双模板设计 + VBA 生成 + ASCII 场解析，
-      137 测试全过；服务器实测进行中：模板改走 COM + AddToHistory 建）
-- [ ] 第 7 步：服务器 smoke → FD 验证 → 耦合器正式复现（对齐论文 Fig. 6–8）
+- [x] 第 4 步：优化闭环
+- [x] 第 5 步：CST 交互（官方 Python API：两个 init / 形状更新 /
+      CstSolver 适配器；CST 侧常量收敛到 `cst_setup`）
+- [ ] 第 6 步：服务器验收（init → run_coupler → 按 runbook 清单核对，
+      对齐论文 Fig. 6–8）
+- [ ] 待办：`optimizer.velocity_sign` 未经 CST 有限差分裁决（见 runbook
+      第 1 节）；`run_coupler.py --resume`（断点续跑）尚未实现。

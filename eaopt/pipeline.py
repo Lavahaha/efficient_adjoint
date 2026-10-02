@@ -6,8 +6,9 @@
   + 符号开关）→ 栅格化 + 速度延拓 → 掩膜 → HJ 演化
   → 最小间距投影 → 周期性重初始化 → 日志/快照。
 
-输出（cfg.output.dir）：history.jsonl（逐迭代记录）、
-iter_NNN.png（形状快照）、fom.png（收敛曲线）。
+输出（cfg.output.dir）：history.jsonl（逐迭代记录）、iter_NNN.png（形状快照）、
+fom.png（收敛曲线），以及 iter_NNN/ls_phi.npz（本轮 φ 快照，续跑用）；
+iter_NNN/ 里的仿真产物（shape.json、s_params_*.json、meta.json）由求解器写。
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
+from eaopt import artifacts
 from eaopt.adjoint.derivative import shape_derivative
 from eaopt.adjoint.sampling import (is_fixed_contour, make_fixed_sdf,
                                     sample_boundary, scatter_to_grid)
@@ -28,6 +30,7 @@ from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import apply_min_gap, build_velocity_mask, interp_mask_at
 from eaopt.optimize.objective import make_fom
 from eaopt.optimize.step import fixed_step_velocity
+from eaopt.solver.cst_setup import COUPLER, CstSetup
 
 __all__ = ["make_level_set", "movable_contours", "History", "OptimizerPipeline"]
 
@@ -68,13 +71,17 @@ class History:
 
 
 class OptimizerPipeline:
-    def __init__(self, cfg: CaseConfig, solver, ls: LevelSet2D | None = None):
+    def __init__(self, cfg: CaseConfig, solver, ls: LevelSet2D | None = None,
+                 setup: CstSetup = COUPLER):
         self.cfg = cfg
         self.solver = solver
         self.ls = ls if ls is not None else make_level_set(cfg)
+        self.setup = setup
         self.fom = make_fom(cfg)
-        self.omega = 2.0 * np.pi * cfg.frequency * 1e9
-        self.eps_r = cfg.substrate.eps_r
+        # ω 与 εr 取自 CST 侧单一事实来源（模板里的频点/基板是同一份数据，
+        # 改一处两边同时变；伴随公式与仿真模型不会悄悄脱节）。
+        self.omega = 2.0 * np.pi * setup.frequency_ghz * 1e9
+        self.eps_r = setup.eps_r
         self.history = History()
         self.outdir = Path(cfg.output.dir)
         self.outdir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +100,10 @@ class OptimizerPipeline:
                 fixed = [np.asarray(p.vertices, dtype=float) for p in cfg.fixed_region]
 
                 self.solver.build_model(movable, fixed)
+                # 存产生本轮形状的 φ_it（续跑/`cst_update --from-ls` 的唯一
+                # 事实来源）。不能放在 ls.update 之后：那记录的是尚未仿真的
+                # φ_{it+1}，重算的轮廓会和本轮 shape.json 对不上。
+                artifacts.save_ls_phi(self.outdir, it, self.ls)
                 sol_f = self.solver.solve_forward()
                 fom = self.fom(sol_f)
                 rec = {

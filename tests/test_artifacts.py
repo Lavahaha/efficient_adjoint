@@ -130,6 +130,14 @@ def test_load_shape_accepts_a_bare_polygon_list(tmp_path):
     assert np.allclose(A.load_shape(p)[0], [[0, 0], [1, 0], [1, 1]])
 
 
+def test_load_shape_accepts_a_single_bare_polygon(tmp_path):
+    """只写一个多边形时不必再套一层（手写形状文件最常见的写法）。"""
+    p = tmp_path / "one.json"
+    p.write_text(json.dumps([[0, 0], [1, 0], [1, 1]]), encoding="utf-8")
+    (poly,) = A.load_shape(p)
+    assert np.allclose(poly, [[0, 0], [1, 0], [1, 1]])
+
+
 def test_load_shape_rejects_a_bad_shape(tmp_path):
     p = tmp_path / "bad.json"
     p.write_text(json.dumps([[[0, 0, 0], [1, 1, 1]]]), encoding="utf-8")  # 3 列

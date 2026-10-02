@@ -14,5 +14,7 @@ results/
 _img_*.png
 _debug_*.py
 
-# CST 本地产物（宏/工程文件由脚本生成，含绝对路径）
-cst/
+# CST 本地产物（宏/工程文件由脚本生成，含绝对路径）。
+# **必须锚定到仓库根**：写 "cst/" 会连 tests/fake_cst/cst/（假 CST 库，
+# 要提交）一起忽略掉——服务器上 clone 下来就跑不了测试。
+/cst/

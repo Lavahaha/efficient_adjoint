@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 服务器端（CST COM 接口）依赖，本地 mock 开发不需要
-server = ["pywin32>=306", "h5py>=3.9"]
+# CST 官方 Python 库（cst.interface / cst.results）不在 PyPI 上，由 CST
+# 安装包自带（cst-studio-suite-link），装法见 docs/server_runbook.md 第 0 节。
 dev = ["pytest>=8.0"]
 
 [tool.setuptools]

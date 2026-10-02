@@ -40,8 +40,8 @@ def build_velocity_mask(
     pts = np.stack([X.ravel(), Y.ravel()], axis=1)
 
     # fixed_region 内及邻域（margin）禁止：只用 contains_points 会漏掉
-    # 边界外侧节点，导致固定金属的 φ 边界被泄漏速度推动（实测使
-    # mock 电容虚增 5 倍）。margin 取 max(min_gap, 2dx)，与最小间距
+    # 边界外侧节点，导致固定金属的 φ 边界被泄漏速度推动（实测显著改变
+    # 求解结果）。margin 取 max(min_gap, 2dx)，与最小间距
     # 约束语义一致（可动金属本就不该进入该邻域）。
     for poly in cfg.fixed_region:
         p = np.asarray(poly.vertices, dtype=float)

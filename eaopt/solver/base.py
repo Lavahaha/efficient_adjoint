@@ -2,11 +2,10 @@
 
 定义优化闭环与电磁求解器之间的契约：
   - Solution: 一次仿真的完整结果（S 参数、场、入射功率）；
-  - SolverInterface: build_model / solve_forward / solve_backward；
-  - make_solver: 按配置构造求解器实例（mock / cst）。
+  - SolverInterface: build_model / solve_forward / solve_backward。
 
-求解器无关性是论文方法的核心卖点：pipeline 只依赖本模块的接口，
-具体求解器（Mock、CST）各自实现。
+求解器无关性是论文方法的核心卖点：pipeline 只依赖本模块的接口；
+本仓库的求解器实现是 ``cst.CstSolver``（CST 官方 Python API）。
 """
 
 from __future__ import annotations
@@ -15,9 +14,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from eaopt.adjoint.fields import FieldGrid
-from eaopt.config import CaseConfig
 
-__all__ = ["Solution", "SolverInterface", "make_solver"]
+__all__ = ["Solution", "SolverInterface"]
 
 
 @dataclass
@@ -58,7 +56,7 @@ class SolverInterface(ABC):
 
     # ------------------------------------------------------------------ #
     # 下面两个是**非抽象**的默认实现：只有需要外部资源/产物目录的求解器
-    # （CST）才覆写。Mock 与既有实现完全不受影响。
+    # 才覆写（CST 覆写两者）。
     # ------------------------------------------------------------------ #
     def begin_iteration(self, iteration: int) -> None:
         """告知当前轮次（用于把产物写进 iter_NNN/，以及日志）。默认不做任何事。"""
@@ -69,17 +67,3 @@ class SolverInterface(ABC):
         pipeline 在 finally 里调用——异常退出也必须收尾，否则下一次运行
         会附接到一个状态不明的 CST 实例上。
         """
-
-
-def make_solver(cfg: CaseConfig, ls=None) -> SolverInterface:
-    """按配置构造求解器。ls（水准集）仅供 mock 使用。"""
-    st = cfg.solver.type
-    if st == "mock":
-        from eaopt.solver.mock import MockSolver
-
-        return MockSolver(cfg, ls)
-    if st == "cst":
-        from eaopt.solver.cst import CstSolver
-
-        return CstSolver(cfg)
-    raise ValueError(f"未知求解器类型 {st}")
