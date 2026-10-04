@@ -126,9 +126,11 @@ def grid_for(x, y, margin: float = 0.0, step: float = GRID_STEP_MM,
 
 
 def write_ascii_field(path, x, y, z) -> None:
-    """按 CST FixedWidth 导出的格式写一个场文件（``parse_ascii_field`` 的输入）。
+    """按 CST FixedWidth 导出的**实测格式**写一个场文件（``parse_ascii_field`` 的输入）。
 
-    三行头 ``x0 x1 nx`` + 6 个分量块（实部 3 块、虚部 3 块），列优先。
+    服务器 2026-10-04 实测的真实布局：表头一行（列名）+ 分隔线一行 +
+    **每个点一行 9 列** ``x y z Re1 Im1 Re2 Im2 Re3 Im3``（点序 x 变最快，
+    同 CST）。列名用 F1/F2/F3 占位（假库不分 E/H，单位随场类型）。
     """
     nx, ny, nz = len(x), len(y), len(z)
     data = np.zeros((nx, ny, nz, 3), dtype=complex)
@@ -136,11 +138,20 @@ def write_ascii_field(path, x, y, z) -> None:
     data[..., 0] = (np.arange(nx)[:, None, None] + 1.0) * (1.0 + 0.5j)
     data[..., 1] = np.arange(ny)[None, :, None] * 0.25j
     data[..., 2] = np.arange(nz)[None, None, :] * 1.0
-    lines = [f"{x[0]} {x[-1]} {nx}", f"{y[0]} {y[-1]} {ny}", f"{z[0]} {z[-1]} {nz}"]
-    for c in range(3):
-        lines += [f"{v:.12g}" for v in data[..., c].reshape(-1, order="F").real]
-    for c in range(3):
-        lines += [f"{v:.12g}" for v in data[..., c].reshape(-1, order="F").imag]
+    X, Y, Z = np.meshgrid(np.asarray(x, float), np.asarray(y, float),
+                          np.asarray(z, float), indexing="ij")
+    lines = [
+        "      x [mm]      y [mm]      z [mm]   F1Re [V/m]   F1Im [V/m]"
+        "   F2Re [V/m]   F2Im [V/m]   F3Re [V/m]   F3Im [V/m]",
+        "-" * 120,
+    ]
+    for i in range(nx):
+        for j in range(ny):
+            for k in range(nz):
+                v = data[i, j, k]
+                lines.append(
+                    f"{X[i, j, k]:>12.6g} {Y[i, j, k]:>12.6g} {Z[i, j, k]:>12.6g} "
+                    + " ".join(f"{c.real:>12.8g} {c.imag:>12.8g}" for c in v))
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

@@ -378,80 +378,110 @@ def _spacing(axes, out_path) -> tuple:
         if np.size(a) < 2:
             raise RuntimeError(
                 f"场导出文件 {out_path} 的 {name} 轴只有 {np.size(a)} 个采样点，"
-                f"步长无定义。文件头应为 'x0 x1 nx' 三行、Mode 应为 FixedWidth；"
-                f"当前解析出 {name} 轴 = {np.asarray(a).tolist()}。")
+                f"步长无定义（FixedWidth 导出应每个点一行、三个方向都有多层；"
+                f"单层说明导的是 2D 切片）。当前 {name} 轴 = "
+                f"{np.asarray(a).tolist()}。")
         out.append(float(a[1] - a[0]))
     return tuple(out)
 
 
 # --------------------------------------------------------------------------- #
-# ASCII 场文件解析（CST ASCIIExport 的输出格式）
+# ASCII 场文件解析（CST ASCIIExport 的 FixedWidth 输出格式）
 # --------------------------------------------------------------------------- #
 def parse_ascii_field(path: str) -> tuple[np.ndarray, tuple]:
-    """解析 CST ASCII 场文件（容错）。
+    """解析 CST ASCIIExport（``Mode`` = ``FixedWidth``）的场文件。
 
-    格式：``%`` 开头的注释行跳过；网格三行 ``x0 x1 nx`` / ``y0 y1 ny`` /
-    ``z0 z1 nz``；其余数值按分量块排列（实部/虚部成对，见 :func:`_parse_blocks`）。
+    服务器 2026-10-04 实测（耦合器 E 场，187200 点 = 117×64×25）：
 
-    返回 ``(data, axes)``：data 为 (nx, ny, nz, 3) complex（E: V/m 或
-    H: A/m），axes 为各轴坐标（mm）。文件格式与预期不符时抛 ValueError
-    ——宁可不解析，也不给出一份错坐标的场。
+    ```
+               x [mm]           y [mm]           z [mm]       ExRe [V/m]  ...
+    ---------------------------------------------------------------------------
+                     -5.6             -6.9          -0.6985    1.0364752e-07  ...
+    ```
+
+    即：**表头若干非数值行**（列名 + 分隔线，原样留作诊断）＋**每个点一行、
+    9 列** ``x y z Re1 Im1 Re2 Im2 Re3 Im3``（mm；Re/Im 按分量成对，E 场
+    V·m⁻¹ / H 场 A·m⁻¹）。点的先后不限——按坐标归位；坐标由文件反推，
+    **不假设起点终点**。
+
+    返回 ``(data, axes)``：data 为 (nx, ny, nz, 3) complex，axes 为各轴坐标
+    （mm）。列数不是 9 一律抛 ValueError——宁可不解析，也不猜列布局
+    （错列的场会静默污染伴随梯度）。
     """
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        lines = [ln.strip() for ln in f
-                 if ln.strip() and not ln.lstrip().startswith("%")]
+        lines = f.read().splitlines()
 
-    def _grid_line(i: int):
-        parts = lines[i].replace(",", " ").split()
-        return float(parts[0]), float(parts[1]), int(parts[2])
-
-    x0, x1, nx = _grid_line(0)
-    y0, y1, ny = _grid_line(1)
-    z0, z1, nz = _grid_line(2)
-    vals: list[float] = []
-    for ln in lines[3:]:
-        vals.extend(float(v) for v in ln.replace(",", " ").split())
-    arr = np.asarray(vals, dtype=float)
-
-    per_comp = nx * ny * nz
-    if arr.size < per_comp * 3:
+    header: list[str] = []
+    data_start = None
+    for k, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or s.startswith("%"):
+            continue
+        if _numeric_row(s):
+            data_start = k
+            break
+        header.append(s)
+    if data_start is None:
         raise ValueError(
-            f"数值不足: {arr.size} < 3×{per_comp}（文件与 CST ASCIIExport 的"
-            "格式不符：应为百分比注释 + 'x0 x1 nx' 三行 + 3/6 个分量块）")
-    if arr.size >= per_comp * 6:                    # 复数导出：6 个块
-        data = _parse_blocks(arr[: per_comp * 6], per_comp, nx, ny, nz)
-    else:                                           # 实数导出：3 个块
-        data = _parse_blocks(arr[: per_comp * 3], per_comp, nx, ny, nz).real \
-            .astype(complex)
-    axes = (
-        np.linspace(x0, x1, nx),
-        np.linspace(y0, y1, ny),
-        np.linspace(z0, z1, nz),
-    )
-    return data, axes
+            f"场文件 {path} 里没有数据行（表头是 "
+            f"{' | '.join(h[:100] for h in header) or '<空>'}）")
 
+    block = [ln for ln in lines[data_start:]              # 块内只剩数据行
+             if ln.strip() and not ln.strip().startswith("%")]
+    try:
+        arr = np.loadtxt(block, ndmin=2)                # 文本行 → float（C 加速）
+    except ValueError as e:
+        raise ValueError(
+            f"场文件 {path} 解析失败：{e}\n"
+            "  期望 FixedWidth 格式：表头/分隔线后每行 9 列 "
+            f"'x y z Re1 Im1 Re2 Im2 Re3 Im3'。表头："
+            f"{' | '.join(h[:100] for h in header) or '<无>'}") from e
+    if arr.shape[1] != 9:
+        raise ValueError(
+            f"场文件 {path} 的数据是 {arr.shape[1]} 列（{arr.shape[0]} 行），"
+            "期望 9 列 'x y z Re1 Im1 Re2 Im2 Re3 Im3'（FixedWidth 复数导出，"
+            "CST 2024 实测）。不猜列布局——错列的场会让伴随梯度静默出错。\n"
+            f"  表头：{' | '.join(h[:100] for h in header) or '<无>'}")
 
-def _parse_blocks(vals: np.ndarray, per_comp: int,
-                  nx: int, ny: int, nz: int) -> np.ndarray:
-    """把数值块装配成 (nx,ny,nz,3) complex。
+    xyz = arr[:, :3]
+    axes = []
+    for k, name in enumerate("xyz"):
+        u = np.unique(xyz[:, k])
+        if u.size < 2:
+            raise ValueError(
+                f"场文件 {path} 的 {name} 轴只有 1 个坐标——这是 2D 切片导出？"
+                "场监视器应为 Volume（整个计算域），三个方向都该有多个采样点。")
+        d = np.diff(u)
+        if not np.allclose(d, d[0], rtol=1e-6, atol=1e-6):
+            raise ValueError(
+                f"场文件 {path} 的 {name} 轴不是等步长（{d.min():g}…{d.max():g} mm，"
+                f"共 {u.size} 个坐标）——FieldGrid 只支持规则网格，宁可不解析。")
+        axes.append(u)
+    nx, ny, nz = (a.size for a in axes)
+    if nx * ny * nz != len(arr):
+        raise ValueError(
+            f"场文件 {path} 的点数与网格不符：{len(arr)} 行 ≠ "
+            f"{nx}×{ny}×{nz} = {nx * ny * nz}（缺点/重点，或坐标列不是 x y z）")
 
-    布局 A：每分量先全 Re 后全 Im（块顺序 Re_x,Re_y,Re_z,Im_x,Im_y,Im_z）
-    ——CST 2024 实测的布局。列优先（``order="F"``，x 变的最快）。
-    """
-    n = len(vals)
+    idx = tuple(np.searchsorted(axes[k], xyz[:, k]) for k in range(3))
+    order = np.ravel_multi_index(idx, (nx, ny, nz))
+    if np.unique(order).size != len(arr):
+        raise ValueError(f"场文件 {path} 里有重复的网格点——不是完整规则网格")
+
+    vals = arr[:, 3:]
     data = np.zeros((nx, ny, nz, 3), dtype=complex)
-    if n == per_comp * 6:
-        re = [vals[k * per_comp: (k + 1) * per_comp] for k in range(3)]
-        im = [vals[(3 + k) * per_comp: (4 + k) * per_comp] for k in range(3)]
-        for c in range(3):
-            data[..., c] = (re[c] + 1j * im[c]).reshape(nx, ny, nz, order="F")
-    elif n == per_comp * 3:
-        for c in range(3):
-            data[..., c] = vals[c * per_comp: (c + 1) * per_comp].reshape(
-                nx, ny, nz, order="F")
-    else:
-        raise ValueError(f"无法识别的块数 {n}/{per_comp}")
-    return data
+    for c in range(3):                              # 列序：Re1 Im1 Re2 Im2 …
+        data[idx[0], idx[1], idx[2], c] = vals[:, 2 * c] + 1j * vals[:, 2 * c + 1]
+    return data, tuple(axes)
+
+
+def _numeric_row(s: str) -> bool:
+    """这一行是不是数据行（首列能不能当数字读）。"""
+    try:
+        float(s.split()[0])
+        return True
+    except (ValueError, IndexError):
+        return False
 
 
 # --------------------------------------------------------------------------- #

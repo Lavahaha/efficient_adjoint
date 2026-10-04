@@ -384,8 +384,9 @@ def frequency_range(fmin_ghz: float, fmax_ghz: float) -> str:
 
 
 #: ASCIIExport 的 Mode 取值。**FixedWidth** = 按 StepX/Y/Z 给定的步长
-#: （建模单位，即 mm）均匀取点；导出的 ASCII 文件头三行是
-#: ``x0 x1 nx`` / ``y0 y1 ny`` / ``z0 z1 nz``，正是 cst_results 解析的格式。
+#: （建模单位，即 mm）均匀取点；导出的 ASCII 文件是"表头 + 每个点一行 9 列
+#: ``x y z Re1 Im1 Re2 Im2 Re3 Im3``"（服务器 2026-10-04 实测），正是
+#: cst_results.parse_ascii_field 解析的格式。
 #:
 #: 官方例程用的就是这个组合（Dassault《Scripting the CST Studio Suite
 #: with the Python》的场导出一节）。早先写的是 "FixedNumber"，那是

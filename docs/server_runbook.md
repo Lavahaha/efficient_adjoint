@@ -20,7 +20,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .            # numpy/scipy/pyyaml/matplotlib
 pip install pytest          # 可选：验证安装
-python -m pytest tests/ -q  # 应 166 passed（不装 CST 也能全绿）
+python -m pytest tests/ -q  # 应 169 passed（不装 CST 也能全绿）
 
 # 官方 Python 库（不在 PyPI 上，CST 安装包自带）
 pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
@@ -237,6 +237,22 @@ python scripts/run_coupler.py configs/coupler.yaml
   导出范围 = 选中结果的整个包围盒（Volume 监视器 ⇒ 整个计算域），要限制
   范围只能在解析端裁剪（`cst_results.export_field_cropped`）。属性清单是
   `cst_model.ascii_export_params()` 一份事实来源。
+- **导出的 ASCII 文件长什么样（`Mode "FixedWidth"`，CAT 实测原样）**：
+
+  ```
+             x [mm]           y [mm]           z [mm]       ExRe [V/m]       ExIm [V/m]  ...
+  ------------------------------------------------------------------------------------------
+                   -5.6             -6.9          -0.6985    1.0364752e-07    -5.4345449e-08  ...
+  ```
+
+  即**表头一行（列名）+ 分隔线一行 + 每个点一行、9 列**
+  `x y z Re1 Im1 Re2 Im2 Re3 Im3`（mm；Re/Im 按分量成对；E 场 V/m、
+  H 场 A/m）。点序 x 变最快，但解析端**按坐标归位、不依赖行序**；坐标轴
+  由文件反推（不是我们给的 StepX/Y/Z 起点——实测网格与包围盒对齐、略有
+  出入，例如 z 从 −0.6985 到 4.1015）。实测规模：耦合器 E 场
+  117×64×25 = 187200 点 ≈ 13 MB、解析 0.4 s。
+  **列数不是 9 一律报错**（`parse_ascii_field`）——错列的场会静默污染
+  伴随梯度，宁可不解析。
 - **端口相关（CST 2024 实测结论，改模板时勿违反）**：
   `.Coordinates` 只认 `"Free"/"Full"/"Picks"`（写 `"Ranges"` 报
   "Invalid coordinate type"）；`.Orientation` 只认**边界面名**

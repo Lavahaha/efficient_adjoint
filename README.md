@@ -56,7 +56,7 @@ scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 ite
 scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
 docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
-tests/                   # 166 项测试（不装 CST 也全绿：含假 CST 库的端到端）
+tests/                   # 169 项测试（不装 CST 也全绿：含假 CST 库的端到端）
 ```
 
 三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层
@@ -115,7 +115,8 @@ YAML 只管优化问题（设计区、初始/固定金属、采样、约束、�
   `ASCIIExport.Execute` 才以一句 "not available for the current view" 收场；
 - **读不到就抛**：S 参数/场读失败一律报错，绝不把 0 塞进伴随法；
 - **场要裁到设计区** ± `design_region.field_margin_mm`（监视器导出的是整个
-  计算域）；
+  计算域）；导出的 ASCII 是"表头 + 每点一行 9 列 `x y z Re1 Im1 …`"
+  （`Mode "FixedWidth"`，服务器实测），解析按坐标归位、列数不对即报错；
 - **`shape.json` = 真正施加的形状**：两个工程都改成功后才写、每次覆盖写，
   它是事后复盘"第 N 轮模型长什么样"的唯一依据；
 - **`iter_NNN/` 只有一个写入口**：脚本链与 pipeline 都走 `eaopt.artifacts`

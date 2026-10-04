@@ -103,10 +103,11 @@ def test_ascii_export_uses_only_existing_cst_properties():
 
     模式必须是 **FixedWidth**（步长 mm），不能是 FixedNumber（采样点数）：
     官方例程（Dassault《Scripting the CST Studio Suite with the Python》）
-    用 FixedWidth + StepX/Y/Z，导出的文件头正是
-    ``x0 x1 nx / y0 y1 ny / z0 z1 nz``——也就是 cst_results 解析的那一种。
-    写成 FixedNumber 却填 mm 步长会语义矛盾：同样的 "0.2" 在大包围盒上
-    点数暴涨，解析端拿到的网格也不是我们以为的那个。
+    用 FixedWidth + StepX/Y/Z；服务器 2026-10-04 实测的导出文件是"表头 +
+    每点一行 9 列 ``x y z Re1 Im1 Re2 Im2 Re3 Im3``"——也就是
+    cst_results.parse_ascii_field 解析的那一种。写成 FixedNumber 却填 mm
+    步长会语义矛盾：同样的 "0.2" 在大包围盒上点数暴涨，解析端拿到的网格
+    也不是我们以为的那个。
     """
     assert M.ASCII_EXPORT_MODE == "FixedWidth"
     params = M.ascii_export_params(0.2)

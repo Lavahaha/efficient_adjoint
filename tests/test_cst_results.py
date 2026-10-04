@@ -108,9 +108,12 @@ def test_read_s_params_requires_a_saved_project(tmp_path):
 # --------------------------------------------------------------------------- #
 # ASCII 场文件解析（合成文件，格式与 CST ASCIIExport 对应）
 # --------------------------------------------------------------------------- #
-def _write_synthetic(path):
-    """3×2×2 网格，线性场 f(x,y,z) = x + 2y + 3z，复场布局 A
-    （每分量先全 Re 后全 Im）。"""
+def _write_synthetic(path, *, shuffle=False):
+    """3×2×2 网格，线性场 f(x,y,z) = x + 2y + 3z，按 CST FixedWidth 实测格式写。
+
+    表头（列名）+ 分隔线 + **每个点一行 9 列** ``x y z Re1 Im1 Re2 Im2 Re3 Im3``
+    （服务器 2026-10-04 实测的真实布局；列名照抄真导出）。
+    """
     nx, ny, nz = 3, 2, 2
     xs = np.linspace(0.0, 2.0, nx)
     ys = np.linspace(0.0, 1.0, ny)
@@ -118,22 +121,25 @@ def _write_synthetic(path):
     X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
     f = X + 2 * Y + 3 * Z
     comps = [f, 0.1 * f, -0.2 * f]               # 三个分量
-    lines = [
-        "% CST Studio Suite export (synthetic)",
-        f"{xs[0]} {xs[-1]} {nx}",
-        f"{ys[0]} {ys[-1]} {ny}",
-        f"{zs[0]} {zs[-1]} {nz}",
-    ]
-    for c in comps:                              # 先全部 Re 块，再全部 Im 块
-        lines.append(" ".join(f"{v:.6f}" for v in c.ravel(order="F")))
-    for c in comps:
-        lines.append(" ".join(f"{0.5 * v:.6f}" for v in c.ravel(order="F")))
-    path.write_text("\n".join(lines), encoding="utf-8")
+    rows = []
+    for i in range(nx):
+        for j in range(ny):
+            for k in range(nz):                  # 点序：x 变最快（同 CST）
+                vals = [xs[i], ys[j], zs[k]]
+                for c in comps:
+                    vals += [c[i, j, k], 0.5 * c[i, j, k]]
+                rows.append(" ".join(f"{v:.10g}" for v in vals))
+    if shuffle:                                  # 点序不该被依赖
+        rng = np.random.default_rng(0)
+        rows = [rows[i] for i in rng.permutation(len(rows))]
+    head = ("      x [mm]      y [mm]      z [mm]   ExRe [V/m]   ExIm [V/m]"
+            "   EyRe [V/m]   EyIm [V/m]   EzRe [V/m]   EzIm [V/m]")
+    path.write_text("\n".join([head, "-" * 120, *rows]) + "\n", encoding="utf-8")
     return xs, ys, zs
 
 
-def test_parse_ascii_field_reads_layout_a(tmp_path):
-    """列优先、Re 三块后 Im 三块——解析出的坐标与数值都要对得上。"""
+def test_parse_ascii_field_reads_the_fixedwidth_export(tmp_path):
+    """表头 + 每点一行 9 列（Re/Im 成对）——坐标、形状与数值都要对得上。"""
     p = tmp_path / "e.txt"
     xs, ys, zs = _write_synthetic(p)
     data, axes = R.parse_ascii_field(str(p))
@@ -148,11 +154,44 @@ def test_parse_ascii_field_reads_layout_a(tmp_path):
         np.testing.assert_allclose(data[..., c].imag, 0.5 * expected, atol=1e-9)
 
 
+def test_parse_ascii_field_does_not_depend_on_row_order(tmp_path):
+    """点序由 CST 定（实测 x 变最快），但解析按坐标归位、与行序无关。"""
+    p1, p2 = tmp_path / "a.txt", tmp_path / "b.txt"
+    _write_synthetic(p1)
+    _write_synthetic(p2, shuffle=True)
+    d1, a1 = R.parse_ascii_field(str(p1))
+    d2, a2 = R.parse_ascii_field(str(p2))
+    np.testing.assert_allclose(d1, d2)
+    for u1, u2 in zip(a1, a2):
+        np.testing.assert_allclose(u1, u2)
+
+
 def test_parse_ascii_field_rejects_a_truncated_file(tmp_path):
-    """数值不够读时必须抛——截断的文件会解析出"少一块"的场，不报错。"""
+    """少一个点就必须抛——留下空洞的场会静默污染伴随梯度。"""
     p = tmp_path / "bad.txt"
-    p.write_text("% x\n0 1 2\n0 1 2\n0 1 2\n1 2 3\n", encoding="utf-8")
-    with pytest.raises(ValueError):
+    _write_synthetic(p)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    p.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="点数与网格不符"):
+        R.parse_ascii_field(str(p))
+
+
+def test_parse_ascii_field_rejects_an_unexpected_column_count(tmp_path):
+    """列数不是 9 一律抛（并带上表头）——绝不猜列布局。"""
+    p = tmp_path / "bad.txt"
+    p.write_text("      x [mm]      y [mm]      z [mm]   Ex [V/m]\n"
+                 + "-" * 60 + "\n0 0 0 1\n1 0 0 2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="期望 9 列"):
+        R.parse_ascii_field(str(p))
+
+
+def test_parse_ascii_field_rejects_a_non_uniform_axis(tmp_path):
+    """轴不等步长 ⇒ FieldGrid 无法表示，宁可不解析。"""
+    p = tmp_path / "bad.txt"
+    rows = [f"{x} 0 0 1 0 0 0 0 0" for x in (0.0, 1.0, 3.0)]   # 1 → 2 的步长
+    p.write_text("x y z a b c d e f\n" + "-" * 20 + "\n"
+                 + "\n".join(rows) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="等步长"):
         R.parse_ascii_field(str(p))
 
 
@@ -209,10 +248,10 @@ def test_export_field_grid_roundtrips_the_ascii_file(tmp_path):
 
 
 def test_export_field_grid_rejects_a_single_slice_axis(tmp_path):
-    """单层轴没有"步长"可言——必须指名报错，不能让插值器悄悄退化。"""
+    """单层轴（导的是 2D 切片）没有"步长"可言——当场指名报错。"""
     csti.configure(grid=(np.array([0.0, 0.5]), np.array([0.0, 0.5]),
                          np.array([0.0])))
-    with pytest.raises(RuntimeError, match="z 轴只有 1 个采样点"):
+    with pytest.raises(ValueError, match="z 轴只有 1 个坐标"):
         R.export_field_grid(_model(), "Efield", 5.0, 0.2, tmp_path / "e.txt",
                             log=_quiet)
 
