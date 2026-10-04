@@ -80,4 +80,4 @@ level_set:
   extension_band_mm: 0.5
 
 output:
-  dir: results/coupler
+  dir: E:/zouyi/efficient_adjoint/results/coupler
