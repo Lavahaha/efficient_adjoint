@@ -20,7 +20,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .            # numpy/scipy/pyyaml/matplotlib
 pip install pytest          # 可选：验证安装
-python -m pytest tests/ -q  # 应 155 passed（不装 CST 也能全绿）
+python -m pytest tests/ -q  # 应 159 passed（不装 CST 也能全绿）
 
 # 官方 Python 库（不在 PyPI 上，CST 安装包自带）
 pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
@@ -103,6 +103,10 @@ python scripts/run_coupler.py configs/coupler.yaml
 `optimizer.max_iterations` 改成 3、`convergence_window` 保持较大，盯
 `history.jsonl` 里 `fom` 的走向（见第 4 节），确认方向对了再放开步数。
 
+中途报错**不会**留下半截模型：`add_to_history` 是整块生效的，CST 拒绝坏块
+= 模型停在这一块之前的状态（收尾时存的那次盘存的就是旧状态）。改完代码
+直接重跑 `run_coupler.py` 即可（工程复用，仍从第 0 轮迭代）。
+
 ## 3. 产物清单（每轮验收）
 
 每轮 `<output.dir>/iter_NNN/` 应同时有：
@@ -163,6 +167,15 @@ python scripts/run_coupler.py configs/coupler.yaml
   诊断**不是判定标准**。CST 这个版本的 `.cst` 常常既没有 zip 本地文件头、
   也没有可用中央目录（0.04 MB 的私有容器），解析失败**不代表**工程是空
   的——几何完全可能在**同名文件夹**里。
+- **`Profile is self-intersecting, please check (.Create)`（`(&H8000ffff)`）**：
+  设计区多边形自己穿过了自己。**这条路现在被 Python 侧拦住了**：
+  `close_open_contours` 闭合开放轮廓后会自查自交，抛出的 `ValueError` 会
+  指出是哪两条边、交在哪（CST 只回一句 "Profile is self-intersecting"）。
+  2026-10-04 修过一次实测案例：两条开放轮廓**走向相反**（提取器不保证
+  走向）时，闭合路径会从条带内部斜穿过去——现在先按"末端对末端、首端对
+  首端"摆正走向，再沿外扩 box 周长走**较短的一侧**闭合，并且闭合折线必须
+  带上终点所在边的角点（否则最后一段会斜切）。若升级后仍看到 CST 这句
+  诊断，说明多边形不是从这里出去的（例如 `--shape` 直接给了自交形状）。
 - **`add_to_history` 抛 `RuntimeError`**：官方库会把 CST 的诊断原样抛出
   （哪一块、什么错都在里面），把原始报错贴回开发者即可。历史上 CST 2024
   报过的两类设置错误：`(10090) ActiveX Automation error`（`Excitation`

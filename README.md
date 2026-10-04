@@ -56,7 +56,7 @@ scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 ite
 scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
 docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
-tests/                   # 155 项测试（不装 CST 也全绿：含假 CST 库的端到端）
+tests/                   # 159 项测试（不装 CST 也全绿：含假 CST 库的端到端）
 ```
 
 三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层

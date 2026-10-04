@@ -4,8 +4,9 @@ import numpy as np
 import pytest
 
 from eaopt.config import BoxSpec
+from eaopt.geometry import contour as C
 from eaopt.geometry.contour import (close_open_contours, extract_contours,
-                                    smooth_resample)
+                                    self_intersections, smooth_resample)
 from eaopt.geometry.levelset import LevelSet2D
 
 RECT = np.array([[2.0, -1.0], [10.0, -1.0], [10.0, 1.0], [2.0, 1.0]])
@@ -62,24 +63,104 @@ def test_smooth_resample_circle_uniform_spacing():
     assert np.abs(rad - r).max() < 0.1
 
 
+def _arm_box() -> BoxSpec:
+    return BoxSpec(x=(0.0, 12.0), y=(-2.0, 3.0))
+
+
+# 耦合臂横段的上/下边（开放轮廓，穿出设计区左右边界）
+ARM_TOP = np.array([[0.0, 0.0], [4.0, 0.0], [8.0, 0.0], [12.0, 0.0]])
+ARM_BOT = np.array([[0.0, -1.6], [4.0, -1.6], [8.0, -1.6], [12.0, -1.6]])
+
+
 def test_close_open_contours_arm_strip():
-    # 耦合臂上下两条开放边（穿出设计区左右边界）
-    top = np.array([[0.0, 0.0], [4.0, 0.0], [8.0, 0.0], [12.0, 0.0]])
-    bot = np.array([[0.0, -1.6], [4.0, -1.6], [8.0, -1.6], [12.0, -1.6]])
-    box = BoxSpec(x=(0.0, 12.0), y=(-2.0, 3.0))
-    polys = close_open_contours([top, bot], box)
+    """同向的两条开放边：闭合段必须是左右两条竖线（x = ∓0.05）。
+
+    输出从"首点沿外扩周长更靠前"的那条边起走（这里是上边，逆时针自左下角
+    数 y=0 在 y=-1.6 之前），绕向因此是顺时针——CST 的 Extrude 不看绕向。
+    """
+    polys = close_open_contours([ARM_TOP, ARM_BOT], _arm_box())
     assert len(polys) == 1
     poly = polys[0]
     assert np.allclose(poly[0], poly[-1])  # 闭合
-    # 顶点均在设计区外扩 0.05 的包络内
+    want = np.array([
+        [-0.05, 0.0], [4.0, 0.0], [8.0, 0.0], [12.05, 0.0],
+        [12.05, -1.6], [8.0, -1.6], [4.0, -1.6], [-0.05, -1.6], [-0.05, 0.0],
+    ])
+    assert np.allclose(poly, want)
+    assert self_intersections(poly) == []
+    # 顶点均在设计区外扩 0.05 的包络内，内部点判在条带内
     assert poly[:, 0].min() >= -0.05 - 1e-9
     assert poly[:, 0].max() <= 12.05 + 1e-9
     assert poly[:, 1].min() >= -2.05 - 1e-9
     assert poly[:, 1].max() <= 3.05 + 1e-9
-    # 封闭区域包含臂（面积 > 臂面积 19.2）
     from matplotlib.path import Path as MplPath
 
-    assert MplPath(poly).contains_point((6.0, -0.8))
+    p = MplPath(poly)
+    assert p.contains_point((6.0, -0.8))  # 条带内
+    assert not p.contains_point((6.0, 1.0))  # 条带上方（设计区内的空气）
+
+
+def test_close_open_contours_arm_strip_bottom_reversed():
+    """服务器实测的失败输入：下边是右→左（提取器不保证走向）。
+
+    修前这里把 a 的尾接到 b 的首、闭合路径从条带内部斜穿过去，CST 报
+    `(&H8000ffff) Profile is self-intersecting, please check (.Create)`。
+    修后闭合段仍是两条竖线。
+    """
+    bot_rev = ARM_BOT[::-1].copy()  # 右→左
+    polys = close_open_contours([ARM_TOP, bot_rev], _arm_box())
+    poly = polys[0]
+    want = np.array([
+        [12.05, -1.6], [8.0, -1.6], [4.0, -1.6], [-0.05, -1.6],
+        [-0.05, 0.0], [4.0, 0.0], [8.0, 0.0], [12.05, 0.0], [12.05, -1.6],
+    ])
+    assert np.allclose(poly, want)
+    assert self_intersections(poly) == []
+
+
+def test_perimeter_walk_takes_the_short_way_and_keeps_the_corner():
+    """闭合路径沿外扩周长走较短一侧，且必须含终点所在边的角点。
+
+    不含角点会让最后一段从上一个角斜切到终点（自交）；旧的实现碰到
+    "起点、终点在相邻边上"还会死循环。
+    """
+    corners = C._padded_corners(_arm_box(), 0.05)
+    # 同一条边（左边 → 左边）：直接连，没有中间点
+    walk = C._perimeter_walk(np.array([-0.05, -1.6]), np.array([-0.05, 1.0]), corners)
+    assert len(walk) == 0
+    # 相邻边（左边 → 下边）：绕左下角，且含角点 (-0.05, -2.05)
+    walk = C._perimeter_walk(np.array([-0.05, 1.0]), np.array([3.0, -2.05]), corners)
+    assert np.allclose(walk, [[-0.05, -2.05]])
+    # 相对边（左边 → 右边）：走下边（较短），含下边两个角
+    walk = C._perimeter_walk(np.array([-0.05, 1.0]), np.array([12.05, 2.0]), corners)
+    assert np.allclose(walk, [[-0.05, -2.05], [12.05, -2.05]])
+
+
+def test_self_intersections_flags_a_bowtie_and_allows_a_touch():
+    square = np.array([[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0], [0.0, 0.0]])
+    assert self_intersections(square) == []
+    bowtie = np.array([[0.0, 0.0], [4.0, 2.0], [4.0, 0.0], [0.0, 2.0], [0.0, 0.0]])
+    assert self_intersections(bowtie) == [(0, 2)]
+    # 顶点擦过非相邻边（数值退化时常见）不算自交——只有真正穿过或共线重叠才报
+    touch = np.array([[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [2.0, 0.0], [0.0, 2.0],
+                      [0.0, 0.0]])
+    assert self_intersections(touch) == []
+    # 共线重叠要报（非相邻的两条边实打实地叠在一起）
+    slit = np.array([[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [2.0, 3.0], [2.0, 0.0],
+                     [3.0, 0.0], [3.0, 3.0], [0.0, 3.0], [0.0, 0.0]])
+    assert self_intersections(slit) != []
+
+
+def test_close_open_contours_rejects_a_mismatched_pair():
+    """两条互不相关的开放轮廓凑成一对 → 闭合边共线重叠，应当场拦下。
+
+    CST 对自交轮廓只回一句 "Profile is self-intersecting"，这里抛出的
+    ValueError 会指出是哪两条边、交在哪。
+    """
+    tooth = np.array([[10.0, -2.0], [10.5, -1.0], [11.0, -2.0]])  # 下边的小齿
+    slant = np.array([[0.0, 0.0], [2.0, -2.0]])  # 左边到下边的斜线
+    with pytest.raises(ValueError, match="自交"):
+        close_open_contours([tooth, slant], _arm_box())
 
 
 def test_close_open_contours_keeps_closed_and_rejects_odd():
