@@ -171,10 +171,11 @@ def test_field_monitor_is_volume_with_cst_conventional_name():
 
 
 def test_monitor_name_and_result_path_agree():
-    """创建监视器用的名字必须与导出场时选中的结果树条目同源。
+    """创建监视器用的名字必须与导出场时认领条目用的叶子名同源。
 
-    CST 用监视器名命名结果树条目（"<name> [AC]"）——两处一旦漂移，
-    场导出就会 SelectTreeItem 失败。
+    CST 用监视器名命名结果树条目（再往后缀，如 "<name> [AC]"），导出场时
+    到结果树上按这个叶子名认领（``cst_results.resolve_field_item``）——
+    两处一旦漂移，场导出就会"树上找不到条目"。
     """
     assert M.field_monitor_name("Efield", 5.0) == "e-field (f=5)"
     assert M.field_result_path("Efield", 5.0) == \

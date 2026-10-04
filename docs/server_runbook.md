@@ -20,7 +20,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .            # numpy/scipy/pyyaml/matplotlib
 pip install pytest          # 可选：验证安装
-python -m pytest tests/ -q  # 应 159 passed（不装 CST 也能全绿）
+python -m pytest tests/ -q  # 应 166 passed（不装 CST 也能全绿）
 
 # 官方 Python 库（不在 PyPI 上，CST 安装包自带）
 pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
@@ -95,9 +95,11 @@ python scripts/run_coupler.py configs/coupler.yaml
 # 想把 E/H 场也存下来复盘：--save-fields
 ```
 
-工程不存在时**自动初始化**（和两个 init 脚本等价的路径）；两个工程都齐
-就直接进主循环。预期：约 20–30 次迭代（每次 = 2 次 CST 仿真 + 场导出，
-论文参考 55 min/20 次），输出在 `results/coupler/`。
+工程不存在时**自动初始化**（与两个 init 脚本同一套命令块：建模型 + 存盘，
+**但不跑首轮仿真、不写 `iter_000/`**——首轮求解由主循环的第 0 轮完成，所以
+`iter_000/` 是两个 tag 都求解完才落盘）；两个工程都齐就直接进主循环。
+预期：约 20–30 次迭代（每次 = 2 次 CST 仿真 + 场导出，论文参考 55 min/20
+次），输出在 `results/coupler/`。
 
 **第一次跑先小步数**：把 `configs/coupler.yaml` 的
 `optimizer.max_iterations` 改成 3、`convergence_window` 保持较大，盯
@@ -176,6 +178,16 @@ python scripts/run_coupler.py configs/coupler.yaml
   首端"摆正走向，再沿外扩 box 周长走**较短的一侧**闭合，并且闭合折线必须
   带上终点所在边的角点（否则最后一段会斜切）。若升级后仍看到 CST 这句
   诊断，说明多边形不是从这里出去的（例如 `--shape` 直接给了自交形状）。
+- **`The ASCII export option is not available for the current view.`
+  （`ASCIIExport.Execute` 时报）**：**不是**"没有结果"，而是"当前视图不是
+  可导出的场结果"。代码现在三层防住它：① 导出前到结果树上按叶子名认领
+  条目（不再硬拼路径）；② 树上找不到就报错并列出树里全部条目；③
+  `SelectTreeItem` 返回 False（条目不存在）当场抛。三层都过了仍看到这句，
+  按可能性排查：该监视器还没有结果数据（求解没跑完/没存盘）、CST 处于
+  **网格视图**或 2D 标量图视图（切回 3D 结果视图再试）、工程窗口未激活
+  （被别的工程/对话框挡住）。2026-10-04 服务器第一次跑就是①：拼出来的
+  ` [AC]` 后缀与真实条目名对不上，`SelectTreeItem` 静默失效（不报错），
+  到 Execute 才以这句收场。
 - **`add_to_history` 抛 `RuntimeError`**：官方库会把 CST 的诊断原样抛出
   （哪一块、什么错都在里面），把原始报错贴回开发者即可。历史上 CST 2024
   报过的两类设置错误：`(10090) ActiveX Automation error`（`Excitation`
@@ -209,9 +221,16 @@ python scripts/run_coupler.py configs/coupler.yaml
   点**：① 读的是**磁盘**结果——必须先 `prj.save()`，"求解→存盘→读"这个
   顺序反了会一直读到上一轮的值且不报错；② 条目路径不要硬拼后缀（CST 会
   给结果条目自动加 `[AC]` 之类），全路径读不到时按**叶子名**再试一次是
-  唯一的兜底；③ 场条目路径来自 `cst_model.field_result_path()`（创建监视器
-  与导出用同一个名字，有测试锁定）。读不到一律抛错并把**原始错误**写进
-  诊断——绝不返回 0（伴随法对场是线性的，一个 0 会静默污染整个梯度）。
+  唯一的兜底；③ 场条目**导出前到活结果树上按叶子名认领**（
+  `cst_results.resolve_field_item`：`ResultTree.GetFirstChildName` /
+  `GetNextItemName` 枚举 2D/3D Results 子树，先完全同名、再同名前缀——
+  兼容 ` [AC]`/`[run N]` 后缀；树上没有就报错并列出树里的全部条目）。
+  选中那一步还要看 `SelectTreeItem` 的**布尔返回值**（False = 树上没有
+  这条，真库不抛错、静默失效）；枚举不可用时退回
+  `cst_model.field_result_path()` 的惯例路径并告警。监视器名仍是共同源头
+  （创建与认领都用 `field_monitor_name`，有测试锁定）。读不到一律抛错并把
+  **原始错误**写进诊断——绝不返回 0（伴随法对场是线性的，一个 0 会静默
+  污染整个梯度）。
 - **ASCIIExport 的属性集（CST 2024 实测）**：只有 `Reset` / `FileName` /
   `Mode` / `StepX` / `StepY` / `StepZ` / `Execute`——**没有
   XStart/XEnd/YStart/YEnd/ZStart/ZEnd**（报 `<unknown>.XStart`）。所以

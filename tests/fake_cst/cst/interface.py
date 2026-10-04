@@ -7,11 +7,14 @@
 * ``prj.filename()`` / ``prj.save(path[, allow_overwrite])``；
 * ``prj.model3d.add_to_history(header, cmd)``——位置参数、成功返回 True、
   坏命令抛 RuntimeError；
-* ``model3d.run_solver()``（无参）、``model3d.is_solver_running()``、
-  ``model3d.SelectTreeItem(path)``、``model3d.ASCIIExport``。
-
-故意**不提供** ``model3d.ResultTree``：那条活工程回退链已被删除，生产代码
-若残留旧路会立刻 AttributeError，而不是悄悄走另一条路。
+* ``model3d.run_solver()``（无参）、``model3d.is_solver_running()``；
+* ``model3d.ResultTree``——``GetFirstChildName(父路径)`` /
+  ``GetNextItemName(条目)`` 的树遍历（CST VBA 协议），按扁平清单
+  ``state.tree_items`` 逐层回答；
+* ``model3d.SelectTreeItem(条目)``——**照真库返回布尔**（条目在树上吗），
+  并且不在树上时**照真库"静默不生效"**：随后 ``ASCIIExport.Execute()``
+  报 "The ASCII export option is not available for the current view."。
+  这条静默失败链是生产代码必须自己防住的（先查树、再看返回值）。
 """
 
 from __future__ import annotations
@@ -38,6 +41,25 @@ DEFAULT_GRID = (np.arange(-20.0, 20.0 + 1e-9, 2.0),
                 np.arange(-20.0, 20.0 + 1e-9, 2.0),
                 np.array([0.0, 0.5]))
 
+#: 缺省结果树（扁平全路径清单，层级由 ``\`` 隐含）——照耦合器算例 5 GHz
+#: 求解后的样子。场条目**故意不带** ` [AC]` 后缀：真条目名由 CST 决定，
+#: 生产代码必须到树上按叶子名找（``field_result_path`` 拼的那份在这里就
+#: 选不中——正是服务器上暴露的那个坑）。用 ``configure(tree_items=[...])``
+#: 换一棵树。
+DEFAULT_TREE_ITEMS = [
+    "1D Results",
+    "1D Results\\S-Parameters",
+    "1D Results\\S-Parameters\\S1,1 [AC]",
+    "1D Results\\S-Parameters\\S2,1 [AC]",
+    "1D Results\\S-Parameters\\S3,1 [AC]",
+    "1D Results\\S-Parameters\\S4,1 [AC]",
+    "2D/3D Results",
+    "2D/3D Results\\E-Field",
+    "2D/3D Results\\E-Field\\e-field (f=5)",
+    "2D/3D Results\\H-Field",
+    "2D/3D Results\\H-Field\\h-field (f=5)",
+]
+
 
 class State:
     """一次假会话的全部可编程状态。"""
@@ -47,6 +69,7 @@ class State:
 
     def reset(self) -> None:
         self.grid = DEFAULT_GRID
+        self.tree_items = list(DEFAULT_TREE_ITEMS)
         #: 调用时序（"connect_to_any"/"new"/"new_mws"/"open_project"/"save"…）
         self.events: list[tuple] = []
         #: 工程对象的常驻清单——"实例跨进程存活"的假实现
@@ -62,6 +85,9 @@ class State:
         self.save_accepts_overwrite = True  # False = 只认 save(path) 一种形参
         self.save_error: Exception | None = None
         self.select_error: Exception | None = None
+        self.tree_error: Exception | None = None     # ResultTree 遍历抛错
+        self.drop_result_tree = False                # Model3D 上没有 ResultTree（建工程前设）
+        self.ascii_export_error: Exception | None = None  # Execute 直接抛
 
 
 _state = State()
@@ -128,8 +154,9 @@ class ASCIIExport:
     StepZ / Execute（**没有** XStart…ZEnd，范围永远是整个包围盒）。
     """
 
-    def __init__(self, st: State):
+    def __init__(self, st: State, m3d: "Model3D"):
         self._st = st
+        self._m3d = m3d
         self.calls: list[tuple] = []
         self.file = None
 
@@ -155,9 +182,70 @@ class ASCIIExport:
 
     def Execute(self):
         self.calls.append(("Execute",))
+        if self._st.ascii_export_error is not None:
+            raise self._st.ascii_export_error
+        if not self._m3d.selection_valid:
+            # 真库的原话：选中的不是可导出的结果视图（多半是 SelectTreeItem
+            # 没生效，当前视图还停在 Modeling）——静默失效的下一站。
+            raise RuntimeError(
+                "(&H8000ffff) The ASCII export option is not available for "
+                "the current view.")
         if not self.file:
             raise RuntimeError("ASCIIExport: FileName 还没设")
         write_ascii_field(self.file, *self._st.grid)
+
+
+class ResultTree:
+    """假 ``model3d.ResultTree``：CST VBA 的树遍历协议。
+
+    ``GetFirstChildName(父路径)`` 给第一个子条目、``GetNextItemName(条目)``
+    给同层下一个兄弟，**都是全路径**，没有则空串。``state.tree_items`` 是
+    扁平的全路径清单，中间文件夹由条目**自动补出**（真树的层级本来就是这样
+    隐含的），所以测试里只写叶子条目也行。
+    """
+
+    def __init__(self, st: State):
+        self._st = st
+
+    def _nodes(self) -> list[str]:
+        """清单 + 各级祖先（保持清单里的先后次序）。"""
+        out: list[str] = []
+        for p in self._st.tree_items:
+            parts = str(p).split("\\")
+            for k in range(1, len(parts) + 1):
+                anc = "\\".join(parts[:k])
+                if anc not in out:
+                    out.append(anc)
+        return out
+
+    def _children(self, parent: str) -> list[str]:
+        want = parent + "\\" if parent else ""
+        kids: list[str] = []
+        for p in self._nodes():
+            if not p.startswith(want):
+                continue
+            full = want + p[len(want):].split("\\", 1)[0]
+            if full != parent and full not in kids:
+                kids.append(full)
+        return kids
+
+    def GetFirstChildName(self, parent):
+        if self._st.tree_error is not None:
+            raise self._st.tree_error
+        kids = self._children(str(parent))
+        return kids[0] if kids else ""
+
+    def GetNextItemName(self, item):
+        if self._st.tree_error is not None:
+            raise self._st.tree_error
+        item = str(item)
+        parent = item.rsplit("\\", 1)[0] if "\\" in item else ""
+        kids = self._children(parent)
+        try:
+            i = kids.index(item)
+        except ValueError:
+            return ""
+        return kids[i + 1] if i + 1 < len(kids) else ""
 
 
 class Model3D:
@@ -168,7 +256,11 @@ class Model3D:
         self.history: list[tuple] = []
         self.solves = 0
         self.selected: list[str] = []
-        self.ASCIIExport = ASCIIExport(st)
+        #: 最后一次 SelectTreeItem 是否选中了树上真实存在的条目（真库的
+        #: 静默失效就是"False 但没人看"）
+        self.selection_valid = False
+        self.ASCIIExport = ASCIIExport(st, self)
+        self.ResultTree = None if st.drop_result_tree else ResultTree(st)
 
     def add_to_history(self, header, cmd):
         st = self._st
@@ -195,9 +287,15 @@ class Model3D:
         return self._st.solver_running
 
     def SelectTreeItem(self, item):
+        """选中结果树条目，**返回布尔**（条目在树上吗）——照真库的签名。
+
+        条目不在树上时"静默不生效"（返回值是调用方唯一能看到的信号）。
+        """
         if self._st.select_error is not None:
             raise self._st.select_error
         self.selected.append(item)
+        self.selection_valid = item in self._st.tree_items
+        return self.selection_valid
 
 
 class Project:

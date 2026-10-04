@@ -1,8 +1,9 @@
 """假 CST 库自己的合同：先证明"假得够真"，再拿它锁生产代码。
 
 这里测的是 ``tests/fake_cst/cst/`` 的行为与真库实测结论一致（存盘才读得到、
-同一工程不重复打开、Model3D 上没有 ResultTree、save 形参可退化），以及
-conftest 的注入确实生效——生产代码的测试全都站在这个地基上。
+同一工程不重复打开、结果树遍历协议、SelectTreeItem 的布尔与静默失效、
+save 形参可退化），以及 conftest 的注入确实生效——生产代码的测试全都站在
+这个地基上。
 """
 
 from __future__ import annotations
@@ -81,10 +82,27 @@ def test_a_project_cannot_be_opened_twice(tmp_path):
         de.open_project(str(path))
 
 
-def test_model3d_has_no_result_tree():
-    """活工程 ResultTree 回退链已删：假 Model3D 不提供它，残留旧路会当场炸。"""
+def test_result_tree_walks_the_flat_item_list():
+    """结果树协议照真库：GetFirstChildName/GetNextItemName 都给**全路径**。"""
     prj = csti.DesignEnvironment.new_mws()
-    assert not hasattr(prj.model3d, "ResultTree")
+    tree = prj.model3d.ResultTree
+    assert tree.GetFirstChildName("") == "1D Results"
+    assert tree.GetFirstChildName("2D/3D Results") == "2D/3D Results\\E-Field"
+    assert tree.GetNextItemName("2D/3D Results\\E-Field") == \
+        "2D/3D Results\\H-Field"
+    assert tree.GetNextItemName("2D/3D Results\\H-Field") == ""   # 空串收尾
+    assert tree.GetFirstChildName("2D/3D Results\\E-Field\\e-field (f=5)") == ""
+
+
+def test_select_tree_item_returns_whether_the_item_exists():
+    """照真库返回布尔；不在树上时"静默不生效"，随后 Execute 才炸。"""
+    prj = csti.DesignEnvironment.new_mws()
+    m3d = prj.model3d
+    assert m3d.SelectTreeItem("2D/3D Results\\E-Field\\e-field (f=5)") is True
+    assert m3d.SelectTreeItem("2D/3D Results\\E-Field\\e-field (f=99)") is False
+    m3d.ASCIIExport.FileName("whatever.txt")
+    with pytest.raises(RuntimeError, match="not available for the current view"):
+        m3d.ASCIIExport.Execute()
 
 
 def test_save_can_be_configured_to_reject_allow_overwrite(tmp_path):
@@ -122,6 +140,7 @@ def test_ascii_export_writes_a_parseable_grid(tmp_path):
     st = csti.configure(grid=csti.grid_for((0.0, 4.0), (-1.0, 1.0), margin=0.5))
     prj = csti.DesignEnvironment.new_mws()
     out = tmp_path / "field.txt"
+    assert prj.model3d.SelectTreeItem("2D/3D Results\\E-Field\\e-field (f=5)")
     prj.model3d.ASCIIExport.Reset()
     prj.model3d.ASCIIExport.FileName(str(out))
     prj.model3d.ASCIIExport.Execute()

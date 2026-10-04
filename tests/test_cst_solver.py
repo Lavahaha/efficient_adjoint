@@ -244,8 +244,11 @@ def test_fields_are_exported_every_solve_and_cropped_to_the_design_region(cfg):
     assert kinds.count("Execute") == 2                  # E 场与 H 场各导一次
     assert kinds[0] == "Reset"                          # Reset 必须最先
     assert ("Mode", "FixedWidth") in prj.model3d.ASCIIExport.calls
-    assert prj.model3d.selected == [M.field_result_path("Efield", 5.0),
-                                    M.field_result_path("Hfield", 5.0)]
+    # 选中条目来自活结果树的真实路径（不是拼出来的惯例路径——真条目名由
+    # CST 起，可能带 [AC] 之类后缀，拼错的代价是 Execute 那句含糊的报错）
+    assert [p.rsplit("\\", 1)[-1] for p in prj.model3d.selected] == \
+        ["e-field (f=5)", "h-field (f=5)"]
+    assert all(p in csti.state().tree_items for p in prj.model3d.selected)
 
     box = cfg.design_region.box
     m = float(cfg.design_region.field_margin_mm)

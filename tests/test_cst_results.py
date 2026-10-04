@@ -7,7 +7,8 @@
      一个 0 会静默污染整个梯度）；
   3. 场导出 → ASCII 解析 → 裁剪这条链的坐标/形状/数值都对得上
      （导出设置与解析器是两处独立实现的格式约定，必须端到端锁住）；
-  4. 场条目走 ``cst_model.field_result_path`` 的惯例路径（不再枚举结果树）。
+  4. 场条目**到活结果树上按叶子名认领真实路径**（不靠拼字符串——真条目名
+     由 CST 起，可能带 `` [AC]`` 之类后缀），树上没有就当场抛并列清单。
 """
 
 import numpy as np
@@ -191,7 +192,7 @@ def test_export_field_grid_roundtrips_the_ascii_file(tmp_path):
 
     grid = R.export_field_grid(m3d, "Efield", 5.0, 0.2, out, log=_quiet)
 
-    assert m3d.selected == [M.field_result_path("Efield", 5.0)]
+    assert m3d.selected == ["2D/3D Results\\E-Field\\e-field (f=5)"]
     kinds = [c[0] for c in m3d.ASCIIExport.calls]
     assert kinds[0] == "Reset"                   # Reset 必须最先
     assert kinds.index("FileName") < kinds.index("Mode") < kinds.index("Execute")
@@ -233,6 +234,82 @@ def test_export_field_grid_reports_a_failed_selection(tmp_path):
                             log=_quiet)
     assert "SelectTreeItem" in str(ei.value)
     assert M.field_monitor_name("Hfield", 5.0) in str(ei.value)
+
+
+# --------------------------------------------------------------------------- #
+# 场条目定位（活结果树）
+# --------------------------------------------------------------------------- #
+def test_resolve_field_item_finds_the_real_leaf_on_the_tree():
+    """条目名以结果树为准：真库给条目加的后缀（[AC]/[run N]）拼不准。"""
+    csti.configure(tree_items=[
+        "2D/3D Results\\E-Field\\e-field (f=5) [AC]",
+        "2D/3D Results\\H-Field\\h-field (f=5)",
+    ])
+    m3d = _model()
+    assert R.resolve_field_item(m3d, "Efield", 5.0, log=_quiet) == \
+        "2D/3D Results\\E-Field\\e-field (f=5) [AC]"
+    assert R.resolve_field_item(m3d, "Hfield", 5.0, log=_quiet) == \
+        "2D/3D Results\\H-Field\\h-field (f=5)"
+
+
+def test_resolve_field_item_prefers_the_exact_leaf_and_lists_others():
+    """同名前缀多条（多次运行留下的 [run N]）⇒ 取后缀最少的，其余进日志。"""
+    csti.configure(tree_items=[
+        "2D/3D Results\\E-Field\\e-field (f=5) [run 2]",
+        "2D/3D Results\\E-Field\\e-field (f=5) [AC]",
+        "2D/3D Results\\E-Field\\e-field (f=5)",
+    ])
+    logs = []
+    assert R.resolve_field_item(_model(), "Efield", 5.0, log=logs.append) == \
+        "2D/3D Results\\E-Field\\e-field (f=5)"
+    assert any("run 2" in ln for ln in logs)      # 候选都列出来，便于对拍
+
+
+def test_resolve_field_item_reports_a_missing_monitor_with_the_tree():
+    """树上没有 ⇒ 抛错并列**全部**条目（对拍就知道 CST 起了什么名字）。"""
+    csti.configure(tree_items=[
+        "1D Results\\S-Parameters\\S3,1 [AC]",
+        "2D/3D Results\\E-Field",
+    ])
+    with pytest.raises(RuntimeError) as ei:
+        R.resolve_field_item(_model(), "Efield", 5.0, log=_quiet)
+    msg = str(ei.value)
+    assert "e-field (f=5)" in msg                 # 期望的叶子名
+    assert "S3,1 [AC]" in msg                     # 树里的实际条目
+
+
+def test_resolve_field_item_falls_back_when_the_tree_is_unavailable():
+    """枚举不可用（版本差异）⇒ 退回惯例路径 + 告警；选不中由选中那步拦。"""
+    csti.configure(tree_error=RuntimeError("<unknown>.GetFirstChildName"))
+    logs = []
+    assert R.resolve_field_item(_model(), "Efield", 5.0, log=logs.append) == \
+        M.field_result_path("Efield", 5.0)
+    assert any("枚举不可用" in ln for ln in logs)
+
+
+def test_export_field_grid_refuses_a_stale_selection(tmp_path):
+    """枚举不可用 + 惯例路径对不上 ⇒ SelectTreeItem 返回 False，当场拦下。
+
+    真库在这里不抛错，会一路滑到 Execute 才报一句指不到真因的
+    "not available for the current view"（服务器上就是这么发生的）。
+    """
+    csti.configure(drop_result_tree=True)
+    with pytest.raises(RuntimeError, match="返回 False"):
+        R.export_field_grid(_model(), "Efield", 5.0, 0.2, tmp_path / "e.txt",
+                            log=_quiet)
+
+
+def test_export_field_grid_hints_when_the_view_is_wrong(tmp_path):
+    """条目在树上、也选中了，CST 仍拒绝导出（网格视图/没数据）⇒ 给排查清单。"""
+    csti.configure(ascii_export_error=RuntimeError(
+        "(&H8000ffff) The ASCII export option is not available for the "
+        "current view."))
+    with pytest.raises(RuntimeError) as ei:
+        R.export_field_grid(_model(), "Efield", 5.0, 0.2, tmp_path / "e.txt",
+                            log=_quiet)
+    msg = str(ei.value)
+    assert "e-field (f=5)" in msg                 # 选中了哪条
+    assert "网格视图" in msg                       # 排查清单
 
 
 def test_export_field_cropped_cuts_to_the_design_region(tmp_path):

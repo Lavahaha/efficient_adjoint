@@ -46,7 +46,7 @@ eaopt/
 │   ├── base.py          # Solution / SolverInterface（pipeline 只认这个契约）
 │   ├── cst_setup.py     # **CST 侧单一事实来源**：布局/频点/材料/端口/工程路径
 │   ├── cst_model.py     # 模板命令块（VBA 文本 + 几何常量；纯文本，不 import cst）
-│   ├── cst_results.py   # S 参数（cst.results）+ 场导出/解析/裁剪（顶层 import）
+│   ├── cst_results.py   # S 参数 + 场条目定位/导出/解析/裁剪（顶层 import）
 │   └── cst.py           # CstSolver：pipeline ↔ 两个工程的适配器（顶层 import）
 
 configs/coupler.yaml     # 算例配置（论文 III-A 耦合器）
@@ -56,7 +56,7 @@ scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 ite
 scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
 docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
-tests/                   # 159 项测试（不装 CST 也全绿：含假 CST 库的端到端）
+tests/                   # 166 项测试（不装 CST 也全绿：含假 CST 库的端到端）
 ```
 
 三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层
@@ -109,6 +109,10 @@ YAML 只管优化问题（设计区、初始/固定金属、采样、约束、�
   会话，重放历史时旧形状会复活；
 - **先存盘再读结果**：`cst.results` 读的是磁盘结果文件，顺序反了会一直读到
   上一轮的值；
+- **场条目到活结果树上按叶子名认领**（`cst_results.resolve_field_item`），
+  不硬拼路径：条目名由 CST 起（带 ` [AC]` 之类后缀），而 `SelectTreeItem`
+  对不存在的路径**不抛错、只是不生效**（返回 False），拼错的名字要到
+  `ASCIIExport.Execute` 才以一句 "not available for the current view" 收场；
 - **读不到就抛**：S 参数/场读失败一律报错，绝不把 0 塞进伴随法；
 - **场要裁到设计区** ± `design_region.field_margin_mm`（监视器导出的是整个
   计算域）；

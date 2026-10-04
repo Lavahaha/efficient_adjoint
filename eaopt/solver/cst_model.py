@@ -256,9 +256,10 @@ FIELD_TYPES = {"Efield": ("e-field", "E-Field"),
 def field_monitor_name(field_type: str, frequency_ghz: float) -> str:
     """监视器名，取 CST 惯例 "e-field (f=5)"。
 
-    **这个名字同时决定结果树里的条目名**（"<name> [AC]"），导出场时
-    要按条目名选中它，所以创建与导出必须共用本函数，不能各写一份——
-    否则命名漂移会让场导出找不到条目。
+    **这个名字同时是结果树条目名的叶子**（CST 再往后缀，如 "<name> [AC]"）：
+    导出场时到结果树上按这个叶子名认领条目（见
+    ``cst_results.resolve_field_item``），所以创建与导出必须共用本函数，
+    不能各写一份——否则命名漂移会让场导出找不到条目。
     """
     if field_type not in FIELD_TYPES:
         raise ValueError(f"field_type 只能是 {tuple(FIELD_TYPES)}，"
@@ -267,10 +268,11 @@ def field_monitor_name(field_type: str, frequency_ghz: float) -> str:
 
 
 def field_result_path(field_type: str, frequency_ghz: float) -> str:
-    """该监视器在结果树中的条目路径（SelectTreeItem / cst.results 用）。
+    """该监视器在结果树中的**惯例**条目路径（``... [AC]`` 是猜测的后缀）。
 
-    CST 会给结果条目自动加后缀 ``[AC]``（实测），路径按惯例拼即可；读不到
-    时把这条完整路径写进报错里，便于与 CST 里的条目名对拍。
+    导出场选中条目**不靠它**：真实条目名由 CST 起（后缀随版本/运行次数变），
+    由 ``cst_results.resolve_field_item`` 到活结果树上按叶子名认领。这条路径
+    只做两件事：枚举不可用时的退路、报错里与 CST 的条目名对拍的参照。
     """
     folder = FIELD_TYPES[field_type][1] if field_type in FIELD_TYPES else None
     if folder is None:
