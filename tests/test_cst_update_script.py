@@ -136,6 +136,50 @@ def test_update_from_ls_rebuilds_the_contours(ready):
 
 
 # --------------------------------------------------------------------------- #
+# 无人值守：模态框（已有结果 + 重跑 ⇒ CST 弹框等人点）
+# --------------------------------------------------------------------------- #
+def _gates_off(monkeypatch, **flags):
+    """把脚本看到的闸门关掉（并按需熄掉假会话里已经开着的静默模式）。
+
+    ``ready`` 里的 init 已经把假会话切成静默了——它是**会话级**状态，不会
+    因为下一个脚本用别的设置就自己熄掉。要测"没有静默"的路径，两边都得关。
+    """
+    import dataclasses
+    from eaopt.solver.cst_setup import COUPLER
+    settings = dict(quiet_mode=False, **flags)
+    monkeypatch.setattr(UPDATE, "COUPLER", dataclasses.replace(COUPLER, **settings))
+    if not settings["quiet_mode"]:
+        csti.configure(quiet_mode=False)
+
+
+def test_update_clears_the_previous_results_even_without_quiet_mode(
+        ready, tmp_path, monkeypatch):
+    """回归：工程里带着上一轮的 S 参数与场，改形状前先清掉——否则弹框等人点。
+
+    静默模式关掉（服务器上老版本 CST 没有这个方法时就是这样），闸门只剩
+    DeleteResults 一道。"不清也能过"是不可能的：假库里那个框会抛错。
+    """
+    path, _ = ready
+    _gates_off(monkeypatch)
+    assert all(_project(t).model3d.has_results for t in artifacts.TAGS)
+
+    assert UPDATE.main([str(path), "--shape", _shape_file(tmp_path)]) == 0
+
+    for tag in artifacts.TAGS:
+        prj = _project(tag)
+        assert prj.model3d.vba_calls[-1].count("DeleteResults") == 1
+        assert all("DeleteResults" not in cmd for _h, cmd in prj.model3d.history)
+
+
+def test_update_with_both_gates_off_reproduces_the_original_failure(
+        ready, tmp_path, monkeypatch):
+    """两闸都关 = 复现原始故障（对照上面那条：证明它真的在测东西）。"""
+    path, _ = ready
+    _gates_off(monkeypatch, clear_results=False)
+    assert UPDATE.main([str(path), "--shape", _shape_file(tmp_path)]) == 1
+
+
+# --------------------------------------------------------------------------- #
 # 出错路径
 # --------------------------------------------------------------------------- #
 def test_shape_source_must_be_given_and_only_one(ready, tmp_path):

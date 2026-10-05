@@ -34,13 +34,20 @@ TAG_END = "# ===================================================================
 
 
 def _run_without_fake_cst(code: str) -> subprocess.CompletedProcess:
-    """在**没有假库**的子进程里跑一段代码（本进程装了假 cst，必须隔离）。"""
+    """在**没有假库**的子进程里跑一段代码（本进程装了假 cst，必须隔离）。
+
+    子进程的消息里有中文，而管道解码默认走区域设置（Windows 是 GBK）——
+    这里把两边都钉成 UTF-8，否则断言拿到的是 ``stderr=None`` 加一条
+    reader 线程的解码异常。
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT)] + [p for p in [env.get("PYTHONPATH")] if p])
+    env["PYTHONIOENCODING"] = "utf-8"
     env.pop("PYTHONSTARTUP", None)
     return subprocess.run([sys.executable, "-c", code], cwd=str(REPO_ROOT),
-                          env=env, capture_output=True, text=True, timeout=120)
+                          env=env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=120)
 
 
 # --------------------------------------------------------------------------- #

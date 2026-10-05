@@ -12,6 +12,10 @@ False——静默建工程等于在用户可能开着的 GUI 里凭空冒出两�
 
 ``iter_NNN/`` 产物（shape.json、s_params_*.json、meta.json、可选场）由本类按
 ``begin_iteration`` 给的轮次写，写入口只有 ``artifacts`` 一处。
+
+无人值守：连上就切静默模式、每轮改形状前先清掉上一轮结果——CST 在"已有结果"
+的工程上重跑仿真会弹确认框问要不要删旧结果，GUI 模式下整个脚本就卡在那行
+（``CstSetup.quiet_mode`` / ``clear_results``，细节见各自的 docstring）。
 """
 
 from __future__ import annotations
@@ -48,7 +52,8 @@ class CstSolver(SolverInterface):
 
     def __init__(self, cfg: CaseConfig, *, setup: CstSetup = COUPLER,
                  auto_init: bool = False, save_fields: bool | None = None,
-                 attach: bool | None = None, log=print):
+                 attach: bool | None = None, quiet: bool | None = None,
+                 clear_results: bool | None = None, log=print):
         setup.validate_objective(cfg.objective)     # 端口规则在 CST 侧，装配点校验
         self.cfg = cfg
         self.setup = setup
@@ -56,6 +61,9 @@ class CstSolver(SolverInterface):
         self.save_fields = (setup.save_fields if save_fields is None
                             else bool(save_fields))
         self.attach = setup.attach_gui if attach is None else bool(attach)
+        self.quiet = setup.quiet_mode if quiet is None else bool(quiet)
+        self.clear_results = (setup.clear_results if clear_results is None
+                              else bool(clear_results))
         self.log = log
         self.de = None
         self.projects: dict = {}
@@ -67,7 +75,7 @@ class CstSolver(SolverInterface):
     def _environment(self):
         """惰性连实例：不碰 CST 就不连（装配/导入阶段不碰外部资源）。"""
         if self.de is None:
-            self.de = _connect(self.attach, False, self.log)
+            self.de = _connect(self.attach, False, self.log, quiet=self.quiet)
         return self.de
 
     def project_path(self, tag: str) -> Path:
@@ -130,6 +138,9 @@ class CstSolver(SolverInterface):
     def build_model(self, movable: list, fixed: list | None = None) -> None:
         """把新轮廓写进两个工程的设计区（各一条历史记录）。
 
+        ``clear_results`` 打开时，每轮**先清上一轮的结果再改形状**：CST 在
+        "已有结果 + 模型要变"时会弹确认框，GUI 模式下脚本会卡在那一行。
+
         movable: 可动金属轮廓（世界坐标 mm，开放路径按设计区裁剪闭合）；
         fixed: 固定金属与馈线——**模板里已经有了，这里忽略**（固定几何只在
         建模板时写一次，pipeline 不重复施加）。
@@ -137,7 +148,10 @@ class CstSolver(SolverInterface):
         polys = close_open_contours(movable, self.cfg.design_region.box)
         self._ensure_projects()
         for tag in artifacts.TAGS:
-            _update_design_region(self._open(tag).model3d, polys, self.setup,
+            prj = self._open(tag)
+            if self.clear_results:
+                _clear_results(prj.model3d, what=f"{tag} 工程", log=self.log)
+            _update_design_region(prj.model3d, polys, self.setup,
                                   what=f"更新 {tag} 工程设计区", log=self.log)
         if self._it is not None:
             path = artifacts.save_shape(self.cfg.output.dir, self._it, polys)
@@ -204,7 +218,7 @@ class CstSolver(SolverInterface):
 # --------------------------------------------------------------------------- #
 # 与三个 cst_*.py 脚本同款的流程片段（各自内联一份，重复是接受的代价）
 # --------------------------------------------------------------------------- #
-def _connect(attach: bool, force_new: bool, log):
+def _connect(attach: bool, force_new: bool, log, quiet: bool = True):
     """拿到一个 ``DesignEnvironment``（语义见脚本里的同名函数）。"""
     if attach:
         try:
@@ -216,17 +230,75 @@ def _connect(attach: bool, force_new: bool, log):
                 "  对策：先打开 CST Studio 2024，或把 attach 关掉（让脚本"
                 "自己起静态实例）。") from e
         log("[OK] 附接到已运行的 CST 实例")
-        return de
+        return _with_quiet_mode(de, quiet, log)
     if not force_new:
         try:
             de = csti.DesignEnvironment.connect_to_any()
-            log("[OK] 复用已运行的 CST 实例")
-            return de
         except Exception:
             pass                                # 没有实例 → 新建，属正常路径
+        else:
+            log("[OK] 复用已运行的 CST 实例")
+            return _with_quiet_mode(de, quiet, log)
     de = csti.DesignEnvironment.new()
     log("[OK] 新建 CST 实例（静态、无 GUI）")
+    return _with_quiet_mode(de, quiet, log)
+
+
+def _with_quiet_mode(de, quiet: bool, log):
+    """按配置切静默模式，返回 ``de``（方便在 return 里连写）。"""
+    if quiet:
+        _set_quiet_mode(de, log)
     return de
+
+
+def _set_quiet_mode(de, log) -> bool:
+    """切静默模式：模态框（含"是否删除已有结果"的确认框）不再弹、不等人点。
+
+    真库方法名 ``DesignEnvironment.set_quiet_mode``（py4cst 一上来也这么调）。
+    **这是会话级状态**：``--attach`` 下用户自己的 GUI 会话也会被静默，要恢复
+    就重开 CST（或按 docs/server_runbook.md 常见问题一节处理）。
+    """
+    fn = getattr(de, "set_quiet_mode", None)
+    if not callable(fn):
+        log("[ -- ] 该 CST 版本没有 set_quiet_mode()：跳过静默模式")
+        return False
+    try:
+        fn(True)
+    except Exception as e:                      # pragma: no cover - 版本差异
+        log(f"[ -- ] 切静默模式失败（{e}）：继续，但模态框可能仍需手工确认")
+        return False
+    log("[OK] CST 静默模式已开（模态框不再弹）")
+    return True
+
+
+def _clear_results(m3d, *, what: str, log) -> bool:
+    """清掉工程里已有的结果——求解时没有旧结果，确认框就无从弹起。
+
+    CST 在**已有结果的工程**上重跑仿真时会弹模态框问"要不要删掉上次的
+    结果"，GUI 模式下脚本会一直卡在那行。挡在源头：每轮改形状之前先清。
+    走**控制宏**（``_execute_vba_code``，不进历史表），轮的历史记录条数不变；
+    该版本没有控制宏通道时退回历史表并告警。
+
+    命令名 ``DeleteResults`` 从 py4cst 来（照官方库自动生成的
+    ``Project.delete_results``）；若 CST 侧不认这个命令，会在这里告警而不是
+    把整轮跑挂——按 docs/server_runbook.md 用 GUI 录制正确 VBA 再来改。
+    """
+    run = getattr(m3d, "_execute_vba_code", None)
+    if callable(run):
+        try:
+            run("Sub Main\nDeleteResults\nEnd Sub")
+        except Exception as e:
+            log(f"[ -- ] {what}：清结果失败（{e}）；求解时 CST 可能弹确认框")
+            return False
+        log(f"[OK] {what}：已清掉已有结果（DeleteResults，控制宏，不进历史表）")
+        return True
+    try:                                        # 没有控制宏通道 → 退回历史表
+        m3d.add_to_history("delete results", "DeleteResults")
+    except Exception as e:
+        log(f"[ -- ] {what}：清结果失败（{e}）；求解时 CST 可能弹确认框")
+        return False
+    log(f"[OK] {what}：已清掉已有结果（DeleteResults，历史表）")
+    return True
 
 
 def _open_or_reuse(de, path, log):
@@ -323,5 +395,5 @@ def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log):
     out.parent.mkdir(parents=True, exist_ok=True)
     return R.export_field_cropped(
         m3d, field_type, float(setup.frequency_ghz),
-        setup.resolve_export_step(cfg.sampling.point_spacing_mm), out,
+        setup.resolve_export_step(cfg.field_export_step_mm), out,
         cfg.design_region.box, float(cfg.design_region.field_margin_mm), log=log)

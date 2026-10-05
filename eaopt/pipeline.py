@@ -22,8 +22,10 @@ import numpy as np
 
 from eaopt import artifacts
 from eaopt.adjoint.derivative import shape_derivative
-from eaopt.adjoint.sampling import (is_fixed_contour, make_fixed_sdf,
-                                    sample_boundary, scatter_to_grid)
+from eaopt.adjoint.sampling import (boundary_nodes, is_fixed_contour,
+                                    make_fixed_sdf, node_field_indices,
+                                    sample_boundary, sample_nodes,
+                                    scatter_to_grid, spread_to_grid)
 from eaopt.config import CaseConfig
 from eaopt.geometry.contour import extract_contours, smooth_resample
 from eaopt.geometry.levelset import LevelSet2D
@@ -43,12 +45,17 @@ def make_level_set(cfg: CaseConfig) -> LevelSet2D:
 
 
 def movable_contours(ls: LevelSet2D, cfg: CaseConfig) -> list[np.ndarray]:
-    """提取可动金属轮廓（排除固定金属，如直通线），按点距重采样。
+    """提取可动金属轮廓（排除固定金属，如直通线），供 CST 重建几何。
 
     **模块级函数**，不是 OptimizerPipeline 的私有方法：cst_init_* 与
     cst_update 脚本要用同一份"初始轮廓"去建/改 CST 工程，各写一份迟早
     漂移（脚本里看到的形状 ≠ 迭代里演化的形状，而且不报错）。
+
+    ``scheme=nodes``：返回**边界网格节点折线**（论文 Fig.3b：采样点连点
+    成轮廓，与仿真形状是同一份离散）；``contour``：按点距重采样（旧）。
     """
+    if cfg.sampling.scheme == "nodes":
+        return boundary_nodes(ls, cfg)
     contours = extract_contours(ls.xs, ls.ys, ls.phi)
     fixed_sdf = make_fixed_sdf(ls, cfg)
     out = []
@@ -83,6 +90,7 @@ class OptimizerPipeline:
         self.omega = 2.0 * np.pi * setup.frequency_ghz * 1e9
         self.eps_r = setup.eps_r
         self.history = History()
+        self._z_plane_logged = False
         self.outdir = Path(cfg.output.dir)
         self.outdir.mkdir(parents=True, exist_ok=True)
         self._log_file = self.outdir / "history.jsonl"
@@ -125,31 +133,13 @@ class OptimizerPipeline:
 
                 # ---- 形状导数 -> 速度 -> 几何更新 ----
                 sol_b = self.solver.solve_backward()
-                pts, nrm = sample_boundary(movable, self.ls, cfg)
-                pts3 = np.column_stack([pts, np.full(len(pts), cfg.sampling.field_z_mm)])
-                nrm3 = np.column_stack([nrm, np.zeros(len(nrm))])
-                e_f = sol_f.e_field.interp(pts3)
-                h_f = sol_f.h_field.interp(pts3)
-                e_b = sol_b.e_field.interp(pts3)
-                h_b = sol_b.h_field.interp(pts3)
-                dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin, self.omega, self.eps_r)
+                V = self._assemble_velocity(sol_f, sol_b, movable)
 
-                v_mask_grid = build_velocity_mask(self.ls, cfg)
-                # 栅格化必须回填到边界点（bnd，偏移前），否则落在速度延拓
-                # 种子带（|φ|≤0.75·dx）之外，速度场无法播种
-                side = 1.0 if cfg.sampling.sample_side == "outside" else -1.0
-                bnd = pts - side * cfg.sampling.sample_offset_mm * nrm
-                # 掩膜先于归一化：被禁点（角点奇异性、固定区邻域）不参与
-                # max|δp|，否则它们会劫持速度尺度拖慢全场
-                active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
-                v = fixed_step_velocity(dp, opt.velocity_sign, active)
-                v_boundary = scatter_to_grid(self.ls, bnd, v)
-                V = self.ls.extend_velocity(v_boundary, cfg.level_set.extension_band_mm)
-                V *= v_mask_grid
-
-                steps = max(1, round(opt.step_size / (0.4 * self.ls.dx)))
-                self.ls.update(V, steps=steps, cfl=0.4)
-                apply_min_gap(self.ls, cfg)
+                steps = max(1, round(opt.step_cells / opt.cfl))
+                for _ in range(steps):
+                    self.ls.update(V, steps=1, cfl=opt.cfl)
+                    # 投影下沉到每个子步：一轮走多步时中间态也可能穿进禁区
+                    apply_min_gap(self.ls, cfg)
                 if it % cfg.level_set.reinit_every == 0:
                     self.ls.reinitialize(band=2.0 * cfg.level_set.extension_band_mm, iters=40)
             else:
@@ -163,6 +153,82 @@ class OptimizerPipeline:
         print(f"\n优化结束（{self.history.stop_reason}）：{len(self.history.records)} 次迭代，"
               f"输出目录 {self.outdir}")
         return self.history
+
+    # ------------------------------------------------------------------ #
+    def _assemble_velocity(self, sol_f, sol_b, movable) -> np.ndarray:
+        """一轮的形状导数 → 网格速度场 V（两种采样方案，见 sampling.py）。"""
+        cfg = self.cfg
+        s = cfg.sampling
+        v_mask_grid = build_velocity_mask(self.ls, cfg)
+
+        if s.scheme == "nodes":
+            # 采样点 = 边界网格节点（零插值：场值按数组下标直接取）
+            # 两套下标**不能混**：g_* 是 φ 网格（= 速度掩膜/延拓的网格），
+            # f_* 是 CST 导出网格。两者只是同格距的同一张 lattice，原点一般
+            # 不同（导出的是整个包围盒），混用会静默错位——越界才报错。
+            pts, g_ij = sample_nodes(self.ls, movable)
+            if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新
+                return np.zeros(self.ls.phi.shape)
+            f_ix, f_iy, f_iz, z_used = node_field_indices(sol_f.e_field, pts, s.field_z_mm)
+            self._check_sample_plane(z_used)
+            val = [sol_f.e_field.data[f_ix, f_iy, f_iz]]
+            for f in (sol_f.h_field, sol_b.e_field, sol_b.h_field):
+                # 每次导出都得自己证明采样点落在它的网格上：网格不一致时
+                # 复用下标会取到别处的场值，而且不报错
+                jx, jy, jz, _ = node_field_indices(f, pts, s.field_z_mm)
+                if not (np.array_equal(jx, f_ix) and np.array_equal(jy, f_iy)):
+                    raise ValueError("fwd/bwd 的 E/H 场导出网格不一致，无法按节点取场")
+                val.append(f.data[jx, jy, jz])
+            e_f, h_f, e_b, h_b = val
+            n = self.ls.normals_at(pts)
+            nrm3 = np.column_stack([n, np.zeros(len(n))])
+            dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin,
+                                  self.omega, self.eps_r)
+            # 掩膜先于归一化：被禁点（角点奇异性、固定区邻域）不参与
+            # max|δp|，否则它们会劫持速度尺度拖慢全场
+            active = v_mask_grid[g_ij[:, 0], g_ij[:, 1]] > 0.5
+            v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
+            return spread_to_grid(self.ls, g_ij, v) * v_mask_grid
+
+        pts, nrm = sample_boundary(movable, self.ls, cfg)
+        pts3 = np.column_stack([pts, np.full(len(pts), s.field_z_mm)])
+        nrm3 = np.column_stack([nrm, np.zeros(len(nrm))])
+        e_f = sol_f.e_field.interp(pts3)
+        h_f = sol_f.h_field.interp(pts3)
+        e_b = sol_b.e_field.interp(pts3)
+        h_b = sol_b.h_field.interp(pts3)
+        dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin,
+                              self.omega, self.eps_r)
+        # 栅格化必须回填到边界点（bnd，偏移前），否则落在速度延拓
+        # 种子带（|φ|≤0.75·dx）之外，速度场无法播种
+        side = 1.0 if s.sample_side == "outside" else -1.0
+        bnd = pts - side * s.sample_offset_mm * nrm
+        active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
+        v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
+        v_boundary = scatter_to_grid(self.ls, bnd, v)
+        V = self.ls.extend_velocity(v_boundary, cfg.level_set.extension_band_mm)
+        return V * v_mask_grid
+
+    def _check_sample_plane(self, z_used: float) -> None:
+        """采样面吸附到导出网格面：说一声；**落进金属体内则报错**。
+
+        z 的约定来自 cst_setup：z=0 是基板顶面 = 金属底面，金属占
+        [0, metal_thickness]。导出网格的 z 面由 CST 包围盒定，请求的面吸附到
+        最近的面——0.1 mm 步长下 z=0 最近的面是 +0.0015（金属内部），PEC 里
+        E、H ≈ 0，δp 会全是 0：优化一轮都不动，却不报任何错。
+        """
+        if self._z_plane_logged:
+            return
+        self._z_plane_logged = True
+        req, t = float(self.cfg.sampling.field_z_mm), float(self.setup.metal_thickness_mm)
+        if 0.0 < z_used <= t:
+            raise ValueError(
+                f"场采样面 z={req:g} mm 吸附到导出网格面 z={z_used:g} mm，落在金属"
+                f"体内（z ∈ [0, {t:g}] 是 {t * 1e3:.0f} µm 金属，内部场≈0，"
+                "δp 会恒为 0、优化静默空转）。请把 sampling.field_z_mm 设到金属"
+                "下方的介质里（如 -0.1 mm）。")
+        if abs(z_used - req) > 1e-9:
+            print(f"[采样] 场采样面 z={req:g} mm 吸附到导出网格面 z={z_used:g} mm")
 
     # ------------------------------------------------------------------ #
     def _converged(self) -> bool:
@@ -179,20 +245,44 @@ class OptimizerPipeline:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     def _snapshot(self, it: int) -> None:
+        """本轮 φ 的金属俯视图（金属深色、空气浅色，与 layout_reference.png 同款）。
+
+        图上必须画出**设计区**（红虚线）——早先只画了固定区（直通线）的红框，
+        被当成了"设计区画错了"。三类区域的样式与图例文案在 ``eaopt.plotting``
+        （与 `scripts/plot_layout.py` 共用一套，见该模块说明）。
+        """
         import matplotlib.pyplot as plt
 
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.pcolormesh(self.ls.xs, self.ls.ys, (self.ls.phi < 0).T,
-                      cmap="copper", vmin=0, vmax=1)
-        cs = ax.contour(self.ls.xs, self.ls.ys, self.ls.phi.T, levels=[0.0],
-                        colors="k", linewidths=0.8)
-        for p in self.cfg.fixed_region:
-            v = np.asarray(p.vertices, dtype=float)
-            ax.plot(np.append(v[:, 0], v[0, 0]), np.append(v[:, 1], v[0, 1]),
-                    "r-", linewidth=1.0)
+        from eaopt import plotting
+
+        fig, ax = plt.subplots(figsize=(9, 4.6))
+        ax.set_facecolor(plotting.OUTSIDE_COLOR)     # 设计区之外不是优化对象
+        box_patch = self.cfg.design_region.box
+        ax.add_patch(plt.Rectangle((box_patch.x[0], box_patch.y[0]),
+                                   box_patch.width, box_patch.height,
+                                   facecolor=plotting.AIR_COLOR, lw=0, zorder=1))
+        # 金属按 **φ=0 的零等值线**填色（与 extract_contours 提取轮廓用的是
+        # 同一条线）。早先用 pcolormesh 给节点上色：单元画在节点**上方**，
+        # 整块金属看起来平移了半格（臂顶边 y=0 画到 +0.1），对着设计区边界
+        # 看就像形状不对——而 φ 本身没问题。也别用 ``phi < 0`` 判断：界面
+        # 正好压着节点时（臂顶边 y=0 就压着）φ 是 ±1e-15 的噪声，会画出一
+        # 排假毛刺。等值线插值把这两件事一起解决了。
+        ax.contourf(self.ls.xs, self.ls.ys, self.ls.phi.T,
+                    levels=[-1e9, 0.0], colors=[plotting.METAL_COLOR], zorder=2)
+        plotting.draw_regions(ax, self.cfg)
+        box = self.cfg.design_region.box
+        # 视野 = 设计区 ± 0.5 mm。固定区（直通线）在 x 上比设计区宽，不夹住
+        # 坐标轴的话它会把视野撑开，设计区在图上只占中间一小块
+        ax.set_xlim(box.x[0] - 0.5, box.x[1] + 0.5)
+        ax.set_ylim(box.y[0] - 0.5, box.y[1] + 0.5)
         ax.set_aspect("equal")
-        ax.set_title(f"iteration {it}")
-        fig.savefig(self.outdir / f"iter_{it:03d}.png", dpi=100)
+        ax.set_xlabel("x (mm)")
+        ax.set_ylabel("y (mm)")
+        ax.set_title(f"iteration {it}", pad=24)
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3,
+                  fontsize=8, frameon=False)
+        fig.savefig(self.outdir / f"iter_{it:03d}.png", dpi=110,
+                    bbox_inches="tight")
         plt.close(fig)
 
     def _plot_fom(self) -> None:

@@ -111,7 +111,7 @@ def make_compact_cfg(tmp_path, min_gap: float = 0.1, velocity_sign: float = 1.0,
                               sample_side="outside"),
         # convergence_window > max_iterations：测试里常要跑满步数观察完整
         # 轨迹，不想被收敛窗口提前截断（收敛逻辑本身不变）
-        optimizer=OptimizerSpec(step_size=0.02, velocity_sign=velocity_sign,
+        optimizer=OptimizerSpec(step_cells=1.0, cfl=0.5, velocity_sign=velocity_sign,
                                 max_iterations=max_iterations,
                                 fom_tolerance=1e-4,
                                 convergence_window=max_iterations + 10),

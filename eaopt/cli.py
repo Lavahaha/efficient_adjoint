@@ -88,7 +88,7 @@ def banner(log, title: str, cfg: CaseConfig, setup: CstSetup = COUPLER) -> None:
         f"bwd={setup.stimulus('bwd', cfg.objective)}  "
         f"（建工程时写死，之后不再触碰激励 API）")
     log(f"频点        : {setup.frequency_ghz} GHz")
-    log(f"场导出步长  : {setup.resolve_export_step(cfg.sampling.point_spacing_mm):g} mm")
+    log(f"场导出步长  : {setup.resolve_export_step(cfg.field_export_step_mm):g} mm")
     log("-" * 72)
 
 

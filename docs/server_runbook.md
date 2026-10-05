@@ -135,6 +135,36 @@ python scripts/run_coupler.py configs/coupler.yaml
 成功的标准是**趋势与终点**：|S31| 应被显著抬高（约 +8 dB 量级）并收敛
 到 −10 dB 附近、定向性同步升到 17 dB 附近。
 
+## 3.5 统一网格与 nodes 采样（当前配置）
+
+φ 网格、边界采样点、CST 场导出步长**三者同一个数**：`design_region.grid_step_mm`
+（现为 0.1 mm，`CaseConfig.field_export_step_mm` 自动跟随）。采样点 = 边界外
+侧第 `sampling.offset_cells`（=1）排网格节点，轮廓 = 这些节点连成的折线
+（论文 Fig. 3b）；场值按数组下标直接取，**不做插值**，一轮最大位移 =
+`optimizer.step_cells` 格（1 格 = 0.1 mm）。理由与证据见 `sampling.py` 顶部。
+
+跑起来要盯的三件事：
+
+1. **导出体积**：0.2 → 0.1 使导出点数 ×7.7（ASCIIExport 没有范围属性，导的是
+   整个包围盒）——四份场文件从 29 MB 涨到约 225 MB/份，`<output.dir>/cst_work/`
+   峰值约 0.9 GB（每轮覆写，不累积）。解析本身很快（本地实测 29 MB / 0.36 s，
+   约 0.1 mm 每轮 11 s），CST 侧导出时间按点数线性增长，**首次跑先看一轮的
+   耗时**，明显拖慢再回来讨论裁体积。
+2. **采样面**：`sampling.field_z_mm = -0.1`（金属下方介质里），启动时会打印
+   一行"吸附到导出网格面 z=-0.0985"。**绝不能填 0.0**：0.1 mm 导出网格在
+   z=+0.0015 有面、正好在 35 µm 金属体内，PEC 里 E/H≈0 → δp 恒 0、优化静默
+   空转（pipeline 现在会直接报错拦住）。
+3. **网格整除**：设计区尺寸必须被 `grid_step_mm` 整除（12/0.1=120 ✓、
+   3.5/0.1=35 ✓），否则 `LevelSet2D` 的 linspace 会悄悄拉伸格距、采样点落不
+   到导出网格上；`CaseConfig.validate()` 会拦。设计区边界还要落在 CST
+   导出网格的格线上（导出网格原点实测 x=−5.6 / y=−6.9：0、12、−2.6、0.9
+   都是 0.1 的整数倍 ✓）。
+
+本地（无 CST）已用真实 iter=1 场数据做过离线 A/B，见 `_debug_nodes_ab.py`
+与 `_debug_nodes_ab.png`：窄带速度覆盖率 49% → 100%，演化后顶边粗糙度
+（二阶差分 RMS）6.0e-3 → 9.2e-4 mm，位移方向与旧方案一致（符号一致 99.6%、
+相关 0.96）。
+
 ## 4. 一等 TODO：`velocity_sign` 尚未裁决
 
 形状导数 → 速度的符号（论文式 (24)/(31) 之间有符号矛盾）目前只能靠有限
@@ -195,6 +225,23 @@ python scripts/run_coupler.py configs/coupler.yaml
   参数个数——`prj.save()` 已做成两段式：先按文档的
   `save(path, allow_overwrite=True)`，形参不存在（`TypeError`）再退回
   `save(path)`）。
+- **脚本卡住不动、CST 弹窗问"Existing MWS result need to be deleted and
+  re-simulated ... Do you want to proceed?"**：这是 CST 在**已有结果**的工程
+  上重跑仿真时的确认框，`run_solver()` 是同步的，脚本就停在那一行等人点。
+  现在有两道闸（都在 `eaopt/solver/cst_setup.py` 的 `CstSetup` 上，缺省都开）：
+  1. `quiet_mode=True`：一连上就 `DesignEnvironment.set_quiet_mode(True)`，
+     模态框不再弹（真库有这个方法的版本才有用；没有时日志里一行
+     `[ -- ] 该 CST 版本没有 set_quiet_mode()`，然后靠第 2 条）。
+     **这是会话级状态**：`--attach` 时你自己的 GUI 会话也被静默，要恢复
+     只能重开 CST。
+  2. `clear_results=True`：每轮改形状**之前**先 `DeleteResults`（走
+     `_execute_vba_code` 控制宏，不进 History List，所以"每轮恰好一条历史
+     记录"的验收判据不受影响）。旧结果不存在，框就无从弹起。
+  两道都失效（例如 CST 不认 `DeleteResults`）时日志里会出现
+  `[ -- ] ... 求解时 CST 可能弹确认框`，那时按下一段的老办法手工兜底。
+  **想手工确认正确 VBA**：在 GUI 里做一次那步操作（Edit → History List →
+  选到那一条 → 右下 Macro 按钮生成 VBA），比查文档可靠——`DeleteResults`
+  这个命令名就是这么从 py4cst（照官方库自动生成）核出来的。
 - **`Invalid stimulation port, please specify.`（Solver.Start 时报）**：
   两种原因，报错文本能区分——
   - 带 **`please specify a positive integer value or "All"`** ⇒ 值格式错

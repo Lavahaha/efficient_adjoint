@@ -1,9 +1,14 @@
 """渲染 CST 侧布局参考图（用来对着论文 Fig.5 核对 CST 里的模板模型）。
 
 画两类东西，叠在一张图上，便于发现配置与模板不一致：
-  - 配置侧（算例相关，来自 YAML）：设计区红框、allowed_region、
-    initial_metal 各多边形（只描红边，不填充）
+  - 配置侧（算例相关，来自 YAML）：设计区 / 允许区 / 固定区三类框
+    （样式与图例文案在 ``eaopt.plotting``，与 iter_NNN.png 共用一套）、
+    initial_metal 各多边形（只描绿边，不填充）
   - 模板侧（CST 宏会建出来的实体）：基板、直通线、两条腿、4 个端口
+
+**别拿红色画设计区以外的东西**：固定区（直通线）以前是红实线，用户对着
+iter_NNN.png 里同款红框说"红线框出的应该是设计区域"——设计区是红虚线，
+固定区现在是蓝实线。
 
 模板侧的布局常量目前在 eaopt/solver/cst_model.py（仍与耦合器
 算例耦合，见该模块头部 TODO）。
@@ -26,6 +31,7 @@ from matplotlib.patches import Polygon as MplPolygon             # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from eaopt import plotting                                       # noqa: E402
 from eaopt.config import CaseConfig                              # noqa: E402
 from eaopt.solver import cst_model as T                   # noqa: E402
 
@@ -45,32 +51,22 @@ def plot_layout(cfg: CaseConfig, out: Path) -> Path:
     # ---- 模板侧（CST 宏会建出来的实体）----
     add([(T.THRU_X0, T.LEG_BOT), (T.THRU_X1, T.LEG_BOT),
          (T.THRU_X1, T.SUB_TOP), (T.THRU_X0, T.SUB_TOP)],
-        "#ececec", "substrate", z=0)
+        plotting.SUBSTRATE_COLOR, "substrate", z=0)
     add([(T.THRU_X0, T.THRU_LO), (T.THRU_X1, T.THRU_LO),
          (T.THRU_X1, T.THRU_HI), (T.THRU_X0, T.THRU_HI)],
-        "#333333", "through line (p1-p2)")
-    add(T._left_leg_polygon(), "#333333", "legs (p3-p4)")
-    add(T._right_leg_polygon(), "#333333")
+        plotting.METAL_COLOR, "through line (p1-p2)")
+    add(T._left_leg_polygon(), plotting.METAL_COLOR, "legs (p3-p4)")
+    add(T._right_leg_polygon(), plotting.METAL_COLOR)
     # 设计区金属（= 耦合臂横段 + 两端内侧圆角；pipeline 每轮重建）
-    add(T._arm_design_polygon(), "#333333", "design metal (arm)")
+    add(T._arm_design_polygon(), plotting.METAL_COLOR, "design metal (arm)")
 
     # ---- 配置侧（算例 YAML；只描边，与模板边重合说明二者一致）----
     for i, poly in enumerate(cfg.initial_metal):
         ax.add_patch(MplPolygon(poly.vertices, closed=True, fill=False,
-                                edgecolor="#d02020", lw=1.0, zorder=4,
+                                edgecolor="#2ca02c", lw=1.0, zorder=4,
                                 label="initial_metal (YAML)" if i == 0 else None))
-    box = cfg.design_region.box
-    ax.add_patch(MplPolygon([(box.x[0], box.y[0]), (box.x[1], box.y[0]),
-                             (box.x[1], box.y[1]), (box.x[0], box.y[1])],
-                            closed=True, fill=False, edgecolor="red",
-                            ls=(0, (6, 4)), lw=1.1, zorder=5,
-                            label="design box"))
-    area = cfg.constraints.allowed_region
-    ax.add_patch(MplPolygon([(area.x[0], area.y[0]), (area.x[1], area.y[0]),
-                             (area.x[1], area.y[1]), (area.x[0], area.y[1])],
-                            closed=True, fill=False, edgecolor="#e08000",
-                            ls=(0, (2, 3)), lw=1.0, zorder=5,
-                            label="allowed_region"))
+    # 设计区（红虚线）/ 允许区（橙点线）/ 固定区（蓝实线）——与 iter_NNN.png 同款
+    plotting.draw_regions(ax, cfg)
 
     # ---- 端口位置（面 + 横向范围中点 + 朝内箭头）----
     for num, (x, y, dx, dy) in {
@@ -81,7 +77,7 @@ def plot_layout(cfg: CaseConfig, out: Path) -> Path:
     }.items():
         ax.annotate(f"p{num}", (x, y), (x + 1.6 * dx - 0.2, y + 1.6 * dy),
                     color="b", ha="center", va="center",
-                    arrowprops=dict(arrowstyle="->", color="b"), zorder=6)
+                    arrowprops=dict(arrowstyle="->", color="b"), zorder=7)
 
     ax.set_xlim(T.THRU_X0 - 1.5, T.THRU_X1 + 1.5)
     ax.set_ylim(T.LEG_BOT - 1.0, T.SUB_TOP + 1.0)

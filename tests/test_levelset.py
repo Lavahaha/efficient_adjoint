@@ -35,6 +35,23 @@ def test_init_sdf_matches_analytic_rectangle():
     assert np.abs(ls.phi - rect_sdf(X, Y)).max() < 1e-10
 
 
+def test_nodes_on_the_polygon_boundary_count_as_metal():
+    """边界节点归金属：φ ≤ 0（不能是 +1e-15 那种噪声）。
+
+    本算例的臂顶边 y=0 正好压着一条节点行，而 ``Path.contains_points`` 对
+    正好落在边上的点是随机判的——不显式判，那一行就是 ±1e-15 的噪声，
+    画进 iter_NNN.png 是一排假毛刺（几何没错，但看着像坏了）。
+    """
+    ls = make_ls(dx=0.1)
+    ls.init_from_polygons([RECT])
+    span = (ls.xs >= 2.0) & (ls.xs <= 10.0)     # 边上那一段，不含矩形之外
+    for target in (-1.0, 1.0):                  # 矩形的下边与上边
+        j = int(np.argmin(np.abs(ls.ys - target)))
+        on_edge = ls.phi[span, j]
+        assert np.all(on_edge <= 0.0)           # 边界节点算金属
+        assert np.abs(on_edge).max() < 1e-9     # 且确实落在界面上
+
+
 def test_update_expands_metal_with_positive_velocity():
     ls = make_ls(dx=0.05)
     ls.init_from_polygons([RECT])

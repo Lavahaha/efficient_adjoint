@@ -331,12 +331,18 @@ def test_config_initial_metal_matches_template():
 
 
 def test_config_design_box_agrees_with_template():
-    """配置文件里的设计区必须与模板布局一致（否则重建的金属对不上腿）。"""
+    """配置文件里的设计区必须与模板布局一致（否则重建的金属对不上腿）。
+
+    设计区（= 论文 Fig.5 红框）= 可动金属的活动范围，一个域：x 由两条腿的
+    内边缘定，上界 = 直通线下边缘 − 最小间距（论文"臂上边缘不得超过直通线，
+    最小间距 0.1 mm"），下界留出向下生长的余量。
+    """
     cfg = CaseConfig.from_yaml(REPO / "configs" / "coupler.yaml")
     box = cfg.design_region.box
     assert list(box.x) == [M.LEG_L_IN, M.LEG_R_IN]   # 设计区宽 = d
-    assert box.y[0] < M.ARM_LO                       # 覆盖臂下缘（可向下生长）
-    assert box.y[1] > M.THRU_HI                      # 覆盖直通线（作为固定障碍）
-    allowed = cfg.constraints.allowed_region
-    assert list(allowed.x) == [M.LEG_L_IN, M.LEG_R_IN]
-    assert allowed.y[1] == M.THRU_LO                 # 臂不得越过直通线下缘
+    assert box.y[1] == M.THRU_LO - cfg.constraints.min_gap_mm  # 论文约束
+    assert box.y[1] > M.ARM_HI                       # 上界在臂顶之上（臂能上长）
+    assert box.y[1] < M.THRU_LO                      # 且不越过直通线
+    assert box.y[0] < min(M._arm_design_polygon(), key=lambda p: p[1])[1]
+    assert cfg.constraints.allowed_region is None     # 两域合一
+    assert cfg.constraints.taper_edges == "x"         # 只在腿那两条边 taper

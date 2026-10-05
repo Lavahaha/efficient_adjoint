@@ -78,6 +78,9 @@ def main(argv=None) -> int:
             for tag in artifacts.TAGS}
         # 两个工程都改成功后才落盘形状——半施加状态不留形状记录
         for tag, prj in projects.items():
+            if setup.clear_results:
+                # 先清旧结果：CST 在"已有结果 + 模型要变"时会弹确认框卡住脚本
+                _clear_results(prj.model3d, what=f"{tag} 工程", log=log)
             _update_design_region(prj.model3d, polys, setup,
                                   what=f"更新 {tag} 工程设计区", log=log)
         shape_path = artifacts.save_shape(cfg.output.dir, n, polys)
@@ -111,17 +114,72 @@ def _connect(attach: bool, force_new: bool, log):
                 "  对策：先打开 CST Studio 2024，或去掉 --attach（让脚本"
                 "自己起静态实例）。") from e
         log("[OK] 附接到已运行的 CST 实例")
-        return de
+        return _with_quiet_mode(de, log)
     if not force_new:
         try:
             de = csti.DesignEnvironment.connect_to_any()
-            log("[OK] 复用已运行的 CST 实例")
-            return de
         except Exception:
             pass                                # 没有实例 → 新建，属正常路径
+        else:
+            log("[OK] 复用已运行的 CST 实例")
+            return _with_quiet_mode(de, log)
     de = csti.DesignEnvironment.new()
     log("[OK] 新建 CST 实例（静态、无 GUI）")
+    return _with_quiet_mode(de, log)
+
+
+def _with_quiet_mode(de, log):
+    """切静默模式（``CstSetup.quiet_mode``），返回 ``de`` 方便连写。"""
+    if COUPLER.quiet_mode:
+        _set_quiet_mode(de, log)
     return de
+
+
+def _set_quiet_mode(de, log) -> bool:
+    """切静默模式：模态框（含"是否删除已有结果"的确认框）不再弹、不等人点。
+
+    真库方法名 ``DesignEnvironment.set_quiet_mode``（py4cst 一上来也这么调）。
+    **这是会话级状态**：``--attach`` 下用户自己的 GUI 会话也会被静默，要恢复
+    就重开 CST（或按 docs/server_runbook.md 常见问题一节处理）。
+    """
+    fn = getattr(de, "set_quiet_mode", None)
+    if not callable(fn):
+        log("[ -- ] 该 CST 版本没有 set_quiet_mode()：跳过静默模式")
+        return False
+    try:
+        fn(True)
+    except Exception as e:                      # pragma: no cover - 版本差异
+        log(f"[ -- ] 切静默模式失败（{e}）：继续，但模态框可能仍需手工确认")
+        return False
+    log("[OK] CST 静默模式已开（模态框不再弹）")
+    return True
+
+
+def _clear_results(m3d, *, what: str, log) -> bool:
+    """清掉工程里已有的结果——求解时没有旧结果，确认框就无从弹起。
+
+    CST 在**已有结果的工程**上重跑仿真时会弹模态框问"要不要删掉上次的
+    结果"，GUI 模式下脚本会一直卡在那行。挡在源头：改形状之前先清。
+    走**控制宏**（``_execute_vba_code``，不进历史表）；该版本没有控制宏通道时
+    退回历史表并告警。命令名 ``DeleteResults`` 从 py4cst 来（照官方库自动生成
+    的 ``Project.delete_results``）。
+    """
+    run = getattr(m3d, "_execute_vba_code", None)
+    if callable(run):
+        try:
+            run("Sub Main\nDeleteResults\nEnd Sub")
+        except Exception as e:
+            log(f"[ -- ] {what}：清结果失败（{e}）；求解时 CST 可能弹确认框")
+            return False
+        log(f"[OK] {what}：已清掉已有结果（DeleteResults，控制宏，不进历史表）")
+        return True
+    try:                                        # 没有控制宏通道 → 退回历史表
+        m3d.add_to_history("delete results", "DeleteResults")
+    except Exception as e:
+        log(f"[ -- ] {what}：清结果失败（{e}）；求解时 CST 可能弹确认框")
+        return False
+    log(f"[OK] {what}：已清掉已有结果（DeleteResults，历史表）")
+    return True
 
 
 def _open_or_reuse(de, path, log):
@@ -262,7 +320,7 @@ def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log):
     out.parent.mkdir(parents=True, exist_ok=True)
     return R.export_field_cropped(
         m3d, field_type, float(setup.frequency_ghz),
-        setup.resolve_export_step(cfg.sampling.point_spacing_mm), out,
+        setup.resolve_export_step(cfg.field_export_step_mm), out,
         cfg.design_region.box, float(cfg.design_region.field_margin_mm), log=log)
 
 

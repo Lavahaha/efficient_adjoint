@@ -2,7 +2,9 @@
 
 - build_velocity_mask: fixed_region 内、allowed_region 外、
   设计区边缘 taper 带内 → 速度置零（保证馈线/直通线不变形、
-  可动金属不越界、与固定几何平滑衔接）；
+  可动金属不越界、与固定几何平滑衔接）。taper 只作用在
+  ``constraints.taper_edges`` 指定的边上——设计区本身就是可动金属生长
+  边界的那条边不能 taper（见 ConstraintSpec）；
 - apply_min_gap: 最小间距硬约束投影——构造固定金属的 SDF 加
   min_gap 偏移得到禁区，φ ← max(φ, φ_prohibit)，裁掉侵入禁区的
   可动金属（硬保证，优于速度抑制的渐近保证）。
@@ -59,16 +61,18 @@ def build_velocity_mask(
         b = cfg.constraints.allowed_region
         mask *= (X >= b.x[0]) & (X <= b.x[1]) & (Y >= b.y[0]) & (Y <= b.y[1])
 
-    # 设计区边缘 taper（与固定馈线平滑衔接）
-    edge = np.minimum.reduce(
-        [
-            X - ls.box.x[0],
-            ls.box.x[1] - X,
-            Y - ls.box.y[0],
-            ls.box.y[1] - Y,
-        ]
-    )
-    mask *= np.clip(edge / taper_mm, 0.0, 1.0)
+    # 设计区边缘 taper（与固定馈线平滑衔接）。作用边由
+    # ``cfg.constraints.taper_edges`` 选：只该 taper 可动金属**穿出去**的边
+    # （那里连着区外的固定馈线）；可动金属自由生长的那条边 taper 不得开，
+    # 否则等于沿边界削掉优化目标本身。
+    edges = cfg.constraints.taper_edges
+    if edges != "none":
+        d = []
+        if "x" in edges:
+            d += [X - ls.box.x[0], ls.box.x[1] - X]
+        if "y" in edges:
+            d += [Y - ls.box.y[0], ls.box.y[1] - Y]
+        mask *= np.clip(np.minimum.reduce(d) / taper_mm, 0.0, 1.0)
     return mask
 
 

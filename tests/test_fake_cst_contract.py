@@ -136,6 +136,52 @@ def test_history_failure_can_be_programmed_per_block():
         prj.model3d.add_to_history("Brick substrate", "boom")
 
 
+def test_results_plus_a_non_quiet_session_reproduce_the_blocking_dialog():
+    """"已有结果 + 非静默 + 重跑"= 真机那个等人点的确认框（假库里抛错）。
+
+    这是本轮修的坑的可测代理；两道闸（静默模式 / DeleteResults）任一生效，
+    这条就消失——下面各测一闸。
+    """
+    de = csti.DesignEnvironment
+    csti.configure(initial_has_results=True)      # 从磁盘打开 = 带着上一轮结果
+    prj = de.open_project("has_results.cst")
+    with pytest.raises(RuntimeError, match="need to be deleted"):
+        prj.model3d.run_solver()
+
+    prj.model3d._execute_vba_code("Sub Main\nDeleteResults\nEnd Sub")
+    prj.model3d.run_solver()                       # 结果没了，框无从弹起
+    assert prj.model3d.has_results is True         # 求解完又有结果了
+
+
+def test_quiet_mode_is_session_state_and_swallows_the_dialog():
+    de = csti.DesignEnvironment
+    csti.configure(initial_has_results=True)
+    prj = de.open_project("has_results.cst")
+    assert de.in_quiet_mode() is False
+    de.set_quiet_mode(True)
+    assert ("set_quiet_mode", True) in csti.state().events
+    prj.model3d.run_solver()                       # 静默 = 自动点掉，不等人
+    assert de.in_quiet_mode() is True
+
+
+def test_a_version_without_set_quiet_mode_raises_attributeerror():
+    """老版本没这个方法：生产代码用 getattr 兜着，不能因此挂掉。"""
+    csti.configure(has_quiet_mode_api=False)
+    with pytest.raises(AttributeError):
+        csti.DesignEnvironment.set_quiet_mode(True)
+
+
+def test_control_vba_runs_outside_the_history_list():
+    """DeleteResults 走控制宏：执行了，但历史表不长一条（形状记录才数它）。"""
+    prj = csti.DesignEnvironment.new_mws()
+    before = len(prj.model3d.history)
+    prj.model3d._execute_vba_code("Sub Main\nDeleteResults\nEnd Sub")
+    assert len(prj.model3d.history) == before
+    assert prj.model3d.vba_calls[-1].count("DeleteResults") == 1
+    with pytest.raises(RuntimeError, match="只实现了 DeleteResults"):
+        prj.model3d._execute_vba_code("Sub Main\nBrick.Reset\nEnd Sub")
+
+
 def test_ascii_export_writes_a_parseable_grid(tmp_path):
     st = csti.configure(grid=csti.grid_for((0.0, 4.0), (-1.0, 1.0), margin=0.5))
     prj = csti.DesignEnvironment.new_mws()

@@ -24,9 +24,11 @@ CST 侧的一切（模板布局、频点、材料、端口、求解设置、场�
 4 auxiliary。fwd/bwd 各自激励哪个端口由 ``stimulus()`` 从 YAML 的 objective
 取值——**规则在 CST 代码里，值在优化配置里**，不重复定义。
 
-场导出步长（``export_step_mm``）是 CST 侧参数，但缺省跟随优化侧的
-``sampling.point_spacing_mm``（论文经验 0.1~0.5 mm）：导出点数按步长的立方
-增长，**不要**用设计区网格步长。
+场导出步长（``export_step_mm``）是 CST 侧参数，缺省跟随优化侧的
+``CaseConfig.field_export_step_mm``：``sampling.scheme=nodes`` 时 = 设计区
+网格步长（采样点就是网格节点，导出网格必须同源才能零插值）；``contour``
+时 = 采样点距（论文经验 0.1~0.5 mm）。导出点数按步长的立方增长，改步长
+前先算一下文件大小（0.2 mm → 13 MB，0.1 mm → 4 倍）。
 """
 
 from __future__ import annotations
@@ -54,10 +56,18 @@ class CstSetup:
     # ---- 会话 / 运行（原 YAML 的 solver 块）----
     attach_gui: bool = False            # True = 只附接运行中的 CST 实例（无 headless 许可时用）
     port_power_w: float = 0.5           # 端口功率（CST 默认 0.5 W）
-    export_step_mm: Optional[float] = None    # 场导出步长；None=跟随 sampling.point_spacing_mm
+    export_step_mm: Optional[float] = None    # 场导出步长；None=跟随 CaseConfig.field_export_step_mm
     save_fields: bool = False           # 是否把 E/H 场也写进 iter_NNN/（.npz，MB 量级）
     project_dir: Optional[str] = None   # 工程目录；None=<output.dir>/cst
     project_names: tuple[str, str] = ("fwd", "bwd")   # 两个工程的 tag（正向/反向激励）
+
+    # ---- 无人值守（模态框）----
+    # CST 在"已有上一轮结果"的工程上重跑仿真会弹确认框问要不要删掉旧结果，
+    # GUI 模式下脚本会一直卡在那行等人工点。两道闸：① 连上就切静默模式
+    # （抑制消息框）；② 每轮改形状前先把结果清掉（旧结果不存在，框就无从弹起）。
+    # 关掉它们只在有人盯着点框时才合理。
+    quiet_mode: bool = True             # 连上就 DesignEnvironment.set_quiet_mode(True)
+    clear_results: bool = True          # 每轮改形状前 DeleteResults（控制宏，不进历史表）
 
     # ------------------------------------------------------------------ #
     @property

@@ -1,5 +1,7 @@
 """约束测试：速度掩膜与最小间距投影。"""
 
+from copy import deepcopy
+
 import numpy as np
 import pytest
 
@@ -14,6 +16,12 @@ def _at(ls, mask, x, y):
     ix = int(round((x - ls.box.x[0]) / ls.dx))
     iy = int(round((y - ls.box.y[0]) / ls.dx))
     return mask[ix, iy]
+
+
+def _with_taper(cfg, edges):
+    cfg2 = deepcopy(cfg)
+    cfg2.constraints.taper_edges = edges
+    return cfg2
 
 
 def test_velocity_mask(tmp_path):
@@ -37,6 +45,28 @@ def test_velocity_mask(tmp_path):
     cfg2.constraints.allowed_region = BoxSpec(x=(0.0, 4.0), y=(-1.0, 0.0))
     mask2 = build_velocity_mask(ls, cfg2)
     assert _at(ls, mask2, 2.0, 0.2) == 0.0
+
+
+def test_taper_edges_selects_which_box_edges_are_damped(tmp_path):
+    """taper 的作用边可选：设计区自身的边界（可动金属自由生长的那条）不能 taper。
+
+    本算例的设计区上界离直通线只有 0.1 mm（论文约束），臂顶要长进耦合间隙；
+    若上下边也被 1 mm 的 taper 削，间隙里的速度会被整体压掉、优化推不动。
+    """
+    cfg = make_compact_cfg(tmp_path)
+    cfg.fixed_region = []          # 隔离 taper：固定金属邻域另行掩膜
+    ls = make_level_set(cfg)
+    xy = build_velocity_mask(ls, cfg, taper_mm=1.0)              # 默认 "xy"
+    x = build_velocity_mask(ls, _with_taper(cfg, "x"), taper_mm=1.0)
+    off = build_velocity_mask(ls, _with_taper(cfg, "none"), taper_mm=1.0)
+    # 距上边 0.2 mm（x 远离两端）：只有 y 边参与 taper 时才被削
+    assert _at(ls, xy, 2.0, 0.8) == pytest.approx(0.2, abs=0.02)
+    assert _at(ls, x, 2.0, 0.8) == 1.0
+    assert _at(ls, off, 2.0, 0.8) == 1.0
+    # 距左端 0.3 mm：x 边在所有模式下都该削（那里接着区外的固定腿）
+    assert _at(ls, xy, 0.3, 0.0) == pytest.approx(0.3, abs=0.02)
+    assert _at(ls, x, 0.3, 0.0) == pytest.approx(0.3, abs=0.02)
+    assert _at(ls, off, 0.3, 0.0) == 1.0
 
 
 def test_min_gap_carves_encroaching_metal(tmp_path):

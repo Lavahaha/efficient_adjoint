@@ -11,6 +11,13 @@
 * ``model3d.ResultTree``——``GetFirstChildName(父路径)`` /
   ``GetNextItemName(条目)`` 的树遍历（CST VBA 协议），按扁平清单
   ``state.tree_items`` 逐层回答；
+* ``DesignEnvironment.set_quiet_mode(True) / in_quiet_mode()``——**会话级**
+  静默开关：真机上是"模态框不弹、自动按默认按钮走"；
+* ``model3d._execute_vba_code("Sub Main ... End Sub")``——控制宏通道
+  （执行 VBA 但**不进历史表**），``DeleteResults`` 走的就是它；
+* 模态框的**可测代理**：工程有结果（``has_results``）又在非静默会话里
+  ``run_solver()`` 时抛错——真机上是"弹框等人点"，脚本卡死；假库把它变成
+  一个能断言的异常，正是本轮修的坑；
 * ``model3d.SelectTreeItem(条目)``——**照真库返回布尔**（条目在树上吗），
   并且不在树上时**照真库"静默不生效"**：随后 ``ASCIIExport.Execute()``
   报 "The ASCII export option is not available for the current view."。
@@ -88,6 +95,11 @@ class State:
         self.tree_error: Exception | None = None     # ResultTree 遍历抛错
         self.drop_result_tree = False                # Model3D 上没有 ResultTree（建工程前设）
         self.ascii_export_error: Exception | None = None  # Execute 直接抛
+        self.quiet_mode = False            # 会话静默（真机上是**跨脚本**的会话级状态）
+        self.has_quiet_mode_api = True     # False = 该版本没有 set_quiet_mode()
+        self.quiet_mode_error: Exception | None = None    # set_quiet_mode 抛错
+        self.initial_has_results = False   # 新打开的工程=已经有结果（重开旧 .cst）
+        self.control_vba_error: Exception | None = None   # _execute_vba_code 抛错
 
 
 _state = State()
@@ -267,6 +279,12 @@ class Model3D:
         self.history: list[tuple] = []
         self.solves = 0
         self.selected: list[str] = []
+        #: 控制宏（``_execute_vba_code``）的调用原文——**不进历史表**，单记
+        self.vba_calls: list[str] = []
+        #: 工程里有没有结果。求解成一次就 True，DeleteResults 清成 False；
+        #: 真机上"有结果 + 非静默 + 要重跑"就是那个等人点的确认框。
+        #: 从磁盘**打开**的工程按 ``initial_has_results`` 预置（新建的肯定没有）
+        self.has_results = False
         #: 最后一次 SelectTreeItem 是否选中了树上真实存在的条目（真库的
         #: 静默失效就是"False 但没人看"）
         self.selection_valid = False
@@ -285,17 +303,45 @@ class Model3D:
         return True
 
     def run_solver(self):
-        """**无参**——真库实测就是无参；多传参数这里会 TypeError。"""
+        """**无参**——真库实测就是无参；多传参数这里会 TypeError。
+
+        工程里还有上一轮的结果、会话又没静默时，真机是**弹模态框等人点**
+        （GUI 下脚本就停在这行）：假库用异常代替"永远卡住"，否则这个坑在
+        测试里根本没有出口。静默会话 = 自动点掉，继续跑。
+        """
         st = self._st
         if st.solver_running:
             raise RuntimeError("求解器已在运行")
+        if self.has_results and not st.quiet_mode:
+            raise RuntimeError(
+                "Existing MWS result need to be deleted and re-simulated to "
+                "perform the simulation. Do you want to proceed?"
+                "（模态框没人点：要么 set_quiet_mode(True)，要么先 "
+                "DeleteResults）")
         st.events.append(("run_solver",))
         self.solves += 1
         if st.solve_error is not None:
             raise st.solve_error
+        self.has_results = True
 
     def is_solver_running(self):
         return self._st.solver_running
+
+    def _execute_vba_code(self, vba):
+        """控制宏通道：执行 VBA 但**不进历史表**（真库的签名是代码字符串）。
+
+        生产代码只用它跑 ``DeleteResults``；这里只认这一条，免得假库比真库
+        宽容（真库不认的命令是**报错**，不是静默无效）。
+        """
+        st = self._st
+        if st.control_vba_error is not None:
+            raise st.control_vba_error
+        code = str(vba)
+        self.vba_calls.append(code)
+        if "DeleteResults" not in code:
+            raise RuntimeError(f"假库只实现了 DeleteResults，收到：{code!r}")
+        self.has_results = False
+        return True
 
     def SelectTreeItem(self, item):
         """选中结果树条目，**返回布尔**（条目在树上吗）——照真库的签名。
@@ -364,6 +410,29 @@ class DesignEnvironment:
         return _ENV
 
     @staticmethod
+    def set_quiet_mode(flag=True):
+        """会话级静默开关：模态框不弹、自动按默认按钮走。
+
+        真库上**这个方法是会话状态**（附接 GUI 时会静默用户自己的窗口，
+        只有重开 CST 能恢复）——假库把它存在 ``state.quiet_mode``，测试之间
+        随 ``reset()`` 复位。老版本没有这个方法，用
+        ``configure(has_quiet_mode_api=False)`` 模拟（生产代码必须容忍）。
+        """
+        if not _state.has_quiet_mode_api:
+            raise AttributeError(
+                "type object 'DesignEnvironment' has no attribute "
+                "'set_quiet_mode'")
+        if _state.quiet_mode_error is not None:
+            raise _state.quiet_mode_error
+        _state.events.append(("set_quiet_mode", bool(flag)))
+        _state.quiet_mode = bool(flag)
+        return True
+
+    @staticmethod
+    def in_quiet_mode():
+        return _state.quiet_mode
+
+    @staticmethod
     def new_mws():
         _state.events.append(("new_mws",))
         prj = Project(_state)
@@ -384,6 +453,8 @@ class DesignEnvironment:
                 raise RuntimeError(f"工程已经打开：{path}")
         _state.events.append(("open_project", str(path)))
         prj = Project(_state, path)
+        # 磁盘上的工程多半带着上一轮的结果——这正是确认框的触发条件
+        prj.model3d.has_results = bool(_state.initial_has_results)
         _state.projects.append(prj)
         return prj
 

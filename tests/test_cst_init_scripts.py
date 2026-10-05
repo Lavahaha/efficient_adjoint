@@ -139,6 +139,27 @@ def test_attach_without_a_running_instance_fails_loudly(case):
     assert csti.state().projects == []
 
 
+def test_quiet_mode_is_switched_on_when_connecting(case):
+    """连上就切静默，且排在第一次求解**之前**（否则框已经弹出来了）。
+
+    新建的工程没有旧结果、本不会弹"是否删除结果"的确认框，但求解设置里
+    别的告警框一样会等人点——静默模式是无人值守的前提。
+    """
+    yaml_path, _ = case
+    assert INIT["fwd"].main([str(yaml_path)]) == 0
+    ev = [e[0] for e in csti.state().events]
+    assert csti.state().quiet_mode is True
+    assert ev.index("set_quiet_mode") < ev.index("run_solver")
+
+
+def test_a_cst_without_the_quiet_api_still_initializes(case):
+    """老版本没有 ``set_quiet_mode``：告警跳过，工程照建照跑（不能因此挂）。"""
+    yaml_path, cfg = case
+    csti.configure(has_quiet_mode_api=False)
+    assert INIT["fwd"].main([str(yaml_path)]) == 0
+    assert COUPLER.project_path("fwd", cfg.output.dir, cfg.name).is_file()
+
+
 def test_solver_failure_returns_nonzero(case):
     yaml_path, _ = case
     csti.configure(solve_error=RuntimeError("网格太粗，求解器拒绝"))

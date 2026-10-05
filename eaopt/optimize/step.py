@@ -1,9 +1,10 @@
 """步长策略（先固定步长，后续可扩展自适应）。
 
 形状导数 δp（量纲 1/m）→ 归一化速度：|V| ≤ 1。
-每轮迭代的边界最大位移 = step_size（mm），由 pipeline 按
-  steps = max(1, round(step_size / (cfl·dx)))
-折算成 HJ 演化步数（V=±1 处的位移 = cfl·dx·steps ≈ step_size）。
+每轮迭代的**最大边界位移 = step_cells × dx**（论文 Fig. 3b：一个网格），
+由 pipeline 按
+  steps = max(1, round(step_cells / cfl))
+折算成 HJ 演化子步数（V=±1 处的位移 = cfl·dx·steps ≈ step_cells·dx）。
 
 符号开关 velocity_sign（±1）：论文式 (24)/(31) 的符号矛盾要靠有限差分
 验证裁决（当前缺省 +1，**CST 端尚未复核**：先小步数跑、盯 FoM 是否单调

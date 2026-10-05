@@ -42,6 +42,50 @@ def test_validate_rejects_bad_sample_side():
         cfg.validate()
 
 
+def test_validate_rejects_unknown_taper_edges():
+    cfg = CaseConfig.from_yaml(CFG_PATH)
+    cfg.constraints.taper_edges = "left"
+    with pytest.raises(ValueError):
+        cfg.validate()
+
+
+def test_coupler_uses_one_grid_for_phi_sampling_and_export():
+    """统一网格：φ / 采样点 / CST 场导出步长都由 grid_step_mm 控制。"""
+    cfg = CaseConfig.from_yaml(CFG_PATH)
+    assert cfg.sampling.scheme == "nodes"
+    assert cfg.sampling.offset_cells == 1
+    assert cfg.field_export_step_mm == cfg.design_region.grid_step_mm == 0.1
+    # 优化器步长以格为单位：1 格
+    assert cfg.optimizer.step_cells == 1.0
+    # 导出/设计区对齐：设计区边界落在导出格线上（导出网格原点 x-5.6 / y-6.9）
+    for lo, hi, org in ((0.0, 12.0, -5.6), (-2.6, 0.9, -6.9)):
+        for v in (lo, hi):
+            assert abs((v - org) / cfg.field_export_step_mm
+                       - round((v - org) / cfg.field_export_step_mm)) < 1e-9
+
+
+def test_contour_scheme_export_step_follows_point_spacing():
+    cfg = CaseConfig.from_yaml(CFG_PATH)
+    cfg.sampling.scheme = "contour"
+    assert cfg.field_export_step_mm == cfg.sampling.point_spacing_mm
+
+
+def test_validate_rejects_grid_step_that_does_not_divide_the_box():
+    """除不尽时 linspace 会悄悄拉伸格距（5.5/0.2 → 实际 0.1964），必须拦住。"""
+    cfg = CaseConfig.from_yaml(CFG_PATH)
+    cfg.design_region.grid_step_mm = 0.2       # 5.5/0.2 = 27.5
+    with pytest.raises(ValueError, match="除不尽"):
+        cfg.validate()
+
+
+def test_validate_rejects_zero_offset_cells():
+    """offset_cells=0 会取到跨边界的混合排（内侧金属/外侧间隙各半），拒绝。"""
+    cfg = CaseConfig.from_yaml(CFG_PATH)
+    cfg.sampling.offset_cells = 0
+    with pytest.raises(ValueError, match="offset_cells"):
+        cfg.validate()
+
+
 def test_unknown_key_is_rejected_not_ignored():
     """旧 YAML 的 solver/substrate 等键必须报错，不能被静默丢弃。"""
     d = yaml.safe_load(CFG_PATH.read_text(encoding="utf-8"))

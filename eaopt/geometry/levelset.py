@@ -53,6 +53,11 @@ class LevelSet2D:
                 p = np.vstack([p, p[0]])
             dist = np.minimum(dist, _polygon_distance(pts, p))
             inside |= Path(p).contains_points(pts)
+        # 边界上的节点算金属。``contains_points`` 对正好落在边上的点是随机
+        # 判的，而本算例的臂顶边 y=0 恰好压着一条节点行——不显式判一下，
+        # 那一行的 φ 就是 ±1e-15 的噪声，画出来是一排假毛刺（几何其实没错：
+        # 轮廓提取在两行之间插值，界面照样正好落在 y=0）。
+        inside |= dist <= _ON_INTERFACE_MM
         s = np.where(inside, -1.0, 1.0)
         self.phi = (s * dist).reshape(self.nx, self.ny)
         return self
@@ -177,6 +182,11 @@ class LevelSet2D:
 # ---------------------------------------------------------------------- #
 # 内部工具
 # ---------------------------------------------------------------------- #
+#: 多边形的边界节点归金属的判据（mm）。1e-9 是"浮点残差"量级——线段距离在
+#: 边界点上算出的是 0 或 ~1e-15 的残差，而真实几何的最小间距是 0.1 mm 量级。
+_ON_INTERFACE_MM = 1e-9
+
+
 def _segment_distance(pts: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """pts (N,2) 到线段 ab 的距离。"""
     ab = b - a

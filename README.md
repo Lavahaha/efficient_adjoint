@@ -41,7 +41,7 @@ eaopt/
 ├── optimize/
 │   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）
 │   ├── step.py          # 固定步长 + 归一化 + active 掩膜
-│   └── constraints.py   # 速度掩膜（固定区边距/允许区/边缘 taper）、最小间距投影
+│   └── constraints.py   # 速度掩膜（固定区边距/允许区/边缘 taper，作用边可配）、最小间距投影
 ├── solver/              # 6 个文件；**不再封装官方库**
 │   ├── base.py          # Solution / SolverInterface（pipeline 只认这个契约）
 │   ├── cst_setup.py     # **CST 侧单一事实来源**：布局/频点/材料/端口/工程路径
@@ -56,7 +56,7 @@ scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 ite
 scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
 docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
-tests/                   # 169 项测试（不装 CST 也全绿：含假 CST 库的端到端）
+tests/                   # 201 项测试（不装 CST 也全绿：含假 CST 库的端到端）
 ```
 
 三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层
@@ -90,8 +90,13 @@ YAML 只管优化问题（设计区、初始/固定金属、采样、约束、�
 - 物理/材料（论文 III-A）：频点 5 GHz（= 监视器 = 扫频 = S 参数读取）、
   εr = 3.66、tanδ = 0.0037、基板 0.762 mm、金属 35 µm PEC、端口表 (1,2,3,4)；
 - 会话/运行：`attach_gui`、`port_power_w`、`export_step_mm`（缺省跟随
-  `sampling.point_spacing_mm`）、`save_fields`、`project_dir`（缺省
-  `<output.dir>/cst`）；
+  `CaseConfig.field_export_step_mm`：nodes 采样 = 设计区网格步长、contour
+  = 采样点距）、`save_fields`、`project_dir`（缺省 `<output.dir>/cst`）；
+- 无人值守：`quiet_mode`（连上就 `set_quiet_mode(True)`，模态框不再弹）、
+  `clear_results`（每轮改形状前先 `DeleteResults`）——CST 在**已有结果**的
+  工程上重跑仿真会弹确认框问要不要删旧结果，`run_solver()` 是同步的，GUI
+  模式下脚本就停在那行等人点。两道闸各自独立，缺省都开；详见
+  `docs/server_runbook.md` 常见问题；
 - 规则：`project_path()`、`stimulus()`（fwd=from_port / bwd=to_port）、
   `validate_objective()`。
 
@@ -114,6 +119,17 @@ YAML 只管优化问题（设计区、初始/固定金属、采样、约束、�
   对不存在的路径**不抛错、只是不生效**（返回 False），拼错的名字要到
   `ASCIIExport.Execute` 才以一句 "not available for the current view" 收场；
 - **读不到就抛**：S 参数/场读失败一律报错，绝不把 0 塞进伴随法；
+- **设计区 = `design_region.box` = 可动金属的活动范围**（论文只有一个域：
+  Fig.5 的红虚线框就是设计区）：φ 网格、采样点、场导出裁剪、速度掩膜全按
+  它来。本算例的盒子 x∈[0,12]（两腿内边缘 = 耦合段 d）、y∈[−2.6,0.9]，
+  上界就是论文那条"臂上边缘不得超过直通线、最小间距 0.1 mm"的约束
+  （1.0 − 0.1）。`constraints.allowed_region` 只在"盒子比活动范围大"的
+  算例里才用，本算例留空；
+- **边缘 taper 作用在哪些边要选**（`constraints.taper_edges`）：taper 是让
+  可动金属在**穿出设计区**的边上与区外固定馈线平滑衔接（本算例 = x 两端
+  接腿），所以取 `x`。设计区自身那条边（臂顶）是可动金属的生长边界，
+  在那里 taper 等于把优化目标削掉——盒子 y 上界离直通线只有 0.1 mm，
+  四边全 taper 会把整个耦合间隙的速度压掉（不报错，只是优化推不动）；
 - **场要裁到设计区** ± `design_region.field_margin_mm`（监视器导出的是整个
   计算域）；导出的 ASCII 是"表头 + 每点一行 9 列 `x y z Re1 Im1 …`"
   （`Mode "FixedWidth"`，服务器实测），解析按坐标归位、列数不对即报错；

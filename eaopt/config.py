@@ -81,15 +81,25 @@ class DesignRegionSpec:
 
 @dataclass
 class SamplingSpec:
-    point_spacing_mm: float = 0.2  # 边界导数采样点间距（论文经验 0.1~0.5）
-    sample_offset_mm: float = 0.05  # 采样点沿法向的偏移量（对应论文 delta_z）
-    sample_side: str = "outside"  # outside=金属外侧(PEC) | inside=金属内侧(损耗金属)
-    field_z_mm: float = 0.0  # 场采样平面的 z 坐标（mm，基板顶面为 0）
+    # nodes=采样点落在 φ 网格节点上（论文 Fig.3b；要求导出步长=网格步长）|
+    # contour=沿轮廓弧长重采样（旧，留作 A/B）
+    scheme: str = "contour"
+    offset_cells: int = 1  # nodes：采样点 = 边界外(内)侧往外数第几排节点；1 = 紧贴边界的一排
+                           # （真实算例初始边界落在格线上时，这一排就是边界节点本身）
+    point_spacing_mm: float = 0.2  # contour：边界导数采样点间距（论文经验 0.1~0.5）
+    sample_offset_mm: float = 0.05  # contour：采样点沿法向的偏移量（对应论文 delta_z）
+    sample_side: str = "outside"  # contour：outside=金属外侧(PEC) | inside=金属内侧
+    field_z_mm: float = -0.1  # 场采样平面的 z（mm，基板顶面=金属底面为 0，金属在其上方）
+                              # nodes 下吸附到最近的导出网格面；**必须为负**，否则可能
+                              # 吸附进金属体内（PEC 里 E/H≈0 → δp 恒 0，pipeline 会报错）
 
 
 @dataclass
 class OptimizerSpec:
-    step_size: float = 0.02  # 固定步长（mm 量级，先跑通后自适应）
+    # 每轮迭代的**最大边界位移** = step_cells × 网格步长（论文 Fig.3b ≈ 1 格）。
+    # 由 HJ 演化 steps = round(step_cells/cfl) 个子步实现，每子步位移 = cfl·dx。
+    step_cells: float = 1.0
+    cfl: float = 0.5  # 子步长系数（HJ 一阶 Godunov 的稳定上界约 0.707＝1/√2）
     velocity_sign: float = 1.0  # 形状导数→速度的符号开关（±1），FD 验证定号
     max_iterations: int = 30
     fom_tolerance: float = 1e-4
@@ -105,8 +115,18 @@ class LevelSetSpec:
 @dataclass
 class ConstraintSpec:
     min_gap_mm: float = 0.0  # 金属间最小间距（论文 0.1 mm）
-    # 可动金属的活动范围（速度掩膜区域），None 表示整个设计区都可动
+    # 可动金属的活动范围（速度掩膜区域），None 表示整个设计区都可动。
+    # 论文只有一个设计区：design_region.box 就是可动范围，**这里留空**。
+    # 保留该字段是为了"设计区比可动范围大"的算例（如盒子要覆盖固定障碍时）。
     allowed_region: Optional[BoxSpec] = None
+    # 速度掩膜边缘 taper 作用在哪些边（"xy"/"x"/"y"/"none"）。
+    # 语义：taper 让可动金属在**穿出设计区的边**上与区外固定馈线平滑衔接。
+    # 因此只有当可动金属贴着该边穿过时才 taper 它——若设计区某条边本身就是
+    # 可动金属的生长边界（论文设计区的上下边），在那条边上 taper 等于把
+    # 优化目标本身削掉（本算例的上界离直通线只有 0.1 mm，1 mm 的 taper 会
+    # 把整个耦合间隙的速度压掉）。-- 早期"四边全 taper"是因为盒子只是数值
+    # 网格范围、比真正的设计区大得多；两域合一后必须按物理含义选边。
+    taper_edges: str = "xy"
 
 
 @dataclass
@@ -154,6 +174,17 @@ class CaseConfig:
         self.design_region.box.validate("design_region.box")
         if self.design_region.grid_step_mm <= 0:
             raise ValueError("design_region.grid_step_mm 必须为正")
+        # 步长必须整除设计区：LevelSet2D 用 linspace 铺格，除不尽时**实际格距
+        # ≠ grid_step_mm 而没有任何报错**——φ 节点落不到 CST 导出网格上，
+        # nodes 采样到取场那一步才炸，且报错指向不了这里。
+        for axis in ("width", "height"):
+            k = getattr(self.design_region.box, axis) / self.design_region.grid_step_mm
+            if abs(k - round(k)) > 1e-9:
+                raise ValueError(
+                    f"design_region.grid_step_mm={self.design_region.grid_step_mm} "
+                    f"除不尽设计区{axis} {getattr(self.design_region.box, axis)} mm"
+                    f"（={k:.6g} 格）：网格会被 linspace 悄悄拉伸，"
+                    "采样点不再落在 CST 导出网格节点上。请改步长或改设计区尺寸。")
         # 端口表在 CST 模板里（cst_setup.ports）；objective 的端口合法性由
         # CstSetup.validate_objective 在装配点校验（这里不知道模板）。
         for i, poly in enumerate(self.initial_metal):
@@ -162,14 +193,24 @@ class CaseConfig:
             poly.validate(f"fixed_region[{i}]")
         if self.constraints.allowed_region is not None:
             self.constraints.allowed_region.validate("constraints.allowed_region")
+        if self.constraints.taper_edges not in ("xy", "x", "y", "none"):
+            raise ValueError(
+                f"constraints.taper_edges={self.constraints.taper_edges!r} 未知："
+                '只认 "xy" / "x" / "y" / "none"（速度掩膜 taper 作用在哪些边）')
+        if self.sampling.scheme not in ("nodes", "contour"):
+            raise ValueError(f"未知采样方案 {self.sampling.scheme}")
+        if self.sampling.offset_cells < 1:
+            raise ValueError("sampling.offset_cells 至少为 1（第 1 排 = 紧贴边界的一排节点）")
         if self.sampling.point_spacing_mm <= 0:
             raise ValueError("sampling.point_spacing_mm 必须为正")
         if self.sampling.sample_offset_mm < 0:
             raise ValueError("sampling.sample_offset_mm 不能为负")
         if self.sampling.sample_side not in ("outside", "inside"):
             raise ValueError(f"未知采样侧 {self.sampling.sample_side}")
-        if self.optimizer.step_size <= 0:
-            raise ValueError("optimizer.step_size 必须为正")
+        if self.optimizer.step_cells <= 0:
+            raise ValueError("optimizer.step_cells 必须为正")
+        if not 0.0 < self.optimizer.cfl <= 0.5:
+            raise ValueError("optimizer.cfl 需在 (0, 0.5]（HJ 一阶格式稳定域）")
         if self.optimizer.velocity_sign not in (1.0, -1.0):
             raise ValueError("optimizer.velocity_sign 必须为 +1.0 或 -1.0")
         if self.optimizer.max_iterations <= 0:
@@ -177,20 +218,40 @@ class CaseConfig:
         if self.level_set.reinit_every < 1:
             raise ValueError("level_set.reinit_every 至少为 1")
 
+    @property
+    def field_export_step_mm(self) -> float:
+        """CST 场导出步长。
+
+        nodes 方案下必须等于水准集网格步长——采样点就是网格节点，导出网格
+        与采样网格同源才能零插值（否则 node_field_indices 直接报错）。
+        """
+        if self.sampling.scheme == "nodes":
+            return float(self.design_region.grid_step_mm)
+        return float(self.sampling.point_spacing_mm)
+
     def summary(self) -> str:
         """优化侧配置摘要（CST 侧常量见 ``cst_setup.CstSetup``）。"""
         dr = self.design_region.box
+        s = self.sampling
+        if s.scheme == "nodes":
+            sample = (f"网格节点（{s.sample_side} 第 {s.offset_cells} 排）, "
+                      f"z={s.field_z_mm} mm（吸附到导出网格面）")
+        else:
+            sample = (f"轮廓重采样 点距 {s.point_spacing_mm} mm, "
+                      f"偏移 {s.sample_offset_mm} mm ({s.sample_side}), "
+                      f"z={s.field_z_mm} mm")
         lines = [
             f"算例        : {self.name} — {self.description}",
             f"设计区域    : x∈{dr.x} y∈{dr.y} mm, 网格步长 {self.design_region.grid_step_mm} mm",
             f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}|",
-            f"边界采样    : 点距 {self.sampling.point_spacing_mm} mm, "
-            f"偏移 {self.sampling.sample_offset_mm} mm ({self.sampling.sample_side}), "
-            f"z={self.sampling.field_z_mm} mm",
-            f"约束        : 最小间距 {self.constraints.min_gap_mm} mm"
+            f"边界采样    : {s.scheme} — {sample}",
+            f"场导出步长  : {self.field_export_step_mm} mm",
+            f"约束        : 最小间距 {self.constraints.min_gap_mm} mm, "
+            f"边缘 taper 作用于 {self.constraints.taper_edges} 边"
             + (f", 活动范围 {self.constraints.allowed_region}" if self.constraints.allowed_region else ""),
-            f"优化        : 固定步长 {self.optimizer.step_size}, "
-            f"最大 {self.optimizer.max_iterations} 次迭代",
+            f"优化        : 步长 {self.optimizer.step_cells} 格 "
+            f"(= {self.optimizer.step_cells * self.design_region.grid_step_mm:g} mm), "
+            f"cfl {self.optimizer.cfl}, 最大 {self.optimizer.max_iterations} 次迭代",
             f"输出目录    : {self.output.dir}",
         ]
         return "\n".join(lines)

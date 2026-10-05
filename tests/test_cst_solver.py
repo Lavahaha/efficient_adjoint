@@ -279,6 +279,93 @@ def test_save_fields_switch_only_controls_the_npz(cfg):
     assert (d1 / "fields_fwd_h.npz").is_file()
 
 
+# --------------------------------------------------------------------------- #
+# 无人值守：模态框（已有结果 + 重跑 ⇒ CST 弹框等人点）
+# --------------------------------------------------------------------------- #
+def test_quiet_mode_is_on_before_the_first_solve(cfg):
+    """连上就切静默——必须在**第一次求解之前**，否则框已经弹出来了。"""
+    s = _solver(cfg, auto_init=True)
+    s.build_model(_open_arm(), [])
+    s.solve_forward()
+
+    assert csti.state().quiet_mode is True
+    ev = [e[0] for e in csti.state().events]
+    assert ev.index("set_quiet_mode") < ev.index("run_solver")
+
+
+def test_a_second_iteration_clears_the_stale_results_before_solving(cfg):
+    """回归：上一轮的结果先清掉，第二轮才不会卡在"是否删除结果"的确认框上。
+
+    这里把静默模式关掉（``quiet=False``），让假库真能弹出这个框——闸门只剩
+    DeleteResults 一道，清没清是**能测出来**的。
+    """
+    s = _solver(cfg, auto_init=True, quiet=False)
+    s.begin_iteration(0)
+    s.build_model(_open_arm(), [])
+    s.solve_forward()
+    prj = _project(cfg, "fwd")
+    assert prj.model3d.has_results                  # 第一轮留下结果
+
+    s.begin_iteration(1)
+    s.build_model(_open_arm(), [])                  # ← 这里必须把结果清掉
+    assert not prj.model3d.has_results
+    s.solve_forward()                               # 没清就会卡在模态框上
+    assert prj.model3d.solves == 2
+    assert prj.model3d.vba_calls[-1].count("DeleteResults") == 1
+    # 清结果是控制宏：历史表**不长**那条（每轮仍恰好一条形状记录）
+    assert all("DeleteResults" not in cmd for _h, cmd in prj.model3d.history)
+
+
+def test_quiet_mode_alone_also_gets_past_the_dialog(cfg):
+    """两道闸互相独立：清结果关掉时，静默模式自己也能把框按掉。"""
+    s = _solver(cfg, auto_init=True, quiet=True, clear_results=False)
+    s.begin_iteration(0)
+    s.build_model(_open_arm(), [])
+    s.solve_forward()
+    s.begin_iteration(1)
+    s.build_model(_open_arm(), [])
+    s.solve_forward()
+    assert _project(cfg, "fwd").model3d.solves == 2
+
+
+def test_both_gates_off_reproduce_the_original_failure(cfg):
+    """两闸都关 = 复现原始故障（假库把"永远卡住"换成一个异常）。
+
+    这条是上面那个回归测试的**对照**：证明它真的在测东西——不然把
+    ``clear_results`` 的调用删掉，测试也是绿的。
+    """
+    s = _solver(cfg, auto_init=True, quiet=False, clear_results=False)
+    s.begin_iteration(0)
+    s.build_model(_open_arm(), [])
+    s.solve_forward()
+
+    s.begin_iteration(1)
+    s.build_model(_open_arm(), [])
+    with pytest.raises(RuntimeError, match="求解失败") as ei:
+        s.solve_forward()
+    # 失败的原因确实是被那个模态框挡住（不是别的求解错误蒙对了）
+    assert "need to be deleted" in str(ei.value.__cause__)
+
+
+def test_a_cst_without_the_quiet_api_still_runs_unattended(cfg):
+    """老版本没有 ``set_quiet_mode``：告警跳过，靠清结果接着跑（不能挂）。"""
+    csti.configure(has_quiet_mode_api=False)
+    s = _solver(cfg, auto_init=True)                # 缺省 quiet=True
+    for it in (0, 1):
+        s.begin_iteration(it)
+        s.build_model(_open_arm(), [])
+        s.solve_forward()
+    assert _project(cfg, "fwd").model3d.solves == 2
+
+
+def test_clearing_results_reports_but_does_not_crash(cfg):
+    """清结果失败只告警（CST 版本/命令不认），跑到求解那步再暴露问题。"""
+    csti.configure(control_vba_error=RuntimeError("不认这条 VBA"))
+    s = _solver(cfg, auto_init=True)                # quiet=True 兜住
+    s.begin_iteration(0)
+    s.build_model(_open_arm(), [])
+
+
 def test_a_full_solve_writes_the_iteration_dir(cfg):
     """两个 tag 都求解完，iter_NNN/ 就是一个完整的轮次。"""
     s = _solver(cfg, auto_init=True)
