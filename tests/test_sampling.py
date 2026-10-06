@@ -1,13 +1,11 @@
-"""边界采样与栅格化测试（contour 旧方案 + nodes 节点方案）。"""
+"""边界采样与回写测试（intersection 交点方案 + contour 旧方案）。"""
 
 import numpy as np
 import pytest
 
-from eaopt.adjoint.fields import FieldGrid
-from eaopt.adjoint.sampling import (boundary_nodes, boundary_row,
-                                    node_field_indices, sample_boundary,
-                                    sample_nodes, scatter_to_grid,
-                                    spread_to_grid)
+from eaopt.adjoint.sampling import (boundary_points, boundary_samples,
+                                    field_node_mask, scatter_inverse_distance,
+                                    sample_boundary, scatter_to_grid)
 from eaopt.geometry.contour import extract_contours
 from eaopt.pipeline import make_level_set
 
@@ -19,6 +17,21 @@ def ls(tmp_path):
     return make_level_set(make_compact_cfg(tmp_path))
 
 
+def _slanted_ls(cfg):
+    """斜界面 φ = y + 0.35 − 0.03x：交点落在格线**内部**（真的在做亚格点插值）。
+
+    默认算例的金属是压着格线的矩形（交点恰好在节点上），验不出插值；这条
+    斜线远离固定直通线（y≥0.4），不会被 is_fixed_contour 剔掉。
+    """
+    ls = make_level_set(cfg)
+    X, Y = np.meshgrid(ls.xs, ls.ys, indexing="ij")
+    ls.phi = Y + 0.35 - 0.03 * X
+    return ls
+
+
+# ---------------------------------------------------------------------- #
+# contour 旧方案（留着 A/B，行为不变）
+# ---------------------------------------------------------------------- #
 def test_sample_boundary_offsets_outside_with_outward_normals(ls, tmp_path):
     cfg = make_compact_cfg(tmp_path)
     contours = extract_contours(ls.xs, ls.ys, ls.phi)
@@ -54,113 +67,154 @@ def test_scatter_to_grid_assigns_and_averages(ls):
 
 
 # ---------------------------------------------------------------------- #
-# nodes 方案：采样点 = 边界网格节点
+# intersection 方案：marching 交点（亚格点）
 # ---------------------------------------------------------------------- #
-def _lattice_field(ls, nz=3, dz=0.5, z0=-0.5):
-    """与水准集 x/y 网格**同源**的场（原点是设计区原点、步长是 ls.dx）。"""
-    shp = (ls.nx, ls.ny, nz, 3)
-    return FieldGrid(origin=(ls.xs[0], ls.ys[0], z0), spacing=(ls.dx, ls.dx, dz),
-                     data=np.zeros(shp, dtype=complex))
-
-
-def test_boundary_row_is_one_line_on_the_chosen_side(ls, tmp_path):
+def test_boundary_points_are_sub_cell_crossings_on_grid_lines(tmp_path):
+    """顶点由两端节点 φ 线性插值给出：恒落在网格线上，但**不在节点上**。"""
     cfg = make_compact_cfg(tmp_path)
-    row = boundary_row(ls.phi, ls.dx, cfg.sampling.offset_cells, "outside")
-    # 臂上边缘 y=0 正好落在格线上：这一排就是边界节点本身
-    j = int(round((0.0 - ls.ys[0]) / ls.dx))
-    assert row[:, j].all()
-    assert not row[:, j + 1].any()        # 再外一排（φ=dx）不在带内
-    # 单侧：内侧节点不在带内（x=0/4 两列是臂贴设计区边框的竖直边界，另算）
-    assert not row[1:-1, j - 1].any()
-    assert ls.phi[row].min() >= -1e-9     # 一整排的 φ 都落在 [0, dx)
-    assert ls.phi[row].max() < ls.dx      # 带外没有第二排混进来
-
-    # 边界压在格线上时内外两侧的"第 1 排"是同一排（φ≈0 的节点两侧同属），
-    # 但更内侧的一排不该入选
-    inside = boundary_row(ls.phi, ls.dx, 1, "inside")
-    assert inside[:, j].all()
-    assert not inside[1:-1, j - 1].any()
+    ls = _slanted_ls(cfg)
+    polys = boundary_points(ls, cfg)
+    assert len(polys) == 1                    # 一条从左边界穿到右边界的斜线
+    p = polys[0]
+    rx = (p[:, 0] - ls.xs[0]) / ls.dx
+    ry = (p[:, 1] - ls.ys[0]) / ls.dx
+    fx = np.abs(rx - np.rint(rx))
+    fy = np.abs(ry - np.rint(ry))
+    assert np.minimum(fx, fy).max() < 1e-9    # 每个顶点至少压在一根网格线上
+    assert np.maximum(fx, fy).min() > 1e-3    # 但没有一个顶点落在节点上（走的是插值）
+    d = np.hypot(*np.diff(p, axis=0).T)
+    assert d.min() > 1e-9                     # 无零长段
+    assert np.abs(p[:, 1] + 0.35 - 0.03 * p[:, 0]).max() < 1e-9   # 落在界面上
 
 
-def test_boundary_row_moves_outward_with_offset(ls, tmp_path):
-    f = boundary_row(ls.phi, ls.dx, 1, "outside")
-    g = boundary_row(ls.phi, ls.dx, 2, "outside")
-    assert not np.any(f & g)              # 两排互不重叠
-    assert g.sum() > 0                    # 第二排存在（臂上方是空气）
-
-
-def test_boundary_nodes_are_ordered_lattice_nodes_without_fixed_metal(ls, tmp_path):
+def test_boundary_points_dedupe_and_keep_closed_contours_joined(ls, tmp_path):
+    """矩形金属（边压着格线）：闭合轮廓首尾精确相等、无零长段、剔掉固定区。"""
     cfg = make_compact_cfg(tmp_path)
-    polys = boundary_nodes(ls, cfg)
+    polys = boundary_points(ls, cfg)
     assert polys
-    pts = np.vstack(polys)
-    # 全在格点上
-    for k, ax0 in ((0, ls.xs[0]), (1, ls.ys[0])):
-        r = (pts[:, k] - ax0) / ls.dx
-        assert np.abs(r - np.rint(r)).max() < 1e-9
-    # 固定直通线（y ∈ [0.4, 1.0]）的边界不参与
-    assert pts[:, 1].max() < 0.35
-    # 单排：只走 y=0（臂上边缘）/ y=-0.6（下边缘）/ x=0,4（框中两条竖直边）
-    ys = set(np.round(pts[:, 1], 6))
-    assert ys <= {round(-0.1 * k, 6) for k in range(7)}
-    assert 0.0 in ys and 0.1 not in ys
-    # 折线连续：相邻点最多隔一格对角（不跳、不来回穿边界）
     for p in polys:
         d = np.hypot(*np.diff(p, axis=0).T)
-        assert d.max() <= np.sqrt(2.0) * ls.dx + 1e-9
+        assert d.min() > 1e-9
+        if np.allclose(p[0], p[-1]):
+            assert np.array_equal(p[0], p[-1])    # 精确相等（下游靠它判闭合）
+    # 固定直通线（y ∈ [0.4, 1.0]）的边界不参与
+    assert np.vstack(polys)[:, 1].max() < 0.4
 
 
-def test_sample_nodes_are_the_contour_vertices(ls, tmp_path):
+def test_boundary_samples_are_the_intersections_themselves(ls, tmp_path):
     cfg = make_compact_cfg(tmp_path)
-    polys = boundary_nodes(ls, cfg)
-    pts, ixy = sample_nodes(ls, polys)
-    # 采样点 = 折线顶点（去重后的一一对应）
-    assert len(pts) == len(ixy)
-    assert len(pts) <= sum(len(p) - int(np.allclose(p[0], p[-1])) for p in polys)
-    assert len({(int(i), int(j)) for i, j in ixy}) == len(ixy)   # 无重复节点
-    # 世界坐标 ↔ 网格下标一致，且严格落在节点上
-    assert np.allclose(ls.xs[ixy[:, 0]], pts[:, 0])
-    assert np.allclose(ls.ys[ixy[:, 1]], pts[:, 1])
-    # 采到的正是边界那一排
-    row = boundary_row(ls.phi, ls.dx, cfg.sampling.offset_cells, "outside")
-    assert row[ixy[:, 0], ixy[:, 1]].all()
+    polys = boundary_points(ls, cfg)
+    pts, nrm = boundary_samples(polys, ls, cfg)
+    # 闭合折线的重复点只采样一次（否则该点权重翻倍）
+    n_expected = sum(len(p) - int(np.allclose(p[0], p[-1])) for p in polys)
+    assert len(pts) == n_expected == len(nrm)
+    assert np.allclose(np.linalg.norm(nrm, axis=1), 1.0, atol=1e-9)
+    # intersection_offset_mm = 0（默认）→ 采样点就是交点本身
+    v = np.vstack([p[:-1] if np.allclose(p[0], p[-1]) else p for p in polys])
+    assert np.allclose(pts, v)
+    # 臂上边缘（y=0）：外法向 +y
+    sel = (np.abs(pts[:, 1]) < 1e-6) & (pts[:, 0] > 0.5) & (pts[:, 0] < 3.5)
+    assert sel.sum() > 5
+    assert np.allclose(nrm[sel][:, 1], 1.0, atol=0.2)
 
 
-def test_node_field_indices_reads_exact_lattice_position(ls, tmp_path):
+def test_boundary_samples_follow_the_offset_when_asked(ls, tmp_path):
     cfg = make_compact_cfg(tmp_path)
-    f = _lattice_field(ls)
-    pts, _ = sample_nodes(ls, boundary_nodes(ls, cfg))
-    ix, iy, iz, z_used = node_field_indices(f, pts, 0.0)
-    assert np.allclose(f.axes()[0][ix], pts[:, 0])
-    assert np.allclose(f.axes()[1][iy], pts[:, 1])
-    assert z_used == pytest.approx(0.0) and iz == 1        # z 面 −0.5 / 0.0 / 0.5
-    # 数据按索引直接取：场值等于节点上的值
-    f.data[ix, iy, iz] = np.arange(len(ix))[:, None]
-    assert np.array_equal(f.data[ix, iy, iz][:, 0], np.arange(len(ix)))
+    cfg.sampling.intersection_offset_mm = 0.05
+    polys = boundary_points(ls, cfg)
+    pts0, _ = boundary_samples(polys, ls, cfg)
+    cfg.sampling.intersection_offset_mm = 0.0
+    pts1, nrm = boundary_samples(polys, ls, cfg)
+    sel = (np.abs(pts1[:, 1]) < 1e-6) & (pts1[:, 0] > 0.5) & (pts1[:, 0] < 3.5)
+    assert np.allclose(pts0[sel][:, 1] - pts1[sel][:, 1], 0.05, atol=1e-9)
 
 
-def test_node_field_indices_snaps_z_to_nearest_plane(ls, tmp_path):
-    # 真实导出网格：z 从 −0.6985 起、步长 0.2 —— z=0 不在面上
-    f = _lattice_field(ls, nz=5, dz=0.2, z0=-0.6985)
-    pts = np.array([[1.0, 0.0]])
-    _, _, iz, z_used = node_field_indices(f, pts, 0.0)
-    assert z_used == pytest.approx(-0.0985) and iz == 3
+# ---------------------------------------------------------------------- #
+# intersection 方案：速度回写（最近节点 + 四邻居，反距离平方）
+# ---------------------------------------------------------------------- #
+def test_scatter_inverse_distance_matches_the_analytic_weights(ls):
+    """交点在格线上 → 恰退化为该边两节点，权重 (1−t)²/(t²+(1−t)²)（进 counts）。"""
+    t = 0.25
+    i, j = 10, 13
+    p = np.array([[ls.xs[i] + t * ls.dx, ls.ys[j]]])
+    v, cnt = scatter_inverse_distance(ls, p, np.array([1.0]))
+    w = (1 - t) ** 2 / (t ** 2 + (1 - t) ** 2)
+    # 单点覆盖时值是"加权平均"，权重只体现在 counts（种子掩膜）上
+    assert v[i, j] == pytest.approx(1.0) and v[i + 1, j] == pytest.approx(1.0)
+    assert cnt[i, j] == pytest.approx(w, abs=1e-12)
+    assert cnt[i + 1, j] == pytest.approx(1 - w, abs=1e-12)
+    # 对角邻居距离 √(1+t²)·dx > 1 格、远侧邻居 1+t 格，都被距离规则排除
+    assert cnt[i + 1, j + 1] == 0.0
+    assert cnt[i - 1, j] == 0.0 and cnt[i, j + 1] == 0.0
 
 
-def test_node_field_indices_rejects_off_lattice_points(ls):
-    f = _lattice_field(ls)
-    with pytest.raises(ValueError, match="不在场导出网格节点上"):
-        node_field_indices(f, np.array([[1.0, 0.05]]), 0.0)     # y 方向差半格
-    with pytest.raises(ValueError, match="不在场导出网格节点上"):
-        node_field_indices(f, np.array([[1.05, 0.0]]), 0.0)     # x 方向差半格
-    with pytest.raises(ValueError, match="不在场导出网格节点上"):
-        node_field_indices(f, np.array([[9.9, 0.0]]), 0.0)      # 出界
+def test_scatter_inverse_distance_lets_the_closer_point_win(ls):
+    """一个节点被两个边界点覆盖：反距离平方 → 近者权重大（1/d² 不是等权平均）。"""
+    i, j = 10, 13
+    a = np.array([ls.xs[i] + 0.25 * ls.dx, ls.ys[j]])
+    b = np.array([ls.xs[i] + 0.75 * ls.dx, ls.ys[j]])
+    v, _ = scatter_inverse_distance(ls, np.vstack([a, b]), np.array([1.0, 0.0]))
+    # 两点的权重分布互为镜像（0.9/0.1），节点值 = 加权平均
+    assert v[i, j] == pytest.approx(0.9, abs=1e-12)
+    assert v[i + 1, j] == pytest.approx(0.1, abs=1e-12)
 
 
-def test_spread_to_grid_takes_nearest_sample_value(ls):
-    ixy = np.array([[10, 10], [20, 10], [30, 10]])   # (1,0) 每 2 格一个
-    v = np.array([1.0, 2.0, 4.0])
-    V = spread_to_grid(ls, ixy, v)
-    assert V[10, 10] == 1.0 and V[20, 10] == 2.0 and V[12, 10] == 1.0
-    assert V[19, 10] == 2.0       # 取最近采样点，不平均
-    assert V.shape == ls.phi.shape
+def test_scatter_inverse_distance_gives_a_hit_node_everything(ls):
+    """边界点正好落在节点上 → 直接赋值（不是插值、不摊给邻居）。"""
+    i, j = 10, 13
+    v, cnt = scatter_inverse_distance(ls, np.array([[ls.xs[i], ls.ys[j]]]),
+                                      np.array([3.0]))
+    assert v[i, j] == pytest.approx(3.0)
+    assert cnt[i, j] == pytest.approx(1.0)
+    assert np.count_nonzero(cnt) == 1
+
+
+def test_scatter_inverse_distance_preserves_a_constant_field(ls):
+    """常值速度回写后处处等于该常数（逐点归一化权重 → 值域不漂移）。"""
+    pts = np.column_stack([np.linspace(0.5, 3.5, 30), np.full(30, 0.3)])
+    v, cnt = scatter_inverse_distance(ls, pts, np.full(30, 2.5))
+    touched = cnt > 0
+    assert touched.sum() > 10
+    assert np.allclose(v[touched], 2.5)
+    assert np.all(v[~touched] == 0.0)
+
+
+def test_scatter_inverse_distance_matches_the_shape_and_rejects_mismatch(ls):
+    pts = np.array([[1.0, 0.0], [2.0, 0.0]])
+    v, cnt = scatter_inverse_distance(ls, pts, np.array([1.0, 1.0]))
+    assert v.shape == cnt.shape == ls.phi.shape
+    with pytest.raises(ValueError, match="不匹配"):
+        scatter_inverse_distance(ls, pts, np.array([1.0]))
+    with pytest.raises(ValueError, match="neighbors"):
+        scatter_inverse_distance(ls, pts, np.ones(2), neighbors="diagonal")
+
+
+# ---------------------------------------------------------------------- #
+# intersection 方案：WLS 的节点掩膜
+# ---------------------------------------------------------------------- #
+def test_field_node_mask_keeps_only_the_medium_side(ls, tmp_path):
+    """掩膜 = φ_可动 > 0（介质侧）且 φ_固定 > 0（直通线内部不算空气）。
+
+    直通线（fixed_region）在**可动** φ 里是正值（臂之外全是介质），光看它
+    会把直通线内部 E≈0 的节点当成空气节点混进 WLS——必须用固定区 SDF 再排。
+    """
+    from eaopt.adjoint.fields import FieldGrid
+
+    cfg = make_compact_cfg(tmp_path)
+    field = FieldGrid(origin=(ls.xs[0], ls.ys[0], -0.5),
+                      spacing=(ls.dx, ls.dx, 0.5), data=np.zeros((ls.nx, ls.ny, 3, 3)))
+    j_air = int(round((0.2 - ls.ys[0]) / ls.dx))
+    j_arm = int(round((-0.3 - ls.ys[0]) / ls.dx))
+    j_line = int(round((0.7 - ls.ys[0]) / ls.dx))
+
+    mask = field_node_mask(ls, field, cfg)
+    assert mask.shape == (ls.nx, ls.ny)
+    assert not mask[ls.phi < 0].any()          # 金属（臂）内不算
+    assert not mask[:, j_line].any()           # 直通线内部也不算（固定区 SDF 排掉）
+    assert mask[5, j_air]                      # 臂与直通线之间的介质算
+
+    # 内侧（sample_side=inside）反过来：金属内算、介质不算
+    cfg.sampling.sample_side = "inside"
+    inside = field_node_mask(ls, field, cfg)
+    assert inside[5, j_arm]
+    assert not inside[5, j_air]

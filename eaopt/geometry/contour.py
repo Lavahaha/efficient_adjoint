@@ -12,6 +12,7 @@ from scipy import interpolate
 
 __all__ = [
     "extract_contours",
+    "dedupe_vertices",
     "smooth_resample",
     "close_open_contours",
     "self_intersections",
@@ -41,6 +42,35 @@ def extract_contours(
             paths.append(v)
     plt.close(cs.figure)
     return paths
+
+
+def dedupe_vertices(vertices: np.ndarray, tol_mm: float = 1e-6) -> np.ndarray:
+    """去掉相邻重复/极近顶点（闭合轮廓保留首尾重复一个）。
+
+    零等值线正好穿过网格节点时，marching 会在相邻单元里连续发射同一个
+    交点（真实 φ 快照实测约 19% 的顶点是这种零长段）。退化边让下游的
+    scatter 出现零长段、也让 CST 的 ``.Create`` 报 "Profile is
+    self-intersecting"。容差取 1e-6 mm：远小于任何物理尺度，又远大于
+    插值残差（~1e-14）。
+
+    闭合判定 = 首尾距离 ≤ tol；是闭合则删去末点后按环处理重复，最后把
+    首点复制到末尾（下游靠首尾**精确**相等判闭合）。
+    """
+    pts = np.asarray(vertices, dtype=float)
+    if len(pts) < 2:
+        return pts.copy()
+    closed = bool(np.linalg.norm(pts[-1] - pts[0]) <= tol_mm)
+    body = pts[:-1] if closed else pts
+    if len(body) < 2:
+        return body.copy()
+    keep = np.ones(len(body), dtype=bool)
+    keep[1:] = np.linalg.norm(np.diff(body, axis=0), axis=1) > tol_mm
+    if closed and keep[-1] and np.linalg.norm(body[-1] - body[0]) <= tol_mm:
+        keep[-1] = False  # 末点与首点重合（闭合点重复）
+    out = body[keep]
+    if closed:
+        out = np.vstack([out, out[0]])
+    return out
 
 
 def smooth_resample(

@@ -408,9 +408,10 @@ def ascii_export_params(step_mm: float,
     要限制范围只能在解析端裁剪（see cst_results.crop_grid）。
 
     StepX/Y/Z 是**每个轴上的采样步长**，单位 = 建模单位（mm）；取
-    CaseConfig.field_export_step_mm（nodes 采样 = 设计区网格步长，contour
-    = 采样点距）。导出点数按步长的立方增长、范围是整个计算域（没有区域
-    属性），改步长前先估一下体积：0.2 mm → 29 MB/份，0.1 mm → 约 225 MB/份。
+    CaseConfig.field_export_step_mm（intersection 采样 = 设计区网格步长，
+    contour = 采样点距）。导出点数按步长的立方增长、范围是整个计算域
+    （没有区域属性），改步长前先估一下体积：0.2 mm → 29 MB/份，
+    0.1 mm → 约 225 MB/份。
     """
     s = f"{step_mm:g}"
     return [("Mode", mode), ("StepX", s), ("StepY", s), ("StepZ", s)]

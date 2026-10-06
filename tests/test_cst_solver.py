@@ -381,3 +381,47 @@ def test_a_full_solve_writes_the_iteration_dir(cfg):
     assert set(sp) == {(i, cfg.objective.from_port) for i in COUPLER.ports}
     assert (d / "shape.json").is_file()
     assert (d / "meta.json").is_file()
+
+
+def test_pipeline_runs_on_the_server_measured_export_grid(cfg):
+    """**服务器上那次崩溃的端到端回归**：导出网格原点 = 实测的 (−5.6, −3.55)。
+
+    设计区 y=−2.6 相对导出网格差**半格**——旧 nodes 方案（要求采样点与导出
+    节点逐点重合）在第一轮就抛 ValueError。现在按坐标 WLS 取场，整条 pipeline
+    （建几何 → 前向 → FoM → 后向 → 采样 → 速度 → HJ）跑得完。
+    """
+    from eaopt.pipeline import OptimizerPipeline, make_level_set
+
+    csti.configure(grid=(np.arange(-5.6, 5.0 + 1e-9, 0.1),        # 实测原点 x −5.6
+                         np.arange(-3.55, 2.05 + 1e-9, 0.1),      # 实测原点 y −3.55
+                         -0.6985 + 0.1 * np.arange(8)))   # z 面 z=0 附近是 +0.0015
+    cfg.optimizer.max_iterations = 1
+    ls = make_level_set(cfg)
+    phi0 = ls.phi.copy()
+    solver = _solver(cfg, auto_init=True)
+    history = OptimizerPipeline(cfg, solver, ls).run()
+
+    assert len(history.records) == 1
+    d = artifacts.iteration_dir(cfg.output.dir, 0)
+    for name in ("shape.json", "s_params_fwd.json", "s_params_bwd.json",
+                 "meta.json", "ls_phi.npz"):
+        assert (d / name).is_file()
+    # 交给 CST 的形状 = 交点折线（+ 沿设计区边界外扩 0.05 与区外馈线搭接）
+    shape = artifacts.load_shape(d)
+    box, dx = cfg.design_region.box, cfg.design_region.grid_step_mm
+    pad = 0.05                       # close_open_contours 的外扩余量（见 contour.py）
+    assert shape
+    for p in shape:
+        assert p[:, 0].min() >= box.x[0] - pad - 1e-9
+        assert p[:, 0].max() <= box.x[1] + pad + 1e-9
+        assert p[:, 1].min() >= box.y[0] - pad - 1e-9
+        assert p[:, 1].max() <= box.y[1] + pad + 1e-9
+        # 设计区内的顶点（= 交点折线本体，不含外扩的搭接段）压在网格线上
+        in_box = ((p[:, 0] >= box.x[0] - 1e-9) & (p[:, 0] <= box.x[1] + 1e-9)
+                  & (p[:, 1] >= box.y[0] - 1e-9) & (p[:, 1] <= box.y[1] + 1e-9))
+        r = (p[in_box] - np.array([box.x[0], box.y[0]])) / dx
+        fx = np.abs(r[:, 0] - np.rint(r[:, 0]))
+        fy = np.abs(r[:, 1] - np.rint(r[:, 1]))
+        assert np.minimum(fx, fy).max() < 1e-9
+    # φ 真的被推了（假场的值随下标变化 → δp ≠ 0）
+    assert np.abs(ls.phi - phi0).max() > 0

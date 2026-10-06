@@ -12,6 +12,12 @@ dependencies = [
     "scipy>=1.11",
     "pyyaml>=6.0",
     "matplotlib>=3.8",
+    # 速度窄带延拓的快速行进法（level_set.extension_method=auto/skfmm）。
+    # **环境标记不是可选项**：PyPI 上 scikit-fmm 只发到 cp313 的 Windows 轮子
+    # （服务器 conda py310 能直接装），本机 Python 3.14 没有轮子——无条件下载
+    # 会让本地 `pip install -e .` 整个失败。本机跳过它，auto 会打印一行告警
+    # 后回退 PDE 上风延拓（代码路径见 eaopt/geometry/extension.py）。
+    "scikit-fmm>=2025.6.23; python_version < '3.14'",
 ]
 
 [project.optional-dependencies]

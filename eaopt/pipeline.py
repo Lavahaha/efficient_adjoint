@@ -22,12 +22,14 @@ import numpy as np
 
 from eaopt import artifacts
 from eaopt.adjoint.derivative import shape_derivative
-from eaopt.adjoint.sampling import (boundary_nodes, is_fixed_contour,
-                                    make_fixed_sdf, node_field_indices,
-                                    sample_boundary, sample_nodes,
-                                    scatter_to_grid, spread_to_grid)
+from eaopt.adjoint.fields import build_wls_stencil
+from eaopt.adjoint.sampling import (boundary_points, boundary_samples,
+                                    field_node_mask, is_fixed_contour,
+                                    make_fixed_sdf, scatter_inverse_distance,
+                                    scatter_to_grid)
 from eaopt.config import CaseConfig
 from eaopt.geometry.contour import extract_contours, smooth_resample
+from eaopt.geometry.extension import extend_velocity
 from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import apply_min_gap, build_velocity_mask, interp_mask_at
 from eaopt.optimize.objective import make_fom
@@ -51,11 +53,11 @@ def movable_contours(ls: LevelSet2D, cfg: CaseConfig) -> list[np.ndarray]:
     cst_update 脚本要用同一份"初始轮廓"去建/改 CST 工程，各写一份迟早
     漂移（脚本里看到的形状 ≠ 迭代里演化的形状，而且不报错）。
 
-    ``scheme=nodes``：返回**边界网格节点折线**（论文 Fig.3b：采样点连点
-    成轮廓，与仿真形状是同一份离散）；``contour``：按点距重采样（旧）。
+    ``scheme=intersection``：返回**零等值线交点折线**（亚格点，与灵敏度
+    分析的采样点是同一份离散）；``contour``：按点距重采样（旧，A/B）。
     """
-    if cfg.sampling.scheme == "nodes":
-        return boundary_nodes(ls, cfg)
+    if cfg.sampling.scheme == "intersection":
+        return boundary_points(ls, cfg)
     contours = extract_contours(ls.xs, ls.ys, ls.phi)
     fixed_sdf = make_fixed_sdf(ls, cfg)
     out = []
@@ -161,38 +163,46 @@ class OptimizerPipeline:
         s = cfg.sampling
         v_mask_grid = build_velocity_mask(self.ls, cfg)
 
-        if s.scheme == "nodes":
-            # 采样点 = 边界网格节点（零插值：场值按数组下标直接取）
-            # 两套下标**不能混**：g_* 是 φ 网格（= 速度掩膜/延拓的网格），
-            # f_* 是 CST 导出网格。两者只是同格距的同一张 lattice，原点一般
-            # 不同（导出的是整个包围盒），混用会静默错位——越界才报错。
-            pts, g_ij = sample_nodes(self.ls, movable)
-            if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新
-                return np.zeros(self.ls.phi.shape)
-            f_ix, f_iy, f_iz, z_used = node_field_indices(sol_f.e_field, pts, s.field_z_mm)
+        pts, nrm = boundary_samples(movable, self.ls, cfg)
+        if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新
+            return np.zeros(self.ls.phi.shape)
+        self._check_field_grids(sol_f, sol_b)
+        nrm3 = np.column_stack([nrm, np.zeros(len(nrm))])
+
+        if s.scheme == "intersection":
+            # 交点方案：采样点是亚格点，场值按**坐标**用 WLS 取（导出网格
+            # 原点由 CST 包围盒定，与 φ 网格不必对齐——这正是旧节点方案
+            # 在服务器上做不到的事）。四个场共用一套算子：fwd/bwd 必须用
+            # 同一离散，否则伴随梯度静默失真。
+            iz, z_used = sol_f.e_field.nearest_z_plane(s.field_z_mm)
             self._check_sample_plane(z_used)
-            val = [sol_f.e_field.data[f_ix, f_iy, f_iz]]
-            for f in (sol_f.h_field, sol_b.e_field, sol_b.h_field):
-                # 每次导出都得自己证明采样点落在它的网格上：网格不一致时
-                # 复用下标会取到别处的场值，而且不报错
-                jx, jy, jz, _ = node_field_indices(f, pts, s.field_z_mm)
-                if not (np.array_equal(jx, f_ix) and np.array_equal(jy, f_iy)):
-                    raise ValueError("fwd/bwd 的 E/H 场导出网格不一致，无法按节点取场")
-                val.append(f.data[jx, jy, jz])
-            e_f, h_f, e_b, h_b = val
-            n = self.ls.normals_at(pts)
-            nrm3 = np.column_stack([n, np.zeros(len(n))])
+            mask = field_node_mask(self.ls, sol_f.e_field, cfg)
+            st = build_wls_stencil(
+                pts, sol_f.e_field.axes()[:2], mask,
+                radius_cells=s.wls_radius_cells, order=s.wls_order)
+            e_f, h_f, e_b, h_b = (
+                f.sample_wls(pts, iz, stencil=st).values
+                for f in (sol_f.e_field, sol_f.h_field, sol_b.e_field, sol_b.h_field)
+            )
             dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin,
                                   self.omega, self.eps_r)
             # 掩膜先于归一化：被禁点（角点奇异性、固定区邻域）不参与
             # max|δp|，否则它们会劫持速度尺度拖慢全场
-            active = v_mask_grid[g_ij[:, 0], g_ij[:, 1]] > 0.5
+            active = interp_mask_at(self.ls, pts, v_mask_grid) > 0.5
             v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
-            return spread_to_grid(self.ls, g_ij, v) * v_mask_grid
+            v_seed, counts = scatter_inverse_distance(
+                self.ls, pts, v, max_dist_cells=s.scatter_max_cells)
+            V, method = extend_velocity(
+                self.ls, v_seed, cfg.level_set.extension_band_mm,
+                method=cfg.level_set.extension_method, known=counts > 0)
+            print(f"[采样] 交点 {len(pts)} 个（WLS {s.wls_order} 阶 R="
+                  f"{s.wls_radius_cells} 格，回退 {st.n_fallback}），种子节点 "
+                  f"{int((counts > 0).sum())} 个，延拓 {method}")
+            return V * v_mask_grid
 
-        pts, nrm = sample_boundary(movable, self.ls, cfg)
+        # 不走吸附（直接按 z 插值），但采样面落进金属体内的错误同样要拦
+        self._check_sample_plane(float(s.field_z_mm))
         pts3 = np.column_stack([pts, np.full(len(pts), s.field_z_mm)])
-        nrm3 = np.column_stack([nrm, np.zeros(len(nrm))])
         e_f = sol_f.e_field.interp(pts3)
         h_f = sol_f.h_field.interp(pts3)
         e_b = sol_b.e_field.interp(pts3)
@@ -206,8 +216,29 @@ class OptimizerPipeline:
         active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
         v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
         v_boundary = scatter_to_grid(self.ls, bnd, v)
-        V = self.ls.extend_velocity(v_boundary, cfg.level_set.extension_band_mm)
+        V, method = extend_velocity(
+            self.ls, v_boundary, cfg.level_set.extension_band_mm,
+            method=cfg.level_set.extension_method)
+        print(f"[采样] 轮廓点 {len(pts)} 个，延拓 {method}")
         return V * v_mask_grid
+
+    def _check_field_grids(self, sol_f, sol_b) -> None:
+        """四个场必须导出在同一张 (x, y) 网格上（z 由各自的采样面吸附决定）。
+
+        网格不一致时"按坐标取场"会取到别处的值、而且不报错——伴随法要求
+        fwd/bwd 用同一离散。旧节点方案靠"逐点重合"隐式保证，现在必须显式查。
+        """
+        ref = sol_f.e_field
+        for name, f in (("fwd H", sol_f.h_field), ("bwd E", sol_b.e_field),
+                        ("bwd H", sol_b.h_field)):
+            for k, ax_name in ((0, "x"), (1, "y")):
+                a, b = ref.axes()[k], f.axes()[k]
+                if a.shape != b.shape or not np.allclose(a, b, atol=1e-9):
+                    raise ValueError(
+                        f"{name} 场的 {ax_name} 网格与 fwd E 不一致（原点 "
+                        f"{b[0]:g} vs {a[0]:g}、步长 {f.spacing[k]:g} vs "
+                        f"{ref.spacing[k]:g}、点数 {b.size} vs {a.size}）："
+                        "fwd/bwd 必须导出在同一张网格上，否则按坐标取场会静默取错值")
 
     def _check_sample_plane(self, z_used: float) -> None:
         """采样面吸附到导出网格面：说一声；**落进金属体内则报错**。

@@ -25,10 +25,12 @@ CST 侧的一切（模板布局、频点、材料、端口、求解设置、场�
 取值——**规则在 CST 代码里，值在优化配置里**，不重复定义。
 
 场导出步长（``export_step_mm``）是 CST 侧参数，缺省跟随优化侧的
-``CaseConfig.field_export_step_mm``：``sampling.scheme=nodes`` 时 = 设计区
-网格步长（采样点就是网格节点，导出网格必须同源才能零插值）；``contour``
-时 = 采样点距（论文经验 0.1~0.5 mm）。导出点数按步长的立方增长，改步长
-前先算一下文件大小（0.2 mm → 13 MB，0.1 mm → 4 倍）。
+``CaseConfig.field_export_step_mm``：``sampling.scheme=intersection`` 时
+= 设计区网格步长（WLS 邻域半径以场格数计，步长 = 拟合分辨率；**不要求
+导出网格与 φ 网格对齐**——导出原点由 CST 包围盒定，实测 y −3.55 与设计区
+−2.6 差半格，取场按坐标做）；``contour`` 时 = 采样点距（论文经验
+0.1~0.5 mm）。导出点数按步长的立方增长，改步长前先算一下文件大小
+（0.2 mm → 13 MB，0.1 mm → 4 倍）。
 """
 
 from __future__ import annotations

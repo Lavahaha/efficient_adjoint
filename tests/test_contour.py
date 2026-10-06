@@ -63,6 +63,34 @@ def test_smooth_resample_circle_uniform_spacing():
     assert np.abs(rad - r).max() < 0.1
 
 
+def test_dedupe_vertices_removes_zero_length_segments():
+    """marching 过节点时会连续发射同一个交点（零长段）。"""
+    line = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
+    out = C.dedupe_vertices(line)
+    assert np.allclose(out, [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
+    # 开放折线：首尾不相等就不当闭合处理，也不改动非相邻点
+    sparse = np.array([[0.0, 0.0], [0.5, 0.0], [2.0, 0.0]])
+    assert np.array_equal(C.dedupe_vertices(sparse), sparse)
+
+
+def test_dedupe_vertices_forces_exact_closure():
+    """闭合轮廓：末点重复删掉，首尾强制**精确**相等（下游靠它判闭合）。"""
+    ring = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 1.0],
+                     [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]])
+    out = C.dedupe_vertices(ring)
+    assert len(out) == 5
+    assert np.array_equal(out[0], out[-1])
+    assert np.allclose(out[:4], [[0, 0], [1, 0], [1, 1], [0, 1]])
+
+
+def test_dedupe_vertices_handles_near_closure():
+    """首尾只差浮点残差（1e-9）也算闭合——matplotlib 的闭合点不总是逐位相等。"""
+    ring = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+                     [1e-9, -1e-9]])
+    out = C.dedupe_vertices(ring)
+    assert np.array_equal(out[0], out[-1])
+
+
 def _arm_box() -> BoxSpec:
     return BoxSpec(x=(0.0, 12.0), y=(-2.0, 3.0))
 

@@ -81,16 +81,22 @@ class DesignRegionSpec:
 
 @dataclass
 class SamplingSpec:
-    # nodes=采样点落在 φ 网格节点上（论文 Fig.3b；要求导出步长=网格步长）|
-    # contour=沿轮廓弧长重采样（旧，留作 A/B）
-    scheme: str = "contour"
-    offset_cells: int = 1  # nodes：采样点 = 边界外(内)侧往外数第几排节点；1 = 紧贴边界的一排
-                           # （真实算例初始边界落在格线上时，这一排就是边界节点本身）
+    # intersection=边界点取 marching 交点（亚格点）+ WLS 取场 + 反距离平方回写（现行）|
+    # contour=沿轮廓弧长重采样 + 三线性取场 + 最近节点回写（旧，留作 A/B）
+    scheme: str = "intersection"
     point_spacing_mm: float = 0.2  # contour：边界导数采样点间距（论文经验 0.1~0.5）
     sample_offset_mm: float = 0.05  # contour：采样点沿法向的偏移量（对应论文 delta_z）
-    sample_side: str = "outside"  # contour：outside=金属外侧(PEC) | inside=金属内侧
+    sample_side: str = "outside"  # 两方案共用：outside=金属外侧(PEC) | inside=金属内侧
+    # --- intersection 方案参数 ---
+    intersection_offset_mm: float = 0.0
+    # 交点沿外法向的额外偏移：0 = 场就取在交点（边界）上，用介质侧节点做**单侧**
+    # 拟合得到空气侧极限；调成半格（如 0.05）可把外推变内插，对 CST 近金属场
+    # 的阶梯噪声更鲁棒（代价是采样点与边界错开半格）。
+    wls_radius_cells: float = 2.0   # WLS 邻域半径（单位 = 场导出网格步长）
+    wls_order: int = 1              # 1=局部线性 | 2=局部二次
+    scatter_max_cells: float = 1.0  # 速度回写的作用半径（φ 网格格数）
     field_z_mm: float = -0.1  # 场采样平面的 z（mm，基板顶面=金属底面为 0，金属在其上方）
-                              # nodes 下吸附到最近的导出网格面；**必须为负**，否则可能
+                              # 吸附到最近的导出网格面；**必须为负**，否则可能
                               # 吸附进金属体内（PEC 里 E/H≈0 → δp 恒 0，pipeline 会报错）
 
 
@@ -110,6 +116,9 @@ class OptimizerSpec:
 class LevelSetSpec:
     reinit_every: int = 5  # 每 N 次迭代重初始化一次
     extension_band_mm: float = 0.5  # 速度延拓带宽（mm）
+    # 速度窄带延拓的实现：auto（有 scikit-fmm 就用，缺库打印一行告警后退回
+    # PDE 上风延拓）| skfmm（缺库直接报错）| pde（旧实现，留作对照）
+    extension_method: str = "auto"
 
 
 @dataclass
@@ -175,16 +184,16 @@ class CaseConfig:
         if self.design_region.grid_step_mm <= 0:
             raise ValueError("design_region.grid_step_mm 必须为正")
         # 步长必须整除设计区：LevelSet2D 用 linspace 铺格，除不尽时**实际格距
-        # ≠ grid_step_mm 而没有任何报错**——φ 节点落不到 CST 导出网格上，
-        # nodes 采样到取场那一步才炸，且报错指向不了这里。
+        # ≠ grid_step_mm 而没有任何报错**——φ 网格被悄悄拉伸，所有按格数
+        # 换算的量（WLS 半径、scatter 半径、步长格数）都会跟着偏。
         for axis in ("width", "height"):
             k = getattr(self.design_region.box, axis) / self.design_region.grid_step_mm
             if abs(k - round(k)) > 1e-9:
                 raise ValueError(
                     f"design_region.grid_step_mm={self.design_region.grid_step_mm} "
                     f"除不尽设计区{axis} {getattr(self.design_region.box, axis)} mm"
-                    f"（={k:.6g} 格）：网格会被 linspace 悄悄拉伸，"
-                    "采样点不再落在 CST 导出网格节点上。请改步长或改设计区尺寸。")
+                    f"（={k:.6g} 格）：φ 网格会被 linspace 悄悄拉伸。"
+                    "请改步长或改设计区尺寸。")
         # 端口表在 CST 模板里（cst_setup.ports）；objective 的端口合法性由
         # CstSetup.validate_objective 在装配点校验（这里不知道模板）。
         for i, poly in enumerate(self.initial_metal):
@@ -197,16 +206,24 @@ class CaseConfig:
             raise ValueError(
                 f"constraints.taper_edges={self.constraints.taper_edges!r} 未知："
                 '只认 "xy" / "x" / "y" / "none"（速度掩膜 taper 作用在哪些边）')
-        if self.sampling.scheme not in ("nodes", "contour"):
-            raise ValueError(f"未知采样方案 {self.sampling.scheme}")
-        if self.sampling.offset_cells < 1:
-            raise ValueError("sampling.offset_cells 至少为 1（第 1 排 = 紧贴边界的一排节点）")
+        if self.sampling.scheme not in ("intersection", "contour"):
+            raise ValueError(
+                f"未知采样方案 {self.sampling.scheme}："
+                '只认 "intersection"（交点+WLS）与 "contour"（旧，A/B）')
         if self.sampling.point_spacing_mm <= 0:
             raise ValueError("sampling.point_spacing_mm 必须为正")
         if self.sampling.sample_offset_mm < 0:
             raise ValueError("sampling.sample_offset_mm 不能为负")
         if self.sampling.sample_side not in ("outside", "inside"):
             raise ValueError(f"未知采样侧 {self.sampling.sample_side}")
+        if self.sampling.intersection_offset_mm < 0:
+            raise ValueError("sampling.intersection_offset_mm 不能为负")
+        if self.sampling.wls_radius_cells <= 0:
+            raise ValueError("sampling.wls_radius_cells 必须为正")
+        if self.sampling.wls_order not in (1, 2):
+            raise ValueError("sampling.wls_order 只支持 1（局部线性）或 2（局部二次）")
+        if self.sampling.scatter_max_cells <= 0:
+            raise ValueError("sampling.scatter_max_cells 必须为正")
         if self.optimizer.step_cells <= 0:
             raise ValueError("optimizer.step_cells 必须为正")
         if not 0.0 < self.optimizer.cfl <= 0.5:
@@ -217,15 +234,21 @@ class CaseConfig:
             raise ValueError("optimizer.max_iterations 必须为正")
         if self.level_set.reinit_every < 1:
             raise ValueError("level_set.reinit_every 至少为 1")
+        if self.level_set.extension_method not in ("auto", "skfmm", "pde"):
+            raise ValueError(
+                f"level_set.extension_method={self.level_set.extension_method!r} "
+                '未知：只认 "auto" / "skfmm" / "pde"')
 
     @property
     def field_export_step_mm(self) -> float:
         """CST 场导出步长。
 
-        nodes 方案下必须等于水准集网格步长——采样点就是网格节点，导出网格
-        与采样网格同源才能零插值（否则 node_field_indices 直接报错）。
+        ``intersection``：导出网格按坐标被 WLS 使用（邻域半径以场格数计），
+        **不要求与 φ 网格对齐**——缺省取 φ 网格步长（分辨率对等）。
+        服务器若要省导出体积/时间，可调粗此值并把 wls_radius_cells 相应
+        放大（代价是拟合截断误差变大）。``contour``：沿用采样点距。
         """
-        if self.sampling.scheme == "nodes":
+        if self.sampling.scheme == "intersection":
             return float(self.design_region.grid_step_mm)
         return float(self.sampling.point_spacing_mm)
 
@@ -233,8 +256,10 @@ class CaseConfig:
         """优化侧配置摘要（CST 侧常量见 ``cst_setup.CstSetup``）。"""
         dr = self.design_region.box
         s = self.sampling
-        if s.scheme == "nodes":
-            sample = (f"网格节点（{s.sample_side} 第 {s.offset_cells} 排）, "
+        if s.scheme == "intersection":
+            sample = (f"marching 交点（亚格点）{s.sample_side}, "
+                      f"偏移 {s.intersection_offset_mm} mm, "
+                      f"WLS {s.wls_order} 阶 R={s.wls_radius_cells} 格, "
                       f"z={s.field_z_mm} mm（吸附到导出网格面）")
         else:
             sample = (f"轮廓重采样 点距 {s.point_spacing_mm} mm, "
@@ -246,6 +271,8 @@ class CaseConfig:
             f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}|",
             f"边界采样    : {s.scheme} — {sample}",
             f"场导出步长  : {self.field_export_step_mm} mm",
+            f"速度延拓    : {self.level_set.extension_method}"
+            f"（带宽 {self.level_set.extension_band_mm} mm）",
             f"约束        : 最小间距 {self.constraints.min_gap_mm} mm, "
             f"边缘 taper 作用于 {self.constraints.taper_edges} 边"
             + (f", 活动范围 {self.constraints.allowed_region}" if self.constraints.allowed_region else ""),

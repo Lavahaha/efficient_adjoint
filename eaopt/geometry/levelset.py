@@ -154,18 +154,25 @@ class LevelSet2D:
     # 速度延拓
     # ------------------------------------------------------------------ #
     def extend_velocity(
-        self, v_boundary: np.ndarray, band: float, iters: int = 80
+        self,
+        v_boundary: np.ndarray,
+        band: float,
+        iters: int = 80,
+        known: np.ndarray | None = None,
     ) -> np.ndarray:
         """把边界速度延拓到窄带 |φ|<band：∂V/∂τ + S(φ)n̂·∇V = 0（上风）。
 
-        v_boundary: (nx, ny)，仅在边界邻域 |φ|≤0.75·dx 处为已知值
-        （覆盖边界两侧的相邻节点；其余忽略）。
+        v_boundary: (nx, ny)，仅在边界邻域为已知值（其余忽略）。
+        known: 可选布尔掩膜，True = 边界已知值节点（由调用方给出，如
+        scatter 真正落过点的节点）。None = 旧规则 |φ| ≤ 0.75·dx——φ 偏离
+        距离函数（|∇φ|≠1）时那条固定带会静默漏掉种子。
         返回延拓后的速度场（窄带外为 0）。
         """
         v_boundary = np.asarray(v_boundary, dtype=float)
         if v_boundary.shape != self.phi.shape:
             raise ValueError("v_boundary 形状与网格不一致")
-        near = np.abs(self.phi) <= 0.75 * self.dx
+        near = (np.abs(self.phi) <= 0.75 * self.dx if known is None
+                else np.asarray(known, dtype=bool))
         v = np.where(near, v_boundary, 0.0)
         dtau = 0.5 * self.dx
         for _ in range(iters):

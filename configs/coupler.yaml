@@ -72,19 +72,26 @@ constraints:
   taper_edges: x
 
 sampling:
-  # 论文 Fig.3b：采样点 = 落在金属边界上的网格节点，连点成轮廓；
-  # 每点位移 ≤ 1 格。要求 grid_step_mm = CST 导出步长（field_export_step_mm）。
-  scheme: nodes
-  offset_cells: 1         # 边界外侧第 1 排节点：本算例初始边界落在格线上，
-                          # 这一排就是"落在边界上的网格节点"本身（论文 Fig.3b）
+  # 交点方案：边界点 = marching 在网格线上的交点（两端节点 φ 线性插值，
+  # 亚格点；交给 CST 的几何与做灵敏度分析的采样点是同一份离散）；
+  # 场值按坐标用加权最小二乘从 CST 导出网格取（导出网格原点由 CST 包围盒
+  # 定，**不要求与 φ 网格对齐**）；速度回写 = 最近节点 + 四邻居反距离平方。
+  scheme: intersection
   field_z_mm: -0.1        # 金属下方的介质里（z=0 是基板顶面=金属底面，金属占 0~0.035）
                           # **不能填 0.0**：0.1 mm 的导出网格在 z=+0.0015 有面，
                           # 吸附过去就落在金属体内（PEC 里 E/H≈0，δp 恒为 0 且不报错）；
                           # -0.1 会吸附到 z=-0.0985（基板内 0.1 mm 处）
-  # 旧轮廓方案参数（scheme=contour 时才用，留作 A/B）
+  # --- intersection 方案参数 ---
+  intersection_offset_mm: 0.0   # 0 = 场就取在交点上（单侧拟合出空气侧极限）；
+                                # 调到 0.05（半格）可把外推变内插、更抗 CST 阶梯噪声
+  wls_radius_cells: 2.0   # WLS 邻域半径（单位 = 场导出网格步长）；单侧（介质侧）
+                          # 拟合，半径要够大才凑得满模板
+  wls_order: 1            # 1=局部线性（默认）| 2=局部二次
+  scatter_max_cells: 1.0  # 速度回写作用半径（φ 网格格数）
+  sample_side: outside    # 两方案共用：取金属外侧（介质侧）的场
+  # --- 旧 contour 方案参数（scheme=contour 时才用，留作 A/B）---
   point_spacing_mm: 0.2
   sample_offset_mm: 0.05
-  sample_side: outside
 
 optimizer:
   step_cells: 1.0      # 每轮最大法向位移 = 1 个网格 = 0.1 mm（论文 Fig.3b）
@@ -99,6 +106,8 @@ optimizer:
 level_set:
   reinit_every: 3      # 每轮走 1 格（旧配置 0.4 格），重初始化要更勤
   extension_band_mm: 0.5
+  extension_method: auto   # auto（有 scikit-fmm 就用，缺库打印告警后回退 PDE）|
+                           # skfmm（缺库直接报错，正式跑用这个更明确）| pde（对照）
 
 output:
   dir: E:/zouyi/efficient_adjoint/results/coupler

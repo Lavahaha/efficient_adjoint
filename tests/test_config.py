@@ -49,19 +49,19 @@ def test_validate_rejects_unknown_taper_edges():
         cfg.validate()
 
 
-def test_coupler_uses_one_grid_for_phi_sampling_and_export():
-    """统一网格：φ / 采样点 / CST 场导出步长都由 grid_step_mm 控制。"""
+def test_coupler_samples_intersections_with_the_phi_grid_step():
+    """交点方案：φ 网格步长 = CST 场导出步长（分辨率对等），**不要求对齐**。
+
+    导出网格原点由 CST 包围盒定（实测 y −3.55，与设计区 −2.6 差半格），
+    采样点按坐标取场——"设计区必须与导出网格对齐"这条约定已经取消。
+    """
     cfg = CaseConfig.from_yaml(CFG_PATH)
-    assert cfg.sampling.scheme == "nodes"
-    assert cfg.sampling.offset_cells == 1
+    assert cfg.sampling.scheme == "intersection"
     assert cfg.field_export_step_mm == cfg.design_region.grid_step_mm == 0.1
     # 优化器步长以格为单位：1 格
     assert cfg.optimizer.step_cells == 1.0
-    # 导出/设计区对齐：设计区边界落在导出格线上（导出网格原点 x-5.6 / y-6.9）
-    for lo, hi, org in ((0.0, 12.0, -5.6), (-2.6, 0.9, -6.9)):
-        for v in (lo, hi):
-            assert abs((v - org) / cfg.field_export_step_mm
-                       - round((v - org) / cfg.field_export_step_mm)) < 1e-9
+    # 场就取在交点上（论文式 25 的边界值），不作沿法向的额外偏移
+    assert cfg.sampling.intersection_offset_mm == 0.0
 
 
 def test_contour_scheme_export_step_follows_point_spacing():
@@ -78,11 +78,31 @@ def test_validate_rejects_grid_step_that_does_not_divide_the_box():
         cfg.validate()
 
 
-def test_validate_rejects_zero_offset_cells():
-    """offset_cells=0 会取到跨边界的混合排（内侧金属/外侧间隙各半），拒绝。"""
+@pytest.mark.parametrize("key, bad", [
+    ("intersection_offset_mm", -0.1),   # 只能沿外法向偏（负=往金属里钻）
+    ("wls_radius_cells", 0.0),          # 邻域半径必须为正
+    ("wls_order", 3),                   # 只支持 1 / 2
+    ("scatter_max_cells", 0.0),         # 回写作用半径必须为正
+])
+def test_validate_rejects_bad_sampling_keys(key, bad):
     cfg = CaseConfig.from_yaml(CFG_PATH)
-    cfg.sampling.offset_cells = 0
-    with pytest.raises(ValueError, match="offset_cells"):
+    setattr(cfg.sampling, key, bad)
+    with pytest.raises(ValueError, match=key):
+        cfg.validate()
+
+
+def test_validate_rejects_unknown_scheme():
+    """nodes 方案已删：旧 YAML 必须报错，不能悄悄按默认值跑。"""
+    cfg = CaseConfig.from_yaml(CFG_PATH)
+    cfg.sampling.scheme = "nodes"
+    with pytest.raises(ValueError, match="采样方案"):
+        cfg.validate()
+
+
+def test_validate_rejects_unknown_extension_method():
+    cfg = CaseConfig.from_yaml(CFG_PATH)
+    cfg.level_set.extension_method = "ffm"
+    with pytest.raises(ValueError, match="extension_method"):
         cfg.validate()
 
 

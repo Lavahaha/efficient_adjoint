@@ -135,13 +135,28 @@ python scripts/run_coupler.py configs/coupler.yaml
 成功的标准是**趋势与终点**：|S31| 应被显著抬高（约 +8 dB 量级）并收敛
 到 −10 dB 附近、定向性同步升到 17 dB 附近。
 
-## 3.5 统一网格与 nodes 采样（当前配置）
+## 3.5 交点采样与统一网格（当前配置）
 
-φ 网格、边界采样点、CST 场导出步长**三者同一个数**：`design_region.grid_step_mm`
-（现为 0.1 mm，`CaseConfig.field_export_step_mm` 自动跟随）。采样点 = 边界外
-侧第 `sampling.offset_cells`（=1）排网格节点，轮廓 = 这些节点连成的折线
-（论文 Fig. 3b）；场值按数组下标直接取，**不做插值**，一轮最大位移 =
-`optimizer.step_cells` 格（1 格 = 0.1 mm）。理由与证据见 `sampling.py` 顶部。
+φ 网格与 CST 场导出步长**同一个数**：`design_region.grid_step_mm`（现为
+0.1 mm，`CaseConfig.field_export_step_mm` 自动跟随），但**两者不要求对齐**
+——导出网格的原点由 CST 包围盒定（实测 x −5.6 / y −3.55，设计区 y=−2.6
+相对它差半格），旧 `nodes` 方案要求采样点与导出节点逐点重合，在服务器上
+结构性做不到，已删除。
+
+现在（`sampling.scheme: intersection`）每轮：
+
+1. 边界 = **marching 在网格线上的交点**（两端节点 φ 线性插值，亚格点），
+   它同时是交给 CST 重建的几何和做灵敏度分析的采样点；
+2. 每个交点处用**加权最小二乘**从周围**介质侧**节点（`sample_side`，且不在
+   固定金属里）拟合出 E/H（`wls_order` 阶、半径 `wls_radius_cells` 格），
+   4 个场共用同一套插值算子；
+3. δp 换算为速度后**反距离平方回写**到最近节点 + 四邻居（`scatter_max_cells`
+   格内），再延拓到窄带（`level_set.extension_method`）。
+
+一轮最大位移 = `optimizer.step_cells` 格（1 格 = 0.1 mm）。每轮会打印一行
+诊断：`[采样] 交点 N 个（WLS 1 阶 R=2.0 格，回退 K），种子节点 M 个，延拓
+skfmm|pde`——**K 应该为 0**（有回退 = 邻域太稀，把 `wls_radius_cells` 调大）；
+**延拓应为 skfmm**（服务器装得上；打印 pde = 没装 scikit-fmm）。
 
 跑起来要盯的三件事：
 
@@ -149,21 +164,23 @@ python scripts/run_coupler.py configs/coupler.yaml
    整个包围盒）——四份场文件从 29 MB 涨到约 225 MB/份，`<output.dir>/cst_work/`
    峰值约 0.9 GB（每轮覆写，不累积）。解析本身很快（本地实测 29 MB / 0.36 s，
    约 0.1 mm 每轮 11 s），CST 侧导出时间按点数线性增长，**首次跑先看一轮的
-   耗时**，明显拖慢再回来讨论裁体积。
+   耗时**，明显拖慢再回来讨论裁体积。真要调粗导出步长（如 0.2），必须同时把
+   `sampling.wls_radius_cells` 提到两倍（4.0），否则邻域相对变小、回退数上升。
 2. **采样面**：`sampling.field_z_mm = -0.1`（金属下方介质里），启动时会打印
    一行"吸附到导出网格面 z=-0.0985"。**绝不能填 0.0**：0.1 mm 导出网格在
    z=+0.0015 有面、正好在 35 µm 金属体内，PEC 里 E/H≈0 → δp 恒 0、优化静默
    空转（pipeline 现在会直接报错拦住）。
 3. **网格整除**：设计区尺寸必须被 `grid_step_mm` 整除（12/0.1=120 ✓、
-   3.5/0.1=35 ✓），否则 `LevelSet2D` 的 linspace 会悄悄拉伸格距、采样点落不
-   到导出网格上；`CaseConfig.validate()` 会拦。设计区边界还要落在 CST
-   导出网格的格线上（导出网格原点实测 x=−5.6 / y=−6.9：0、12、−2.6、0.9
-   都是 0.1 的整数倍 ✓）。
+   3.5/0.1=35 ✓），否则 `LevelSet2D` 的 linspace 会悄悄拉伸格距、所有按格数
+   换算的量（WLS 半径、回写半径、步长格数）都跟着偏；`CaseConfig.validate()`
+   会拦。**导出网格不再需要与设计区对齐**。
 
-本地（无 CST）已用真实 iter=1 场数据做过离线 A/B，见 `_debug_nodes_ab.py`
-与 `_debug_nodes_ab.png`：窄带速度覆盖率 49% → 100%，演化后顶边粗糙度
-（二阶差分 RMS）6.0e-3 → 9.2e-4 mm，位移方向与旧方案一致（符号一致 99.6%、
-相关 0.96）。
+**近金属场是本地验不了的**（六面体网格在 PEC 界面阶梯化，贴界面节点的场有
+O(网格) 级误差，WLS 单侧拟合会把它带进 δp）：首次正式运行建议先 `scheme:
+contour` 跑一轮做 A/B（同一份场数据下的 δp 空间相关与 FoM 曲线），再切回
+`intersection`。δp 若沿边界出现格距尺度的锯齿，先试 `wls_order: 2`，再试
+`wls_radius_cells: 3.0`，最后才把 `intersection_offset_mm` 调到 0.05（半格，
+把单侧外推变成内插、对阶梯噪声更鲁棒）。
 
 ## 4. 一等 TODO：`velocity_sign` 尚未裁决
 

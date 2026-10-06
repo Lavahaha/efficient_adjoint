@@ -21,8 +21,16 @@
 梯度下降（固定步长 + 符号开关）→ 水准集 HJ 演化 → 最小间距投影 → 重建几何
 ```
 
-形状导数只定义在边界采样点上，经**速度延拓**铺满窄带后驱动
+形状导数只定义在边界采样点上，经**速度延拓**（窄带内 ∇V·∇φ = 0，
+优先用 scikit-fmm，缺库回退 PDE 上风格式）铺满窄带后驱动
 Hamilton–Jacobi 方程 ∂φ/∂t + V|∇φ| = 0（Godunov 一阶上风格式）。
+
+边界采样（`sampling.scheme: intersection`，现行）：
+**marching 在网格线上的交点**（两端节点 φ 线性插值，亚格点）既是交给 CST
+重建的几何、也是做灵敏度分析的采样点；场值按**坐标**用加权最小二乘从 CST
+导出网格取得（导出网格原点由包围盒定，与 φ 网格不必对齐——`nodes` 方案
+要求逐点重合，在服务器上做不到，已删除）；边界点速度按反距离平方回写到
+最近节点 + 四邻居。旧 `contour` 路径（弧长重采样 + 三线性取场）留作 A/B。
 
 ## 项目结构
 
@@ -32,12 +40,13 @@ eaopt/
 ├── pipeline.py          # 优化主循环（Fig. 4）+ 日志/快照/φ 快照
 ├── artifacts.py         # iter_NNN/ 产物读写（shape / s_params / meta / ls_phi）
 ├── geometry/
-│   ├── levelset.py      # 水准集：SDF 初始化、HJ 演化、重初始化、速度延拓、法向
-│   └── contour.py       # 零等值面提取（marching squares）与 B 样条平滑重采样
+│   ├── levelset.py      # 水准集：SDF 初始化、HJ 演化、重初始化、PDE 速度延拓、法向
+│   ├── contour.py       # 零等值面提取（marching，亚格点交点）+ B 样条平滑重采样
+│   └── extension.py     # 窄带速度延拓：scikit-fmm 优先，缺库回退 PDE
 ├── adjoint/
-│   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + 法/切分解
+│   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + WLS 取场 + 法/切分解
 │   ├── derivative.py    # 形状导数（论文式 25）
-│   └── sampling.py      # 边界采样（排除固定金属）与导数栅格化
+│   └── sampling.py      # 边界点（交点/轮廓）+ 固定金属剔除 + 反距离平方回写
 ├── optimize/
 │   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）
 │   ├── step.py          # 固定步长 + 归一化 + active 掩膜
@@ -56,7 +65,7 @@ scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 ite
 scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
 docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
-tests/                   # 201 项测试（不装 CST 也全绿：含假 CST 库的端到端）
+tests/                   # 227 项测试（不装 CST 也全绿：含假 CST 库的端到端）
 ```
 
 三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层
@@ -90,8 +99,8 @@ YAML 只管优化问题（设计区、初始/固定金属、采样、约束、�
 - 物理/材料（论文 III-A）：频点 5 GHz（= 监视器 = 扫频 = S 参数读取）、
   εr = 3.66、tanδ = 0.0037、基板 0.762 mm、金属 35 µm PEC、端口表 (1,2,3,4)；
 - 会话/运行：`attach_gui`、`port_power_w`、`export_step_mm`（缺省跟随
-  `CaseConfig.field_export_step_mm`：nodes 采样 = 设计区网格步长、contour
-  = 采样点距）、`save_fields`、`project_dir`（缺省 `<output.dir>/cst`）；
+  `CaseConfig.field_export_step_mm`：intersection 采样 = 设计区网格步长、
+  contour = 采样点距）、`save_fields`、`project_dir`（缺省 `<output.dir>/cst`）；
 - 无人值守：`quiet_mode`（连上就 `set_quiet_mode(True)`，模态框不再弹）、
   `clear_results`（每轮改形状前先 `DeleteResults`）——CST 在**已有结果**的
   工程上重跑仿真会弹确认框问要不要删旧结果，`run_solver()` 是同步的，GUI
@@ -133,6 +142,18 @@ YAML 只管优化问题（设计区、初始/固定金属、采样、约束、�
 - **场要裁到设计区** ± `design_region.field_margin_mm`（监视器导出的是整个
   计算域）；导出的 ASCII 是"表头 + 每点一行 9 列 `x y z Re1 Im1 …`"
   （`Mode "FixedWidth"`，服务器实测），解析按坐标归位、列数不对即报错；
+- **导出网格原点由 CST 包围盒定，取场必须按坐标**：`ASCIIExport` 没有
+  原点/范围属性（只有 Reset/FileName/Mode/StepX/Y/Z/Execute），服务器实测
+  原点 x −5.6 / y −3.55——设计区 y=−2.6 相对它差**半格**。所以旧 `nodes`
+  方案（要求采样点与导出节点逐点重合）结构性不可满足，已删除；现在交点用
+  WLS 按坐标取场，**不要求任何对齐**（`field_export_step_mm` 只决定拟合
+  分辨率，调粗它要同步放大 `wls_radius_cells`）；
+- **交给 CST 的几何 = 做灵敏度分析的采样点**（`movable_contours` 与
+  `boundary_samples` 吃同一份交点折线）：两处若各提一次轮廓，会静默漂移成
+  "仿真的是 A 形状、梯度作用在 B 形状"；
+- **四个场必须导出在同一张 (x,y) 网格上**（fwd/bwd 的 E/H；z 面各自按
+  `sampling.field_z_mm` 吸附）：按坐标取场时不一致既不报错、结果又是错的，
+  pipeline 开头显式查（`_check_field_grids`）；
 - **`shape.json` = 真正施加的形状**：两个工程都改成功后才写、每次覆盖写，
   它是事后复盘"第 N 轮模型长什么样"的唯一依据；
 - **`iter_NNN/` 只有一个写入口**：脚本链与 pipeline 都走 `eaopt.artifacts`

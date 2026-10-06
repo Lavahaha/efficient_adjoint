@@ -292,10 +292,10 @@ def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
     全程**即时执行、不进历史表**（后处理命令本来就不该进历史表）。
 
     step_mm 是各轴的采样步长（mm）：取 ``CaseConfig.field_export_step_mm``
-    （nodes 采样 = 设计区网格步长；contour = 采样点距）。导出范围是整个监视器
-    （Volume => 整个计算域），点数按步长的立方增长，所以调用方拿到后要用
-    :func:`crop_grid` 裁到设计区（文件本身的体积改不了——ASCIIExport 没有
-    区域属性）。
+    （intersection 采样 = 设计区网格步长；contour = 采样点距）。导出范围是
+    整个监视器（Volume => 整个计算域），**原点由 CST 包围盒定、不可指定**，
+    所以调用方拿到后要用 :func:`crop_grid` 裁到设计区（文件本身的体积改不了
+    ——ASCIIExport 没有区域属性）。
     """
     item = resolve_field_item(model3d, field_type, freq_ghz, log=log)
     _select_item(model3d, item)
