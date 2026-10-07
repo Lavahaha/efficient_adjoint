@@ -143,11 +143,16 @@ def _gates_off(monkeypatch, **flags):
 
     ``ready`` 里的 init 已经把假会话切成静默了——它是**会话级**状态，不会
     因为下一个脚本用别的设置就自己熄掉。要测"没有静默"的路径，两边都得关。
+
+    设置现在由 :func:`load_case` 按算例给（``solver/case.py``），所以这里
+    patch 的是**分发函数**：返回一份改过字段的 ``CstSetup`` + 真模板模块。
     """
     import dataclasses
+    from eaopt.solver import cst_model
     from eaopt.solver.cst_setup import COUPLER
     settings = dict(quiet_mode=False, **flags)
-    monkeypatch.setattr(UPDATE, "COUPLER", dataclasses.replace(COUPLER, **settings))
+    setup = dataclasses.replace(COUPLER, **settings)
+    monkeypatch.setattr(UPDATE, "load_case", lambda cfg: (setup, cst_model))
     if not settings["quiet_mode"]:
         csti.configure(quiet_mode=False)
 

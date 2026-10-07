@@ -48,10 +48,9 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 from eaopt import artifacts
 from eaopt.cli import base_parser, banner, make_log, report_solution, safe_console
 from eaopt.config import CaseConfig
-from eaopt.solver import cst_model as M
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution
-from eaopt.solver.cst_setup import COUPLER
+from eaopt.solver.case import load_case
 
 
 def main(argv=None) -> int:
@@ -60,13 +59,13 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     log = make_log(args.log)
     cfg = CaseConfig.from_yaml(args.config)
-    banner(log, f"初始化 {TAG} 工程", cfg)
+    setup, M = load_case(cfg)          # 算例（CstSetup + 模板模块）由 cfg.name 选
+    banner(log, f"初始化 {TAG} 工程", cfg, setup)
 
-    setup = COUPLER
     path = setup.project_path(TAG, cfg.output.dir, cfg.name)
     try:
         _check_absent(path)
-        de = _connect(args.attach, args.force_new, log)
+        de = _connect(args.attach, args.force_new, log, quiet=setup.quiet_mode)
         prj = de.new_mws()
         log("[OK] 新建 MWS 工程")
         port = setup.stimulus(TAG, cfg.objective)
@@ -90,7 +89,7 @@ def main(argv=None) -> int:
 # --------------------------------------------------------------------------- #
 # 会话 / 工程
 # --------------------------------------------------------------------------- #
-def _connect(attach: bool, force_new: bool, log):
+def _connect(attach: bool, force_new: bool, log, quiet: bool = True):
     """拿到一个 ``DesignEnvironment``。
 
     ``attach`` 只附接已运行的实例（连不上**必须**报错）；``--new`` 只新建；
@@ -106,7 +105,7 @@ def _connect(attach: bool, force_new: bool, log):
                 "  对策：先打开 CST Studio 2024，或去掉 --attach（让脚本"
                 "自己起静态实例）。") from e
         log("[OK] 附接到已运行的 CST 实例")
-        return _with_quiet_mode(de, log)
+        return _with_quiet_mode(de, quiet, log)
     if not force_new:
         try:
             de = csti.DesignEnvironment.connect_to_any()
@@ -114,19 +113,19 @@ def _connect(attach: bool, force_new: bool, log):
             pass                                # 没有实例 → 新建，属正常路径
         else:
             log("[OK] 复用已运行的 CST 实例")
-            return _with_quiet_mode(de, log)
+            return _with_quiet_mode(de, quiet, log)
     de = csti.DesignEnvironment.new()
     log("[OK] 新建 CST 实例（静态、无 GUI）")
-    return _with_quiet_mode(de, log)
+    return _with_quiet_mode(de, quiet, log)
 
 
-def _with_quiet_mode(de, log):
+def _with_quiet_mode(de, quiet: bool, log):
     """切静默模式（``CstSetup.quiet_mode``），返回 ``de`` 方便连写。
 
     本脚本不用清结果：工程是**新建**的（``_check_absent`` 挡着），求解时
     没有旧结果可删，也就没有那个确认框。
     """
-    if COUPLER.quiet_mode:
+    if quiet:
         _set_quiet_mode(de, log)
     return de
 
@@ -262,10 +261,11 @@ def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log):
     """导出该场并裁到设计区 ± field_margin_mm（整域网格没有保留价值）。"""
     out = Path(cfg.output.dir) / "cst_work" / f"{tag}_{field_type}.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
+    step_xy, step_z = setup.resolve_export_steps(cfg.field_export_step_mm)
     return R.export_field_cropped(
-        m3d, field_type, float(setup.frequency_ghz),
-        setup.resolve_export_step(cfg.field_export_step_mm), out,
-        cfg.design_region.box, float(cfg.design_region.field_margin_mm), log=log)
+        m3d, field_type, float(setup.frequency_ghz), step_xy, out,
+        cfg.design_region.box, float(cfg.design_region.field_margin_mm),
+        step_z_mm=step_z, log=log)
 
 
 def _save_fields(args, setup) -> bool:

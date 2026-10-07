@@ -134,11 +134,20 @@ def close_open_contours(
 ) -> list[np.ndarray]:
     """把穿出设计区边界的开放轮廓闭合为多边形（供求解器几何重建）。
 
-    成对闭合（两条开放轮廓围成一个金属条，如耦合臂的上下边）：
-      A + 沿 box 边界从 A 终点走到 B 终点 + 反转的 B
-      + 沿 box 边界从 B 起点走回 A 起点
-    闭合轮廓原样保留。pad_mm：沿 box 边界向外扩的余量（与设计区外
-    固定馈线重叠，同材料在求解器中自动合并）。
+    **按端点配对**：开放轮廓与设计区边界的每个交点都是边界上的一个端点；
+    沿（外扩 pad 后的）边界周长排序后，**相邻的两个端点之间就是这个开口的
+    封口段**，于是"沿边直线段 → 下一条轮廓 → 再一段"串一圈即得闭合多边形。
+    这条规则对任意条数都成立，也不关心提取器给的走向（走向由配对决定）：
+
+      - 一条线穿出两条边（耦合臂）：4 个端点、2 个开口 → 两条竖线封口；
+      - Y 形功分器（输入 + 两臂）：6 个端点、**3 个开口**（旧的"必须偶数"
+        在这里直接抛错）→ 三条封口段、一个多边形；
+      - 只从一个开口伸出的短截线：一条轮廓的两个端点在同一个开口上 →
+        自配成一段封口；
+      - 两条互不相关的轮廓被错配 → 封口段共线重叠，由下面的自交检查拦下。
+
+    闭合轮廓原样保留。pad_mm：端点沿所在边界的外法向向外延伸的余量
+    （与设计区外的固定馈线重叠，同材料在求解器中自动合并）。
 
     返回的多边形保证**无自交**（有自交时抛 ValueError 并指出相交的边）：
     CST 的 `Extrude ... .Create` 对自交轮廓只报 "Profile is self-intersecting"，
@@ -146,26 +155,20 @@ def close_open_contours(
     """
     opens = [c for c in contours if not np.allclose(c[0], c[-1])]
     closed = [c for c in contours if np.allclose(c[0], c[-1])]
-    if len(opens) % 2 != 0:
-        raise ValueError(f"开放轮廓数 {len(opens)} 不是偶数，无法成对闭合")
-    corners = _padded_corners(box, pad_mm)
-    # 端点先沿所在边外法向延伸 pad（原始 box 边界 → 外扩周长）
-    opens = [_extend_open_endpoints(c, box, pad_mm) for c in opens]
-    opens.sort(key=lambda c: _perimeter_param(c[0], corners))
     out = list(closed)
-    for i in range(0, len(opens), 2):
-        a, b = opens[i], opens[i + 1]
-        # 两条开放轮廓的走向是提取器给的、不保证一致：必须让"末端对末端、
-        # 首端对首端"再连，否则把 a 的头接到 b 的尾、闭合路径会从条带内部
-        # 斜穿过去（自交）。
-        if _pair_cost(a, b) > _pair_cost(a, b[::-1]):
-            b = b[::-1]
-        walk1 = _perimeter_walk(a[-1], b[-1], corners)
-        walk2 = _perimeter_walk(b[0], a[0], corners)
-        poly = np.vstack([a, walk1, b[::-1], walk2])
-        if not np.allclose(poly[0], poly[-1]):
-            poly = np.vstack([poly, poly[0]])
-        out.append(poly)
+    if opens:
+        corners = _padded_corners(box, pad_mm)
+        # 端点先沿所在边外法向延伸 pad（原始 box 边界 → 外扩周长）
+        opens = [_extend_open_endpoints(c, box, pad_mm) for c in opens]
+        partner = _pair_endpoints(opens, corners)
+        # 链的起点取"首端点沿周长最靠前"的那条：只是为了让输出的起点/绕向
+        # 稳定（同一份轮廓每次得到同一个多边形），配对与它无关。
+        order = sorted(range(len(opens)),
+                       key=lambda i: _perimeter_param(opens[i][0], corners))
+        done: set[int] = set()
+        for i0 in order:
+            if i0 not in done:
+                out.append(_chain_contour(opens, i0, partner, corners, done))
     for k, poly in enumerate(out):
         bad = self_intersections(poly)
         if bad:
@@ -173,16 +176,97 @@ def close_open_contours(
             raise ValueError(
                 f"闭合后的第 {k} 个多边形自交：边 {i} {_fmt(poly[i])}→{_fmt(poly[i + 1])} "
                 f"与边 {j} {_fmt(poly[j])}→{_fmt(poly[j + 1])} 相交"
-                f"（共 {len(bad)} 处）。检查零等值面轮廓是否成对、走向是否一致。"
+                f"（共 {len(bad)} 处）。检查零等值面轮廓的端点是否两两成对"
+                "（每条开放轮廓的两个端点都该落在设计区边界上）。"
             )
+    _check_no_nested(out)
     return out
 
 
-def _pair_cost(a: np.ndarray, b: np.ndarray) -> float:
-    """把 a 的末端接 b 的末端、a 的首端接 b 的首端的路径长度。"""
-    return float(
-        np.linalg.norm(a[-1] - b[-1]) + np.linalg.norm(a[0] - b[0])
-    )
+def _check_no_nested(polys: list[np.ndarray]) -> None:
+    """多边形不得互相嵌套（= 金属里有个空气洞），有则报错。
+
+    洞的零等值线本身也是一条**闭合**轮廓，于是 ``out`` 里会同时有它的外圈
+    和洞：求解器把每条轮廓各挤出一块金属，洞被当成"洞里悬着的一块金属岛"
+    （金属里还是实心）；而伴随法算的仍是"有洞"的几何。两边描述的不是同一个
+    器件，且都不报错——静默失效里最贵的一类。
+
+    真正带洞的几何需要"外圈 + 布尔减"才能交给 CST，不在本项目的实现范围内，
+    所以这里直接炸（时间点上也是对的：洞一旦出现，多半是优化在把结构掐断，
+    该看连通性约束/步长，而不是让洞悄悄变成岛）。两块互不相干的金属（优化
+    把结构切开了、或有意的多块设计金属）是合法的，它们互不嵌套，不受影响。
+    """
+    from matplotlib.path import Path
+
+    for i, inner in enumerate(polys):
+        for j, outer in enumerate(polys):
+            if i == j:
+                continue
+            # 无自交的两条闭合折线：inner 的顶点**全**落在 outer 内 ⟺ inner
+            # 被 outer 包住（此时 outer 的顶点必然在 inner 之外，互为内外）。
+            if np.all(Path(np.asarray(outer, dtype=float)).contains_points(inner)):
+                raise ValueError(
+                    f"第 {i} 个闭合多边形整个落在第 {j} 个里面：设计金属里出现了"
+                    "空气洞。CST 会把这条轮廓单独挤成一块悬空的金属（洞变实心），"
+                    "与 φ 描述的几何不一致且不报错。请检查优化是否在掐断结构"
+                    "（连通性约束 / optimizer.step_cells），或先实现带洞轮廓的"
+                    "布尔减再放开。"
+                )
+
+
+def _pair_endpoints(
+    opens: list[np.ndarray], corners
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """沿外扩周长把开放轮廓的端点两两配对，返回 {(轮廓号, 端号): (轮廓号, 端号)}。
+
+    端号 0 = 该轮廓的首点，1 = 末点。沿周长相邻的两个端点属于同一个开口
+    （一个开口 = 金属穿过边界的一段截面，它的两端就是轮廓与边界的两个交点），
+    所以排序后相邻即配对。设计区外扩 pad 后的角点落在金属之外，没有开口会
+    跨过周长起点，故不需要考虑首尾环绕。
+    """
+    ends: list[tuple[float, int, int]] = []
+    for i, c in enumerate(opens):
+        ends.append((_perimeter_param(c[0], corners), i, 0))
+        ends.append((_perimeter_param(c[-1], corners), i, 1))
+    ends.sort(key=lambda e: e[0])
+    partner: dict[tuple[int, int], tuple[int, int]] = {}
+    for j in range(0, len(ends), 2):
+        _, i0, k0 = ends[j]
+        _, i1, k1 = ends[j + 1]
+        partner[(i0, k0)] = (i1, k1)
+        partner[(i1, k1)] = (i0, k0)
+    return partner
+
+
+def _chain_contour(
+    opens: list[np.ndarray], i0: int,
+    partner: dict[tuple[int, int], tuple[int, int]], corners, done: set[int],
+) -> np.ndarray:
+    """从轮廓 i0 的**首点**出发绕一圈：轮廓 → 封口段 → 下一条轮廓 → …
+
+    每条轮廓按"从进入它的那个端点走向另一端"的方向遍历（由配对决定），
+    因此不需要像旧实现那样猜两条轮廓的走向是否一致。封口段是沿外扩周长的
+    折线（同一条边上直接连；跨边时绕过角点），不含两端点，避免与相邻轮廓
+    的首末点重复。
+    """
+    pts: list = []
+    i, k = i0, 0
+    while True:
+        c = opens[i] if k == 0 else opens[i][::-1]
+        pts.extend(c)
+        done.add(i)
+        j, k2 = partner[(i, 1 - k)]
+        pts.extend(_perimeter_walk(
+            c[-1], opens[j][0] if k2 == 0 else opens[j][-1], corners))
+        if j == i0 and k2 == 0:
+            break
+        i, k = j, k2
+        if len(done) > len(opens):          # 配对是双射 → 不会走到这里
+            raise RuntimeError("开放轮廓端点配对不成环（内部错误）")
+    poly = np.asarray(pts, dtype=float)
+    if not np.allclose(poly[0], poly[-1]):
+        poly = np.vstack([poly, poly[0]])
+    return poly
 
 
 def _fmt(p) -> str:

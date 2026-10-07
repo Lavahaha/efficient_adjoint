@@ -118,6 +118,16 @@ def test_ascii_export_uses_only_existing_cst_properties():
     assert ("Mode", "FixedNumber") in M.ascii_export_params(0.2, mode="FixedNumber")
 
 
+def test_ascii_export_params_per_axis_steps():
+    """三个轴各给步长（功分器：面内 0.2 mm 省体积 / z 0.1 mm 保采样面精度）；
+    ``step_z_mm=None`` 时 z 与面内同值——耦合器的老行为不变。"""
+    assert M.ascii_export_params(0.2, 0.1) == [
+        ("Mode", "FixedWidth"), ("StepX", "0.2"), ("StepY", "0.2"),
+        ("StepZ", "0.1")]
+    assert M.ascii_export_params(0.1, None) == M.ascii_export_params(0.1)
+    assert M.ascii_export_params(0.1)[-1] == ("StepZ", "0.1")
+
+
 def test_design_region_update_is_one_record_with_delete_first():
     """每轮形状更新 = **一条**历史记录：先删整个组件，再逐个挤出。
 

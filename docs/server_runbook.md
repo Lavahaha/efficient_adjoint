@@ -20,7 +20,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .            # numpy/scipy/pyyaml/matplotlib
 pip install pytest          # 可选：验证安装
-python -m pytest tests/ -q  # 应 169 passed（不装 CST 也能全绿）
+python -m pytest tests/ -q  # 应 262 passed, 1 skipped（不装 CST 也能全绿）
 
 # 官方 Python 库（不在 PyPI 上，CST 安装包自带）
 pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
@@ -182,6 +182,74 @@ contour` 跑一轮做 A/B（同一份场数据下的 δp 空间相关与 FoM 曲
 `wls_radius_cells: 3.0`，最后才把 `intersection_offset_mm` 调到 0.05（半格，
 把单侧外推变成内插、对阶梯噪声更鲁棒）。
 
+## 3.6 第二个算例：不等分 Wilkinson 功分器（论文 III-B）
+
+**脚本一模一样，只换 YAML**——算例由 `cfg.name` 分发（`eaopt/solver/case.py`
+的 `load_case`：未知名字直接 `ValueError`，不会悄悄跑成耦合器）。`run_coupler.py`
+这个文件名只对耦合器贴切，它本身能跑任意算例（改名留作后续）：
+
+```bash
+python scripts/cst_init_fwd.py configs/divider.yaml    # 端口 1 激励（输入）
+python scripts/cst_init_bwd.py configs/divider.yaml    # 端口 2 激励（上输出）
+python scripts/run_coupler.py  configs/divider.yaml    # 主循环（工程已存在就直接跑）
+python scripts/plot_layout.py  configs/divider.yaml    # 重画布局图（本地，不连 CST）
+```
+
+产物与第 3 节完全一致，只是目录变成 `results/divider/`。几何核对用
+`docs/layout_reference_divider.png`（与论文 Fig. 9 逐项对照：Y 形设计区、
+框、三条馈线、三个端口面）。
+
+**先核对这三条**（数值对不上时按此顺序查）：
+
+1. **端口**：1 在板左边缘（xmin 面，输入）、2/3 在板上下边缘（ymax/ymin 面，
+   上/下输出）——都是微带端口，面下缘贴合接地板底面；
+2. **材料**：Rogers3003、30 mil（0.762 mm）、εr = 3.0、tanδ = 0.001、35 µm
+   金属（论文 III-B；与耦合器的 Rogers4350B 不同，别拿旧工程对照）；
+3. **设计区**：`[6.0, 33.7] × [−9, 9]` mm，0.1 mm 网格（277×180）；框内那条
+   Y 形（λg/2 输入段 + 两根 λg/4 分路臂）整体可动。
+
+**Stage 1 判据（几何/端口/材料的判定关口）**：`iter_000/` 里 5 GHz 处
+**|S21| ≈ |S31| ≈ −3.5 ± 1 dB**（论文初始 −3.49/−3.49）、|S11| ≤ −10 dB。
+差得多基本就是上面三条里有一条不对。场文件约 **53 MB/份**（导出步长
+XY=0.2 / Z=0.1，在 `cst_setup.DIVIDER` 的 `export_step_mm` /
+`export_step_z_mm`，每轮 4 份 ≈ 210 MB，`cst_work/` 每轮覆写不累积）。
+
+**Stage 2（先跑 5–8 轮）**：与耦合器同样的两件事——盯 `history.jsonl` 里
+`fom` 的走向（这就是第 4 节 `velocity_sign` 的裁决机会），以及看
+`[约束]` 打印了什么（下一段）。方向反了就改 `velocity_sign` 重跑。
+
+**Stage 3 判据（跑满 50 轮）**：|S21| 从 −3.5 dB 升到 **≥ −1 dB**、|S31| 降到
+**≤ −10 dB**（功率比 ≥ 9:1），形状出现"细颈 + 上臂鼓包"，趋势与论文 Fig. 11
+一致（不追求逐点吻合：臂长取的是原文文字的 λg/4，论文图上量出来是 14.2，
+两者自相矛盾；板子也比论文的紧凑）。
+
+### 连通性约束（本算例特有）
+
+论文对 III-B 只加了一条几何约束：**"the microstrip lines are always
+connected"**（两输出必须同相）。`configs/divider.yaml` 里
+`constraints.require_connected: true` 把它变成硬保证：每个 HJ 子步后检查
+可动金属是否仍是**一块**、且贴着初始那三个"穿出设计区"的锚点（左界输入段
++ 右界两个臂端，从初始 φ 自动推导，不在 YAML 里写）；被掐断就按最短路径
+桥接，**桥接节点永久冻结**（速度置 0），补不上则整子步回滚。
+
+启动时会打印一行 `[约束] 连通性已开：锚点 …`（三个锚点）。运行中可能出现：
+
+- `[约束] 连通性破坏 → 桥接（最短路径 x.xx mm），冻结 N 节点`——正常运作。
+  **冻结点数是"补丁有多大"的度量**：偶尔几次无所谓，持续出现说明速度场在
+  反复撕裂结构。
+- `[约束] 警告：冻结节点已达设计区的 5%…`——补丁开始接管演化，那时该回头调
+  `optimizer.step_cells`（步长太大）或改用"最小颈宽投影"，别让它一路打补丁
+  到收敛。
+- `优化结束（connectivity）`——连续 3 个子步连桥接都补不上（只有"金属被整块
+  抹掉"会这样），直接停了。这是保护：断掉的中间态继续演化等于在优化另一个
+  器件。
+
+**`constraints.min_gap_mm` 必须保持 0**：三条馈线正贴在设计区边界上，非零
+min_gap 会在框内沿边界铺一条禁区带，把臂端与输出线一刀切断（CST 照样出
+S 参数，结果是另一个器件的）——`tests/test_cst_model_divider.py` 把这个后果
+锁成了测试。同理 `taper_edges: x` 只 taper 左右两条边（可动金属在那里穿出去
+接馈线）；上下边是臂自己的生长边界，taper 不得开。
+
 ## 4. 一等 TODO：`velocity_sign` 尚未裁决
 
 形状导数 → 速度的符号（论文式 (24)/(31) 之间有符号矛盾）目前只能靠有限
@@ -193,7 +261,8 @@ contour` 跑一轮做 A/B（同一份场数据下的 δp 空间相关与 FoM 曲
 
 ## 5. 断点续跑
 
-`run_coupler.py --resume` **尚未实现**。当前的容错方式是：每轮都存盘 +
+`run_coupler.py --resume` **尚未实现**（功分器同理，把下面的 YAML 换成
+`configs/divider.yaml` 即可）。当前的容错方式是：每轮都存盘 +
 `iter_NNN/` 完整落盘，中断后可以
 ① `python scripts/cst_update.py configs/coupler.yaml --from-ls`（用最近一轮
 φ 快照手工推一轮），或 ② 直接重跑 `run_coupler.py`（工程还在，会从第 0 轮

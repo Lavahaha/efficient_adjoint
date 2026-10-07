@@ -45,10 +45,9 @@ from eaopt import artifacts
 from eaopt.cli import base_parser, banner, make_log, report_solution, safe_console
 from eaopt.geometry.contour import close_open_contours
 from eaopt.config import CaseConfig
-from eaopt.solver import cst_model as M
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution
-from eaopt.solver.cst_setup import COUPLER
+from eaopt.solver.case import load_case
 
 
 def main(argv=None) -> int:
@@ -64,15 +63,16 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     log = make_log(args.log)
     cfg = CaseConfig.from_yaml(args.config)
-    banner(log, "更新形状", cfg)
+    setup, M = load_case(cfg)          # 算例（CstSetup + 模板模块）由 cfg.name 选
+    banner(log, "更新形状", cfg, setup)
 
-    setup = COUPLER
     try:
         polys = _resolve_shape(cfg, args, log=log)
         log(f"[ .. ] 新形状：{len(polys)} 个多边形 / "
             f"{sum(len(p) for p in polys)} 个点")
         n = _next_iteration(cfg, args.iteration)
-        de = _connect(args.attach, args.force_new, log)
+        de = _connect(args.attach, args.force_new, log,
+                      quiet=setup.quiet_mode)
         projects = {tag: _open_or_reuse(
             de, setup.project_path(tag, cfg.output.dir, cfg.name), log)
             for tag in artifacts.TAGS}
@@ -81,7 +81,7 @@ def main(argv=None) -> int:
             if setup.clear_results:
                 # 先清旧结果：CST 在"已有结果 + 模型要变"时会弹确认框卡住脚本
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=log)
-            _update_design_region(prj.model3d, polys, setup,
+            _update_design_region(prj.model3d, polys, setup, M,
                                   what=f"更新 {tag} 工程设计区", log=log)
         shape_path = artifacts.save_shape(cfg.output.dir, n, polys)
         log(f"[OK] 形状落盘：{shape_path}（{len(polys)} 个多边形）")
@@ -102,7 +102,7 @@ def main(argv=None) -> int:
 # --------------------------------------------------------------------------- #
 # 会话 / 工程
 # --------------------------------------------------------------------------- #
-def _connect(attach: bool, force_new: bool, log):
+def _connect(attach: bool, force_new: bool, log, quiet: bool = True):
     """拿到一个 ``DesignEnvironment``（语义与 init 脚本一致）。"""
     if attach:
         try:
@@ -114,7 +114,7 @@ def _connect(attach: bool, force_new: bool, log):
                 "  对策：先打开 CST Studio 2024，或去掉 --attach（让脚本"
                 "自己起静态实例）。") from e
         log("[OK] 附接到已运行的 CST 实例")
-        return _with_quiet_mode(de, log)
+        return _with_quiet_mode(de, quiet, log)
     if not force_new:
         try:
             de = csti.DesignEnvironment.connect_to_any()
@@ -122,15 +122,15 @@ def _connect(attach: bool, force_new: bool, log):
             pass                                # 没有实例 → 新建，属正常路径
         else:
             log("[OK] 复用已运行的 CST 实例")
-            return _with_quiet_mode(de, log)
+            return _with_quiet_mode(de, quiet, log)
     de = csti.DesignEnvironment.new()
     log("[OK] 新建 CST 实例（静态、无 GUI）")
-    return _with_quiet_mode(de, log)
+    return _with_quiet_mode(de, quiet, log)
 
 
-def _with_quiet_mode(de, log):
+def _with_quiet_mode(de, quiet: bool, log):
     """切静默模式（``CstSetup.quiet_mode``），返回 ``de`` 方便连写。"""
-    if COUPLER.quiet_mode:
+    if quiet:
         _set_quiet_mode(de, log)
     return de
 
@@ -244,15 +244,16 @@ def _apply_blocks(m3d, blocks, what: str, log) -> int:
     return len(blocks)
 
 
-def _update_design_region(m3d, polys, setup, *, what: str, log) -> None:
+def _update_design_region(m3d, polys, setup, model, *, what: str, log) -> None:
     """一轮形状更新 = **一条**历史记录：删整个组件 + 按新轮廓重建。
 
     整段作为一条进历史表（既改当前模型、又能被重放），每轮历史表只长一条。
+    ``model`` = 该算例的模板模块（组件名与 Extrude 命令由它给，见 case.py）。
     """
     polys = list(polys)
-    cmd = M.design_region_update(polys, setup.metal_thickness_mm,
-                                 component=M.DESIGN_COMPONENT,
-                                 material=setup.metal_material.upper())
+    cmd = model.design_region_update(polys, setup.metal_thickness_mm,
+                                     component=model.DESIGN_COMPONENT,
+                                     material=setup.metal_material.upper())
     n_pts = sum(len(p) for p in polys)
     log(f"[ .. ] {what}：{len(polys)} 个多边形 / {n_pts} 个点，"
         f"历史记录 {len(cmd)} 字符")
@@ -318,10 +319,11 @@ def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log):
     """导出该场并裁到设计区 ± field_margin_mm。"""
     out = Path(cfg.output.dir) / "cst_work" / f"{tag}_{field_type}.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
+    step_xy, step_z = setup.resolve_export_steps(cfg.field_export_step_mm)
     return R.export_field_cropped(
-        m3d, field_type, float(setup.frequency_ghz),
-        setup.resolve_export_step(cfg.field_export_step_mm), out,
-        cfg.design_region.box, float(cfg.design_region.field_margin_mm), log=log)
+        m3d, field_type, float(setup.frequency_ghz), step_xy, out,
+        cfg.design_region.box, float(cfg.design_region.field_margin_mm),
+        step_z_mm=step_z, log=log)
 
 
 def _save_fields(args, setup) -> bool:

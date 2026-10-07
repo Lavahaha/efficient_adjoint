@@ -89,7 +89,7 @@ def load_script(name: str):
 def make_compact_cfg(tmp_path, min_gap: float = 0.1, velocity_sign: float = 1.0,
                      arm_top: float = ARM_TOP, max_iterations: int = 8) -> CaseConfig:
     return CaseConfig(
-        name="compact-test",
+        name="coupler",         # 算例名必须真实存在：load_case 是严格分发
         design_region=DesignRegionSpec(
             box=BoxSpec(x=(0.0, 4.0), y=(-1.0, 1.0)),
             grid_step_mm=0.1,

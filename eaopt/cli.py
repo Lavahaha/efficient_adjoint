@@ -16,7 +16,8 @@ import numpy as np
 
 from eaopt.config import CaseConfig
 from eaopt.optimize.objective import make_fom
-from eaopt.solver.cst_setup import COUPLER, CstSetup
+from eaopt.solver.case import load_case
+from eaopt.solver.cst_setup import CstSetup
 
 __all__ = ["safe_console", "base_parser", "make_log", "banner",
            "report_solution", "db"]
@@ -78,7 +79,15 @@ def make_log(path):
     return log
 
 
-def banner(log, title: str, cfg: CaseConfig, setup: CstSetup = COUPLER) -> None:
+def banner(log, title: str, cfg: CaseConfig, setup: CstSetup | None = None) -> None:
+    """开跑前的抬头：算例名、两个工程路径、激励端口、频点、导出步长。
+
+    ``setup`` 不给就按 ``cfg.name`` 现取（见 ``solver/case.py``）——算例名拼错
+    会**在这里**就报错，而不是等建完模板才发现几何不对。
+    """
+    if setup is None:
+        setup, _ = load_case(cfg)
+    step_xy, step_z = setup.resolve_export_steps(cfg.field_export_step_mm)
     log("=" * 72)
     log(f"{title} —— 算例 {cfg.name}")
     log("=" * 72)
@@ -88,7 +97,7 @@ def banner(log, title: str, cfg: CaseConfig, setup: CstSetup = COUPLER) -> None:
         f"bwd={setup.stimulus('bwd', cfg.objective)}  "
         f"（建工程时写死，之后不再触碰激励 API）")
     log(f"频点        : {setup.frequency_ghz} GHz")
-    log(f"场导出步长  : {setup.resolve_export_step(cfg.field_export_step_mm):g} mm")
+    log(f"场导出步长  : {step_xy:g} mm（面内）× {step_z:g} mm（z）")
     log("-" * 72)
 
 

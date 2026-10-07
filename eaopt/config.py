@@ -128,6 +128,12 @@ class ConstraintSpec:
     # 论文只有一个设计区：design_region.box 就是可动范围，**这里留空**。
     # 保留该字段是为了"设计区比可动范围大"的算例（如盒子要覆盖固定障碍时）。
     allowed_region: Optional[BoxSpec] = None
+    # 连通性硬约束（缺省关）。开启后：可动金属必须**始终是一块**、且贴着
+    # 初始那几个"穿出设计区"的锚点（论文 III-B："to ensure the in-phase
+    # output of the two output ports ... the microstrip lines are always
+    # connected"）。被掐断时按最短路径桥接，桥接节点冻结（速度置 0）。
+    # 锚点从初始 φ 在设计区边界上的金属段**自动推导**，不写进 YAML。
+    require_connected: bool = False
     # 速度掩膜边缘 taper 作用在哪些边（"xy"/"x"/"y"/"none"）。
     # 语义：taper 让可动金属在**穿出设计区的边**上与区外固定馈线平滑衔接。
     # 因此只有当可动金属贴着该边穿过时才 taper 它——若设计区某条边本身就是
@@ -202,6 +208,11 @@ class CaseConfig:
             poly.validate(f"fixed_region[{i}]")
         if self.constraints.allowed_region is not None:
             self.constraints.allowed_region.validate("constraints.allowed_region")
+        if self.constraints.require_connected and not self.initial_metal:
+            raise ValueError(
+                "constraints.require_connected=true 但没有 initial_metal："
+                "锚点（金属穿出设计区的那几段）是从初始 φ 推出来的，没有"
+                "初始金属就无从谈起——多半是配置写错了")
         if self.constraints.taper_edges not in ("xy", "x", "y", "none"):
             raise ValueError(
                 f"constraints.taper_edges={self.constraints.taper_edges!r} 未知："

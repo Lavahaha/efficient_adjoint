@@ -5,11 +5,15 @@
 现在统一到这里：YAML 只留优化配置（设计区、采样、优化器……），
 CST 侧的一切（模板布局、频点、材料、端口、求解设置、场导出步长）都在本模块。
 
-算例数据 = ``COUPLER``（论文 III-A 高定向性定向耦合器）。**改算例就改这里**，
-模板命令块（``cst_model``）与 pipeline（伴随公式用的 ω、εr）都从这里取值：
-改 ``frequency_ghz`` 时监视器频点、扫频带、S 参数读取频点与形状导数会同时跟着变。
+算例数据 = ``COUPLER``（论文 III-A 高定向性定向耦合器）与 ``DIVIDER``
+（论文 III-B 不等分 Wilkinson 功分器）；"算例名 → (常量, 模板模块)"的分发在
+``eaopt.solver.case.load_case``。**改算例就改这里**，模板命令块
+（``cst_model`` / ``cst_model_divider``）与 pipeline（伴随公式用的 ω、εr）
+都从这里取值：改 ``frequency_ghz`` 时监视器频点、扫频带、S 参数读取频点与
+形状导数会同时跟着变。
 
-几何布局（论文 Fig. 5；单位 mm，z=0 为基板顶面）：
+几何布局（论文 Fig. 5；单位 mm，z=0 为基板顶面；**功分器的布局在
+``cst_model_divider`` 模块头部**）：
     直通线（固定，端口 1-2）：y∈[1.0,2.6]（w=1.6），x 贯通整块板
     耦合臂（"⊓"形）：横段 y∈[−1.6,0]（w=1.6）位于两腿之间，
         两端各一条腿 x∈[−1.6,0] / [12,13.6] 垂直下到板底；
@@ -39,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-__all__ = ["CstSetup", "COUPLER"]
+__all__ = ["CstSetup", "COUPLER", "DIVIDER"]
 
 
 @dataclass(frozen=True)
@@ -58,7 +62,8 @@ class CstSetup:
     # ---- 会话 / 运行（原 YAML 的 solver 块）----
     attach_gui: bool = False            # True = 只附接运行中的 CST 实例（无 headless 许可时用）
     port_power_w: float = 0.5           # 端口功率（CST 默认 0.5 W）
-    export_step_mm: Optional[float] = None    # 场导出步长；None=跟随 CaseConfig.field_export_step_mm
+    export_step_mm: Optional[float] = None    # 面内(x,y)场导出步长；None=跟随 CaseConfig.field_export_step_mm
+    export_step_z_mm: Optional[float] = None  # z 向导出步长；None=与面内同值（见 resolve_export_steps）
     save_fields: bool = False           # 是否把 E/H 场也写进 iter_NNN/（.npz，MB 量级）
     project_dir: Optional[str] = None   # 工程目录；None=<output.dir>/cst
     project_names: tuple[str, str] = ("fwd", "bwd")   # 两个工程的 tag（正向/反向激励）
@@ -104,9 +109,20 @@ class CstSetup:
         raise ValueError(f"tag 只能是 {self.project_names}，收到 {tag!r}")
 
     def resolve_export_step(self, sampling_step_mm: float) -> float:
-        """场导出步长（mm）：显式给了就用它，否则跟随边界采样点距。"""
+        """面内场导出步长（mm）：显式给了就用它，否则跟随边界采样点距。"""
         return float(self.export_step_mm) if self.export_step_mm \
             else float(sampling_step_mm)
+
+    def resolve_export_steps(self, sampling_step_mm: float) -> tuple[float, float]:
+        """(面内, z) 两个场导出步长（mm）——ASCIIExport 逐轴给步长。
+
+        面内步长决定 WLS 拟合分辨率（半径以场格数计），z 步长只决定采样面
+        能吸附到哪些 z 面（每轴点数按各自步长线性增长）。功分器算例把面内
+        放到 0.2 mm 省导出体积（±1.6 mm 厚的平板层在 5 GHz 下沿 z 变化很慢），
+        但 z 保持 0.1 mm 以便 `sampling.field_z_mm=-0.1` 附近有近处的网格面。
+        """
+        xy = self.resolve_export_step(sampling_step_mm)
+        return xy, (float(self.export_step_z_mm) if self.export_step_z_mm else xy)
 
     def validate_objective(self, objective) -> None:
         """优化目标用的端口必须是模板里建了的端口（替代 config 侧的校验）。"""
@@ -120,3 +136,11 @@ class CstSetup:
 # 论文 III-A：高定向性定向耦合器（5 GHz；初始 w=1.6, d=12, g=1；
 # 目标 max|S31|：-17.9 dB → 约 -10 dB，约 20 次迭代）
 COUPLER = CstSetup()
+
+# 论文 III-B：不等分 Wilkinson 功分器（5 GHz；初始 w=2，输入 λg/2、分路臂 λg/4；
+# 目标 max|S21|，即把 1:1 的等分推到 9:1）。基板换成 Rogers3003（论文原文），
+# 端口只有三个（1 输入、2/3 输出）。几何布局见 cst_model_divider。
+# 场导出面内放到 0.2 mm：导出体积按步长的立方走，而这个算例的计算域是三端口
+# 的大平面板，0.1 mm 下每份文件要 200 MB 以上；z 仍留 0.1 mm 给采样面吸附。
+DIVIDER = CstSetup(eps_r=3.0, loss_tangent=0.001, ports=(1, 2, 3),
+                   export_step_mm=0.2, export_step_z_mm=0.1)

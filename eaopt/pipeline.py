@@ -31,12 +31,17 @@ from eaopt.config import CaseConfig
 from eaopt.geometry.contour import extract_contours, smooth_resample
 from eaopt.geometry.extension import extend_velocity
 from eaopt.geometry.levelset import LevelSet2D
-from eaopt.optimize.constraints import apply_min_gap, build_velocity_mask, interp_mask_at
+from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
+                                        build_velocity_mask, interp_mask_at)
 from eaopt.optimize.objective import make_fom
 from eaopt.optimize.step import fixed_step_velocity
 from eaopt.solver.cst_setup import COUPLER, CstSetup
 
 __all__ = ["make_level_set", "movable_contours", "History", "OptimizerPipeline"]
+
+#: 连通性约束连续失败（子步回滚）多少次就停。一次失败可能是某个子步速度场
+#: 恰好把细颈剪断、而桥接也铺不出走廊；连续失败说明速度场整体在撕裂结构。
+_MAX_ROLLBACKS = 3
 
 
 def make_level_set(cfg: CaseConfig) -> LevelSet2D:
@@ -91,6 +96,10 @@ class OptimizerPipeline:
         # 改一处两边同时变；伴随公式与仿真模型不会悄悄脱节）。
         self.omega = 2.0 * np.pi * setup.frequency_ghz * 1e9
         self.eps_r = setup.eps_r
+        # 连通性硬约束（论文 III-B）：锚点在**初始** φ 上推导，此后不变
+        self.guard = (ConnectivityGuard(self.ls, cfg)
+                      if cfg.constraints.require_connected else None)
+        self._rollbacks = 0        # 连续回滚计数（成功一次即清零）
         self.history = History()
         self._z_plane_logged = False
         self.outdir = Path(cfg.output.dir)
@@ -139,9 +148,26 @@ class OptimizerPipeline:
 
                 steps = max(1, round(opt.step_cells / opt.cfl))
                 for _ in range(steps):
+                    # 子步前留一份 φ：连通性补不上来时整子步回滚（不能带着
+                    # "断成两半"的中间态继续演化）
+                    phi_before = self.ls.phi.copy() if self.guard else None
                     self.ls.update(V, steps=1, cfl=opt.cfl)
                     # 投影下沉到每个子步：一轮走多步时中间态也可能穿进禁区
                     apply_min_gap(self.ls, cfg)
+                    if self.guard is not None:
+                        if self.guard.apply(self.ls):
+                            self._rollbacks = 0
+                        else:
+                            self.ls.phi = phi_before
+                            self._rollbacks += 1
+                            if self._rollbacks >= _MAX_ROLLBACKS:
+                                break   # 剩下的子步会同样失败，别再空转
+                if self._rollbacks >= _MAX_ROLLBACKS:
+                    self.history.stop_reason = "connectivity"
+                    print(f"\n[约束] 连续 {self._rollbacks} 次子步回滚：速度场在"
+                          "持续撕裂结构，停止。检查 optimizer.step_cells / cfl、"
+                          "或约束参数（见 ConnectivityGuard）。")
+                    break
                 if it % cfg.level_set.reinit_every == 0:
                     self.ls.reinitialize(band=2.0 * cfg.level_set.extension_band_mm, iters=40)
             else:
@@ -161,7 +187,8 @@ class OptimizerPipeline:
         """一轮的形状导数 → 网格速度场 V（两种采样方案，见 sampling.py）。"""
         cfg = self.cfg
         s = cfg.sampling
-        v_mask_grid = build_velocity_mask(self.ls, cfg)
+        v_mask_grid = build_velocity_mask(
+            self.ls, cfg, frozen=self.guard.frozen if self.guard else None)
 
         pts, nrm = boundary_samples(movable, self.ls, cfg)
         if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新

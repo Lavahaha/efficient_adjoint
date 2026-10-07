@@ -58,7 +58,7 @@ __all__ = [
     "ASCII_EXPORT_MODE", "ASCII_EXPORT_EXECUTE", "ascii_export_params",
     # 模板
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
-    "UNITS_BLOCK",
+    "UNITS_BLOCK", "arc_points", "layout_view",
     # 布局常量
     "SUB_H", "EPS_R", "TAND", "METAL_T", "W", "G", "D",
     "LEG_L_IN", "LEG_R_IN", "LEG_L_OUT", "LEG_R_OUT",
@@ -398,7 +398,7 @@ ASCII_EXPORT_MODE = "FixedWidth"
 ASCII_EXPORT_EXECUTE = "Execute"
 
 
-def ascii_export_params(step_mm: float,
+def ascii_export_params(step_mm: float, step_z_mm: float | None = None,
                         mode: str = ASCII_EXPORT_MODE) -> list[tuple[str, str]]:
     """ASCIIExport 的设置序列 [(属性名, 值)]——**单一事实来源**。
 
@@ -407,14 +407,16 @@ def ascii_export_params(step_mm: float,
     导出范围就是当前选中结果的整个包围盒（Volume 监视器 => 整个计算域），
     要限制范围只能在解析端裁剪（see cst_results.crop_grid）。
 
-    StepX/Y/Z 是**每个轴上的采样步长**，单位 = 建模单位（mm）；取
-    CaseConfig.field_export_step_mm（intersection 采样 = 设计区网格步长，
-    contour = 采样点距）。导出点数按步长的立方增长、范围是整个计算域
-    （没有区域属性），改步长前先估一下体积：0.2 mm → 29 MB/份，
-    0.1 mm → 约 225 MB/份。
+    StepX/Y/Z 是**每个轴上的采样步长**，单位 = 建模单位（mm）；面内取值来自
+    ``CstSetup.resolve_export_steps``（缺省 = CaseConfig.field_export_step_mm）。
+    ``step_z_mm`` 单列出来是因为 z 只影响采样面吸附、而点数按步长线性增长，
+    功分器算例面内取 0.2、z 取 0.1（见 CstSetup.resolve_export_steps）。
+    导出点数按步长的立方增长、范围是整个计算域（没有区域属性），改步长前
+    先估一下体积：0.2 mm → 29 MB/份，0.1 mm → 约 225 MB/份。
     """
     s = f"{step_mm:g}"
-    return [("Mode", mode), ("StepX", s), ("StepY", s), ("StepZ", s)]
+    sz = s if step_z_mm is None else f"{float(step_z_mm):g}"
+    return [("Mode", mode), ("StepX", s), ("StepY", s), ("StepZ", sz)]
 
 
 # =========================================================================== #
@@ -459,9 +461,12 @@ FREQ = COUPLER.frequency_ghz
 FMIN, FMAX = 0.0, COUPLER.fmax_ghz
 
 
-def _arc(cx: float, cy: float, r: float, a0_deg: float, a1_deg: float,
-         n: int = ARC_SEGS) -> list[tuple[float, float]]:
-    """圆弧折线采样点（不含起点，便于与上一条边相接）。"""
+def arc_points(cx: float, cy: float, r: float, a0_deg: float, a1_deg: float,
+               n: int = ARC_SEGS) -> list[tuple[float, float]]:
+    """圆弧折线采样点（不含起点，便于与上一条边相接）。
+
+    两个算例的布局模块共用（耦合器的腿/臂圆角、功分器的输出拐弯）。
+    """
     angs = [math.radians(a0_deg + (a1_deg - a0_deg) * i / n)
             for i in range(1, n + 1)]
     return [(cx + r * math.cos(a), cy + r * math.sin(a)) for a in angs]
@@ -473,7 +478,7 @@ def _left_leg_polygon() -> list[tuple[float, float]]:
     a_cross = math.degrees(math.acos((LEG_L_IN - cx) / R_OUT))   # 外弧与 x=0 的交角
     y_cross = cy + R_OUT * math.sin(math.radians(a_cross))       # 交点 y ≈ -0.04
     pts = [(LEG_L_OUT, LEG_BOT), (LEG_L_OUT, cy)]
-    pts += _arc(cx, cy, R_OUT, 180.0, a_cross)
+    pts += arc_points(cx, cy, R_OUT, 180.0, a_cross)
     pts[-1] = (LEG_L_IN, y_cross)                        # 用解析交点替换采样末点
     pts += [(LEG_L_IN, LEG_BOT)]
     return pts
@@ -494,9 +499,9 @@ def _arm_design_polygon() -> list[tuple[float, float]]:
     cx, cy = LEG_L_IN + R_IN, ARM_LO - R_IN               # (0.4, -2.0)
     cx2 = LEG_R_IN - R_IN                                 # 11.6
     return ([(LEG_L_IN, cy)]
-            + _arc(cx, cy, R_IN, 180.0, 90.0)
+            + arc_points(cx, cy, R_IN, 180.0, 90.0)
             + [(cx2, ARM_LO)]
-            + _arc(cx2, cy, R_IN, 90.0, 0.0)      # 末点即 (LEG_R_IN, cy)
+            + arc_points(cx2, cy, R_IN, 90.0, 0.0)   # 末点即 (LEG_R_IN, cy)
             + [(LEG_R_IN, ARM_HI), (LEG_L_IN, ARM_HI)])
 
 
@@ -624,3 +629,33 @@ def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
     blocks += [(block_header(c), c) for c in model_blocks()]
     blocks += setting_blocks(portnum)
     return blocks
+
+
+def layout_view() -> dict:
+    """模板侧几何的绘图数据（``scripts/plot_layout.py`` 用，不出 CST）。
+
+    ``{"bounds": (x0, x1, y0, y1), "shapes": [(种类, 点列, 图例), ...],
+    "ports": [(编号, x, y, 朝内 dx, 朝内 dy), ...]}``——种类 ∈
+    ``{"substrate", "metal"}``，配色由 ``eaopt.plotting`` 定。两个算例的
+    模板模块都实现它，画图脚本因此与算例无关（几何只有模板这一份来源）。
+    """
+    return {
+        "bounds": (THRU_X0 - 1.5, THRU_X1 + 1.5, LEG_BOT - 1.0, SUB_TOP + 1.0),
+        "shapes": [
+            ("substrate", [(THRU_X0, LEG_BOT), (THRU_X1, LEG_BOT),
+                           (THRU_X1, SUB_TOP), (THRU_X0, SUB_TOP)],
+             "substrate"),
+            ("metal", [(THRU_X0, THRU_LO), (THRU_X1, THRU_LO),
+                       (THRU_X1, THRU_HI), (THRU_X0, THRU_HI)],
+             "through line (p1-p2)"),
+            ("metal", _left_leg_polygon(), "legs (p3-p4)"),
+            ("metal", _right_leg_polygon(), None),
+            ("metal", _arm_design_polygon(), "design metal (arm)"),
+        ],
+        "ports": [
+            (1, THRU_X0, (THRU_LO + THRU_HI) / 2, 1, 0),
+            (2, THRU_X1, (THRU_LO + THRU_HI) / 2, -1, 0),
+            (3, (LEG_L_OUT + LEG_L_IN) / 2, LEG_BOT, 0, 1),
+            (4, (LEG_R_OUT + LEG_R_IN) / 2, LEG_BOT, 0, 1),
+        ],
+    }

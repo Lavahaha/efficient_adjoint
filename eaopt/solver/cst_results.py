@@ -285,17 +285,19 @@ def _select_item(model3d, item: str) -> None:
 # 场
 # --------------------------------------------------------------------------- #
 def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
-                      out_path, *, log=print) -> FieldGrid:
+                      out_path, *, step_z_mm: float | None = None,
+                      log=print) -> FieldGrid:
     """导出场监视器的结果并解析成 FieldGrid（单位 mm / V·m⁻¹ 或 A·m⁻¹）。
 
     流程 = 选中结果条目 → ``ASCIIExport`` 设步长 → ``Execute`` → 解析。
     全程**即时执行、不进历史表**（后处理命令本来就不该进历史表）。
 
-    step_mm 是各轴的采样步长（mm）：取 ``CaseConfig.field_export_step_mm``
-    （intersection 采样 = 设计区网格步长；contour = 采样点距）。导出范围是
-    整个监视器（Volume => 整个计算域），**原点由 CST 包围盒定、不可指定**，
-    所以调用方拿到后要用 :func:`crop_grid` 裁到设计区（文件本身的体积改不了
-    ——ASCIIExport 没有区域属性）。
+    step_mm 是面内(x,y)采样步长、step_z_mm 是 z 向步长（mm，None = 与面内同值）：
+    取 ``CstSetup.resolve_export_steps``（缺省 = CaseConfig.field_export_step_mm）。
+    导出范围是整个监视器（Volume => 整个计算域），**原点由 CST 包围盒定、
+    不可指定**，所以调用方拿到后要用 :func:`crop_grid` 裁到设计区（文件本身的
+    体积改不了——ASCIIExport 没有区域属性）。解析端逐轴反推坐标与步长，
+    不假设三个轴同步长。
     """
     item = resolve_field_item(model3d, field_type, freq_ghz, log=log)
     _select_item(model3d, item)
@@ -303,7 +305,8 @@ def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
     exporter = getattr(model3d, "ASCIIExport", None)
     if exporter is None:
         raise RuntimeError(f"model3d 上没有 ASCIIExport：{_members(model3d)}")
-    _configure_and_run(exporter, out_path, step_mm, field_type, item)
+    _configure_and_run(exporter, out_path, step_mm, field_type, item,
+                       step_z_mm=step_z_mm)
 
     data, axes = parse_ascii_field(str(out_path))
     grid = FieldGrid(origin=tuple(float(a[0]) for a in axes),
@@ -316,7 +319,7 @@ def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
 
 def export_field_cropped(model3d, field_type: str, freq_ghz: float, step_mm: float,
                          out_path, box, margin_mm: float = 0.0, *,
-                         log=print) -> FieldGrid:
+                         step_z_mm: float | None = None, log=print) -> FieldGrid:
     """导出该场 → 裁到设计区 ``box``（``.x``/``.y``）± ``margin_mm``。
 
     三个 CST 程序都要做这个动作：整域导出的网格没有保留价值（点数按面积
@@ -324,7 +327,7 @@ def export_field_cropped(model3d, field_type: str, freq_ghz: float, step_mm: flo
     裁剪后的 ``FieldGrid`` 交出去。
     """
     grid = export_field_grid(model3d, field_type, freq_ghz, step_mm, out_path,
-                             log=log)
+                             step_z_mm=step_z_mm, log=log)
     cut = crop_grid(grid, box, margin_mm)
     log(f"    [OK] {field_type} 裁剪：{grid.data.shape} → {cut.data.shape}"
         f"（设计区 ±{margin_mm:g} mm）")
@@ -332,13 +335,14 @@ def export_field_cropped(model3d, field_type: str, freq_ghz: float, step_mm: flo
 
 
 def _configure_and_run(exporter, out_path, step_mm: float,
-                       field_type: str, item: str) -> None:
+                       field_type: str, item: str,
+                       step_z_mm: float | None = None) -> None:
     """逐条设置 ASCIIExport 并执行（属性集来自 cst_model.ascii_export_params）。"""
     reset = getattr(exporter, "Reset", None)
     if callable(reset):
         reset()                                     # 清掉上一次的残留设置
     for prop, val in [("FileName", str(out_path))] + list(
-            M.ascii_export_params(step_mm)):
+            M.ascii_export_params(step_mm, step_z_mm)):
         fn = getattr(exporter, prop, None)
         if not callable(fn):
             raise RuntimeError(

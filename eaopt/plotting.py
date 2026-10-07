@@ -42,7 +42,7 @@ REGIONS = {
                    color="#d62728", ls="--", lw=1.5),
     "allowed": dict(label="allowed region (movable extent)",
                     color="#e08000", ls=(0, (2, 3)), lw=1.4),
-    "fixed": dict(label="fixed region (through line)",
+    "fixed": dict(label="fixed region (feeds)",   # 耦合器=直通线/腿，功分器=三条馈线
                   color="#1f77b4", ls="-", lw=1.2),
 }
 

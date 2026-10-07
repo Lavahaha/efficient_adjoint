@@ -39,10 +39,10 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 from eaopt import artifacts
 from eaopt.config import CaseConfig
 from eaopt.geometry.contour import close_open_contours
-from eaopt.solver import cst_model as M
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution, SolverInterface
-from eaopt.solver.cst_setup import COUPLER, CstSetup
+from eaopt.solver.case import load_case
+from eaopt.solver.cst_setup import CstSetup
 
 __all__ = ["CstSolver"]
 
@@ -50,13 +50,21 @@ __all__ = ["CstSolver"]
 class CstSolver(SolverInterface):
     """一次会话、两个工程（fwd/bwd），逐轮改设计区 + 求解。"""
 
-    def __init__(self, cfg: CaseConfig, *, setup: CstSetup = COUPLER,
-                 auto_init: bool = False, save_fields: bool | None = None,
+    def __init__(self, cfg: CaseConfig, *, setup: CstSetup | None = None,
+                 model=None, auto_init: bool = False,
+                 save_fields: bool | None = None,
                  attach: bool | None = None, quiet: bool | None = None,
                  clear_results: bool | None = None, log=print):
+        # 算例（CstSetup + 模板模块）成套取自 cfg.name；调用方给了哪一个就
+        # 用哪一个（测试要注入改动过的设置时只覆盖 setup，模板仍按算例取）。
+        if setup is None or model is None:
+            case_setup, case_model = load_case(cfg)
+            setup = case_setup if setup is None else setup
+            model = case_model if model is None else model
         setup.validate_objective(cfg.objective)     # 端口规则在 CST 侧，装配点校验
         self.cfg = cfg
         self.setup = setup
+        self.M = model
         self.auto_init = auto_init
         self.save_fields = (setup.save_fields if save_fields is None
                             else bool(save_fields))
@@ -119,7 +127,7 @@ class CstSolver(SolverInterface):
                 "scripts/cst_update.py 改形状。")
         prj = self._environment().new_mws()
         port = self.setup.stimulus(tag, self.cfg.objective)
-        blocks = M.template_blocks(f"{self.cfg.name}_{tag}", port)
+        blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port)
         self.log(f"[ .. ] 建 {tag} 工程：{len(blocks)} 个命令块，"
                  f"激励端口 = {port}")
         _apply_blocks(prj.model3d, blocks,
@@ -151,7 +159,7 @@ class CstSolver(SolverInterface):
             prj = self._open(tag)
             if self.clear_results:
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=self.log)
-            _update_design_region(prj.model3d, polys, self.setup,
+            _update_design_region(prj.model3d, polys, self.setup, self.M,
                                   what=f"更新 {tag} 工程设计区", log=self.log)
         if self._it is not None:
             path = artifacts.save_shape(self.cfg.output.dir, self._it, polys)
@@ -352,12 +360,15 @@ def _apply_blocks(m3d, blocks, what: str, log) -> int:
     return len(blocks)
 
 
-def _update_design_region(m3d, polys, setup, *, what: str, log) -> None:
-    """一轮形状更新 = **一条**历史记录：删整个组件 + 按新轮廓重建。"""
+def _update_design_region(m3d, polys, setup, model, *, what: str, log) -> None:
+    """一轮形状更新 = **一条**历史记录：删整个组件 + 按新轮廓重建。
+
+    ``model`` = 该算例的模板模块（组件名与 Extrude 命令由它给，见 case.py）。
+    """
     polys = list(polys)
-    cmd = M.design_region_update(polys, setup.metal_thickness_mm,
-                                 component=M.DESIGN_COMPONENT,
-                                 material=setup.metal_material.upper())
+    cmd = model.design_region_update(polys, setup.metal_thickness_mm,
+                                     component=model.DESIGN_COMPONENT,
+                                     material=setup.metal_material.upper())
     log(f"[ .. ] {what}：{len(polys)} 个多边形 / {sum(len(p) for p in polys)} 个点")
     _apply_blocks(m3d, [("design region", cmd)], what, log)
 
@@ -393,7 +404,8 @@ def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log):
     """导出该场并裁到设计区 ± field_margin_mm。"""
     out = Path(cfg.output.dir) / "cst_work" / f"{tag}_{field_type}.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
+    step_xy, step_z = setup.resolve_export_steps(cfg.field_export_step_mm)
     return R.export_field_cropped(
-        m3d, field_type, float(setup.frequency_ghz),
-        setup.resolve_export_step(cfg.field_export_step_mm), out,
-        cfg.design_region.box, float(cfg.design_region.field_margin_mm), log=log)
+        m3d, field_type, float(setup.frequency_ghz), step_xy, out,
+        cfg.design_region.box, float(cfg.design_region.field_margin_mm),
+        step_z_mm=step_z, log=log)
