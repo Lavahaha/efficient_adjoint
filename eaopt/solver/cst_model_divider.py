@@ -20,8 +20,9 @@ YAML 的 ``name`` 选模块。
 
 论文唯一的几何约束——"to ensure the in-phase output of the two output ports,
 constraints on the structure description are added so that the microstrip lines
-are always connected"（两根输出线必须始终连着输入）——由两件事兑现：可动金属
-在设计区左右界（x=6.0 / 33.7）处**必然穿出**（taper 让那里的速度趋零），
+are always connected"（两根输出线必须始终连着输入）——由三件事兑现：固定馈线
+**伸进设计区** ``FEED_OVERLAP``（与可动金属形成**有面积**的重叠，不是只贴着
+框边界的一条线）、可动金属在设计区左右界处必然穿出（taper 让那里的速度趋零），
 以及优化配置把三条馈线列进 ``fixed_region``（邻域冻结速度）。
 
 与论文的两处**已知偏差**（常量都起了名字，随时可切回图上方案）：
@@ -36,15 +37,20 @@ import math
 
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, arc_points, block_header,
-    brick, field_monitor, frequency_range, material_normal, polygon_extrude,
-    set_boundaries, time_domain_solver_setup, waveguide_port,
+    brick, design_region_update, field_monitor, frequency_range,
+    material_normal, polygon_extrude, set_boundaries, time_domain_solver_setup,
+    waveguide_port,
 )
 from eaopt.solver.cst_setup import DIVIDER
 
 __all__ = [
-    # 模板接口（与 cst_model 同名同义）
+    # 模板接口（与 cst_model 同名同义）：求解器与三个 CST 程序只按这套名字
+    # 调用算例模块，一个都不能少（tests/test_case_contract.py 逐个锁定）。
+    # design_region_update 是**通用实现**，这里只是重新导出——
+    # 漏掉它的话 cst_init_*.py 建工程一切正常，直到 pipeline 第一次
+    # build_model 才在 cst.py 里 AttributeError（实测踩过）。
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
-    "UNITS_BLOCK", "DESIGN_COMPONENT", "layout_view",
+    "UNITS_BLOCK", "DESIGN_COMPONENT", "design_region_update", "layout_view",
     # 几何（模板与 YAML 的共同来源：测试按它们锁 YAML）
     "input_strip_polygon", "arm_polygon", "output_trace_polygon",
     "input_feed_polygon", "initial_metal_polygons", "fixed_metal_polygons",
@@ -52,7 +58,7 @@ __all__ = [
     "W", "EPS_EFF", "LAMBDA_G", "L_IN", "L_ARM", "ARM_DX", "ARM_DY",
     "THETA_DEG", "FORK", "ARM_END", "BOX_X0", "BOX_X1", "BOX_Y0", "BOX_Y1",
     "BOARD_X", "BOARD_Y", "OUT_X0", "OUT_X1", "R_BEND", "BEND_CY", "V_X",
-    "PORT_MARGIN", "SUBSTRATE", "ARC_SEGS",
+    "PORT_MARGIN", "SUBSTRATE", "ARC_SEGS", "FEED_OVERLAP",
     "SUB_H", "EPS_R", "TAND", "METAL_T", "AIR_H", "FREQ", "FMIN", "FMAX",
 ]
 
@@ -93,8 +99,18 @@ BOARD_Y = (-11.0, 11.0)     # 上下边缘 = 端口 2/3 面（竖直走线走到
 AIR_H = 4.0                 # 空气盒顶 = 计算域 zmax（端口高 ≈ h + 5h，同耦合器）
 PORT_MARGIN = 1.6           # 端口面横向半宽 = w/2 + 1.6（同耦合器）
 
-# ---- 输出线（固定）：框右界 → 水平段 → 圆角 → 竖直段 → 板边缘 ----
-OUT_X0 = BOX_X1             # 33.7（与可动臂端重叠，见 initial_metal 说明）
+# ---- 固定馈线与可动金属的重叠 ----
+# 固定馈线**伸进设计区**这么深（输入馈线越过 x=6.0、输出线越过 x=33.7）。
+# **不能为 0**：只贴框边界的话，两块金属只在一条线上相触（接触面积 = 0），
+# CST 里是两个各自独立的实体——3D 视图上就是"初始建模就断裂"，且连通性
+# 依赖网格恰好把共面的两个实体合上，脆。0.5 = 5 个 φ 网格、约 λg/77，
+# 保证至少跨过 CST 一两个网格；再大就开始吃掉设计自由度（掩膜会连
+# 0.2 mm 余量一起冻住，见 optimize/constraints.build_velocity_mask）。
+FEED_OVERLAP = 0.5
+
+# ---- 输出线（固定）：框内 FEED_OVERLAP 处起 → 水平段 → 圆角 → 竖直段 → 板边缘 ----
+OUT_X0 = BOX_X1             # 33.7：框右界（臂端在这里；输出线从这里**往框内**再多走
+                            # FEED_OVERLAP 才开始，见 output_trace_polygon）
 OUT_X1 = 41.5               # 水平段末端 = 拐弯起点
 R_BEND = 2.5                # 拐弯中心线半径（外缘 3.5 / 内缘 1.5，同心）
 BEND_CY = ARM_DY + R_BEND   # 7.0：拐弯中心 y（上侧；下侧取负）
@@ -139,8 +155,9 @@ def arm_polygon(sign: float) -> list[tuple[float, float]]:
 
     臂 = 分叉点 F 与臂端 E 之间、宽 w 的等宽条带（E 在框右界上），按框右界
     裁断：臂端因此是一条斜切口（(33.7, 4.5) 到 (33.7, 3.37)），它**整段落在
-    固定输出线的 y 区间 [3.5, 5.5] 里**——这正是"可动金属始终与输出线连着"
-    的那处重叠（CST 侧靠 close_open_contours 的 0.05 mm 外扩压实）。
+    固定输出线的 y 区间 [3.5, 5.5] 里**——固定输出线从 x=33.7 起**往框内**再多走
+    ``FEED_OVERLAP``，两者因此重叠成一块（φ 侧则由 close_open_contours 把轮廓
+    外扩 0.05 mm 压实）。
     """
     s = 1.0 if sign > 0 else -1.0
     fx, fy = FORK
@@ -156,20 +173,25 @@ def arm_polygon(sign: float) -> list[tuple[float, float]]:
 
 
 def input_feed_polygon() -> list[tuple[float, float]]:
-    """输入馈线（**固定**）：端口 1（板左边缘）到设计区左界，宽 w。"""
+    """输入馈线（**固定**）：端口 1（板左边缘）**穿过框左界伸进设计区**
+    ``FEED_OVERLAP``，宽 w——与可动输入段重叠出 0.5×2 mm² 的实心连接。"""
     h = W / 2.0
-    return [(BOARD_X[0], -h), (BOX_X0, -h), (BOX_X0, h), (BOARD_X[0], h)]
+    x_in = BOX_X0 + FEED_OVERLAP
+    return [(BOARD_X[0], -h), (x_in, -h), (x_in, h), (BOARD_X[0], h)]
 
 
 def output_trace_polygon(sign: float) -> list[tuple[float, float]]:
     """输出线（**固定**）：``sign=+1`` 上输出 / ``-1`` 下输出。
 
-    从框右界起（y 中心 ±ARM_DY 与臂端对齐）水平走到 OUT_X1，经 R=R_BEND 的
-    同心圆弧拐弯（外缘 R+w/2、内缘 R−w/2），再沿竖直段走到板边缘（端口面）。
-    折线点序：外缘 → 拐弯 → 竖直段 → 拐弯 → 内缘返回，闭合边落在框右界上。
+    从**框内** ``OUT_X0 - FEED_OVERLAP`` 处起（y 中心 ±ARM_DY 与臂端对齐）
+    水平走到 OUT_X1，经 R=R_BEND 的同心圆弧拐弯（外缘 R+w/2、内缘 R−w/2），
+    再沿竖直段走到板边缘（端口面）。起点伸进框内是为了与臂端重叠出**有面积**
+    的连接（只贴框边界的话两者只在一条线上相触，见 FEED_OVERLAP）。
+    折线点序：外缘 → 拐弯 → 竖直段 → 拐弯 → 内缘返回，闭合边落在框内那条竖边上。
     """
     s = 1.0 if sign > 0 else -1.0
     h = W / 2.0
+    x0 = OUT_X0 - FEED_OVERLAP              # 起点（框内）
     cy = s * BEND_CY                        # 拐弯中心 (41.5, ±7.0)
     y_out = cy - s * (R_BEND + h)           # 水平段外缘 y（远离拐弯中心）
     y_in = cy - s * (R_BEND - h)            # 水平段内缘 y
@@ -179,14 +201,14 @@ def output_trace_polygon(sign: float) -> list[tuple[float, float]]:
     a_out = (-90.0 * s, 0.0)                # 外缘弧角：s=+1 (−90°→0°)，镜像取正
     a_in = (0.0, -90.0 * s)
     return [
-        (OUT_X0, y_out),                    # 框右界（外缘）
+        (x0, y_out),                        # 起点（框内，外缘）
         (OUT_X1, y_out),                    # 水平段 → 拐弯起点
         *arc_points(OUT_X1, cy, R_BEND + h, *a_out),    # 外圆角 → (x_out, cy)
         (x_out, y_edge),                    # 竖直段外缘 → 板边缘
         (x_in, y_edge),                     # 板边缘 → 竖直段内缘
         (x_in, cy),                         # 竖直段内缘 → 内圆角起点
         *arc_points(OUT_X1, cy, R_BEND - h, *a_in),     # 内圆角 → (OUT_X1, y_in)
-        (OUT_X0, y_in),                     # 水平段内缘 → 回框右界
+        (x0, y_in),                         # 水平段内缘 → 回起点
     ]
 
 
@@ -232,7 +254,9 @@ def _fixed_metal_parts() -> list[str]:
     x0, x1 = BOARD_X
     h = W / 2.0
     return [
-        brick("in_feed", "feed", "PEC", x0, BOX_X0, -h, h, 0.0, METAL_T),
+        # 右端 = BOX_X0 + FEED_OVERLAP：伸进设计区与可动输入段重叠（见 FEED_OVERLAP）
+        brick("in_feed", "feed", "PEC", x0, BOX_X0 + FEED_OVERLAP, -h, h,
+              0.0, METAL_T),
         polygon_extrude("out_top", "feed", "PEC",
                         output_trace_polygon(+1.0), METAL_T),
         polygon_extrude("out_bot", "feed", "PEC",

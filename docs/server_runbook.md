@@ -20,7 +20,7 @@ git clone https://github.com/Lavahaha/efficient_adjoint.git
 cd efficient_adjoint
 pip install -e .            # numpy/scipy/pyyaml/matplotlib
 pip install pytest          # 可选：验证安装
-python -m pytest tests/ -q  # 应 262 passed, 1 skipped（不装 CST 也能全绿）
+python -m pytest tests/ -q  # 应 269 passed, 1 skipped（不装 CST 也能全绿）
 
 # 官方 Python 库（不在 PyPI 上，CST 安装包自带）
 pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
@@ -199,6 +199,14 @@ python scripts/plot_layout.py  configs/divider.yaml    # 重画布局图（本�
 `docs/layout_reference_divider.png`（与论文 Fig. 9 逐项对照：Y 形设计区、
 框、三条馈线、三个端口面）。
 
+> **模板几何只在建工程时写一次。** `run_coupler.py` 发现工程不存在会自动
+> 初始化（`_ensure_projects`），而每轮 `build_model` **只重建设计区**，固定
+> 馈线永远保持建工程时的样子。所以模板几何改过之后（例如修复"初始建模就
+> 断裂"时把馈线伸进设计区 0.5 mm），**必须先删掉旧工程**再按上面两条
+> `cst_init` 重建——否则跑的还是旧几何，而且不报错。
+> 上一次失败的那次运行已经走到 `build_model`，说明工程当时就已经建出来了
+> （旧几何），删掉重来。
+
 **先核对这三条**（数值对不上时按此顺序查）：
 
 1. **端口**：1 在板左边缘（xmin 面，输入）、2/3 在板上下边缘（ymax/ymin 面，
@@ -206,7 +214,10 @@ python scripts/plot_layout.py  configs/divider.yaml    # 重画布局图（本�
 2. **材料**：Rogers3003、30 mil（0.762 mm）、εr = 3.0、tanδ = 0.001、35 µm
    金属（论文 III-B；与耦合器的 Rogers4350B 不同，别拿旧工程对照）；
 3. **设计区**：`[6.0, 33.7] × [−9, 9]` mm，0.1 mm 网格（277×180）；框内那条
-   Y 形（λg/2 输入段 + 两根 λg/4 分路臂）整体可动。
+   Y 形（λg/2 输入段 + 两根 λg/4 分路臂）整体可动。三条固定馈线**伸进框内
+   0.5 mm**（`cst_model_divider.FEED_OVERLAP`）——与 Y 形重叠成一块，看图时
+   金属应当是**连续**的：只贴着框边界相触的话 CST 里是两个独立实体，
+   就是"初始建模就断裂"那个样子。
 
 **Stage 1 判据（几何/端口/材料的判定关口）**：`iter_000/` 里 5 GHz 处
 **|S21| ≈ |S31| ≈ −3.5 ± 1 dB**（论文初始 −3.49/−3.49）、|S11| ≤ −10 dB。
@@ -244,11 +255,12 @@ connected"**（两输出必须同相）。`configs/divider.yaml` 里
   抹掉"会这样），直接停了。这是保护：断掉的中间态继续演化等于在优化另一个
   器件。
 
-**`constraints.min_gap_mm` 必须保持 0**：三条馈线正贴在设计区边界上，非零
-min_gap 会在框内沿边界铺一条禁区带，把臂端与输出线一刀切断（CST 照样出
-S 参数，结果是另一个器件的）——`tests/test_cst_model_divider.py` 把这个后果
-锁成了测试。同理 `taper_edges: x` 只 taper 左右两条边（可动金属在那里穿出去
-接馈线）；上下边是臂自己的生长边界，taper 不得开。
+**`constraints.min_gap_mm` 必须保持 0**：三条馈线都伸进框内 0.5 mm，非零
+min_gap 会在框内（x ≈ [6.5, 6.7] 与 [33.0, 33.2]）铺一条禁区带，横着把可动
+金属削断（CST 照样出 S 参数，结果是另一个器件的）——
+`tests/test_cst_model_divider.py::test_config_min_gap_must_stay_zero` 把这个
+后果锁成了测试。同理 `taper_edges: x` 只 taper 左右两条边（可动金属在那里
+穿出去接馈线）；上下边是臂自己的生长边界，taper 不得开。
 
 ## 4. 一等 TODO：`velocity_sign` 尚未裁决
 

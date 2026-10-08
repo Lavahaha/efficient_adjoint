@@ -54,6 +54,11 @@ def _at_edge(poly, x_edge: float) -> list[float]:
     return sorted(y for x, y in poly if abs(x - x_edge) < 1e-9)
 
 
+def _inside(poly, pt) -> bool:
+    """点是否在多边形内（重叠判定用；测试点都远离边界，半开约定无所谓）。"""
+    return bool(MplPath(np.asarray(poly, float)).contains_points([pt])[0])
+
+
 # =========================================================================== #
 # 一、布局常量（论文 III-B：λ/2 输入段 + λ/4 分路臂）
 # =========================================================================== #
@@ -80,27 +85,45 @@ def test_design_box_derives_from_the_layout():
 
 def test_movable_metal_crosses_the_box_edges():
     """论文唯一的几何约束："to ensure the in-phase output of the two output
-    ports, ... the microstrip lines are always connected"——兑现处就是可动
-    金属在左右界**穿出去**接固定馈线：
+    ports, ... the microstrip lines are always connected"——兑现处是固定馈线
+    **伸进设计区**与可动金属**重叠成一块**：
 
-    * 输入段左端压在框左界上（外面是固定输入馈线）；
-    * 两臂端压在框右界上，臂端斜切口与固定输出线的断面**重叠 w/2**。
+    * 输入馈线越过框左界到 x=6.5，与输入段重叠；
+    * 输出线从 x=33.2（框内）起，与臂端斜切口重叠。
+
+    重叠必须是**有面积**的：两块金属只贴着框边界那条线相触的话，CST 里是
+    两个各自独立的实体（初始建模看起来就是断的），连通得靠网格恰好把共面
+    的两个实体合上——实测就是这个坑。
     """
-    strip = D.input_strip_polygon()
+    assert 0.0 < D.FEED_OVERLAP <= 1.0         # 够跨过 CST 网格，又不吃掉设计自由度
+
+    # ---- 左界：输入馈线 × 输入段 ----
+    strip, feed = D.input_strip_polygon(), D.input_feed_polygon()
     assert min(x for x, _ in strip) == pytest.approx(D.BOX_X0)
     assert max(x for x, _ in strip) == pytest.approx(D.FORK[0])
+    joint = (D.BOX_X0 + D.FEED_OVERLAP / 2.0, 0.0)
+    assert _inside(feed, joint) and _inside(strip, joint)
+    # 只咬这么多：再往里就是可动金属的天下，固定馈线不许再伸
+    assert not _inside(feed, (D.BOX_X0 + D.FEED_OVERLAP + 0.1, 0.0))
 
+    # ---- 右界：输出线 × 臂端 ----
+    x_start = D.OUT_X0 - D.FEED_OVERLAP
     for sign in (+1, -1):
         # 都取 sign 侧的 y（下臂镜像成正值）再排序，两个分支的比较才同向
         lo, hi = sorted(sign * y for y in _at_edge(D.arm_polygon(sign), D.BOX_X1))
         assert hi == pytest.approx(D.ARM_DY, abs=1e-9)         # 上到臂端中心线
         assert lo < D.ARM_DY                                   # 下探到中心线以下
+        # 输出线起点的断面 = 与臂端对齐的等宽线（y 中心 ±ARM_DY）；
+        # 同样先取 sign 侧再排序，两个分支的比较才同向
         trace_lo, trace_hi = sorted(sign * y for y in
-                                    _at_edge(D.output_trace_polygon(sign),
-                                             D.OUT_X0))
-        overlap = min(hi, trace_hi) - max(lo, trace_lo)
-        assert overlap >= D.W / 2 - 1e-9                       # 重叠 = 连通
-        assert overlap <= D.W / 2 + 1e-9                       # 但也不多咬
+                                    _at_edge(D.output_trace_polygon(sign), x_start))
+        assert (trace_lo, trace_hi) == pytest.approx(
+            (D.ARM_DY - D.W / 2, D.ARM_DY + D.W / 2))
+        joint = (x_start + D.FEED_OVERLAP / 2.0, sign * D.ARM_DY)
+        assert _inside(D.output_trace_polygon(sign), joint)
+        assert _inside(D.arm_polygon(sign), joint)
+        assert not _inside(D.output_trace_polygon(sign),
+                           (x_start - 0.1, sign * D.ARM_DY))
 
 
 def test_arm_is_clipped_to_the_design_box():
@@ -129,7 +152,8 @@ def test_output_trace_is_an_equal_width_strip_with_concentric_bend():
         assert xs == {round(D.V_X - D.W / 2, 9), round(D.V_X + D.W / 2, 9)}
         assert D.V_X == pytest.approx(D.OUT_X1 + D.R_BEND)
         # 水平段两条边 = 中心线 ± w/2（与臂端对齐）
-        ys = {round(y, 9) for x, y in pts if abs(x - D.OUT_X0) < 1e-9}
+        ys = {round(y, 9) for x, y in pts
+              if abs(x - (D.OUT_X0 - D.FEED_OVERLAP)) < 1e-9}
         assert ys == {round(sign * (D.ARM_DY - D.W / 2), 9),
                       round(sign * (D.ARM_DY + D.W / 2), 9)}
 
@@ -234,13 +258,15 @@ def test_config_min_gap_must_stay_zero(cfg, ls):
     """``min_gap_mm`` **必须为 0**（不是论文的 0.1）：
 
     ``apply_min_gap`` 在固定金属**外侧**铺一条 gap 厚的禁区带，而三条馈线
-    正贴在框边界上——非 0 的带子会伸进框内、把可动金属在边界处整列削成
-    空气。这里把"断"这件事演一遍：gap=0.2 时设计区轮廓从 3 条开口变成 1 条，
-    闭合多边形再也够不到框右界（臂端与输出线断开，而 CST 照样出数）。
+    都伸进框内 0.5 mm——非 0 的带子因此落在框内（x ≈ [6.5,6.7] 与
+    [33.0,33.2]），横着把可动金属削断。这里把"断"这件事演一遍：
+    gap=0.2 时可动金属从**一块**变成好几块（论文那条"线必须始终连着"
+    当场失守，而 CST 照样出 S 参数）。
     """
     assert cfg.constraints.min_gap_mm == 0.0
+    gap = 0.2
     broken = dataclasses.replace(cfg, constraints=dataclasses.replace(
-        cfg.constraints, min_gap_mm=0.2))
+        cfg.constraints, min_gap_mm=gap))
     ls2 = LevelSet2D(ls.box, ls.dx)
     ls2.phi = ls.phi.copy()
     apply_min_gap(ls2, broken)
@@ -248,14 +274,20 @@ def test_config_min_gap_must_stay_zero(cfg, ls):
     # 只看条带内部的节点：y=±w/2 那两个正好落在多边形边上（φ 恰为 0），
     # 翻符号后仍是 0，判不出"削没削"。
     strip_y = np.abs(ls.ys) <= D.W / 2 - 0.5 * ls.dx
-    # 真实配置：框内第二列全是金属；gap=0.2：那一列被削空 → 金属缩回框外
-    assert np.all(ls.phi[1, strip_y] <= 1e-9)
-    assert np.all(ls2.phi[1, strip_y] > 0)
-    assert len(movable_contours(ls, cfg)) == 3
-    assert len(movable_contours(ls2, broken)) != 3
-    polys = close_open_contours(movable_contours(ls2, broken), ls2.box)
-    assert max(np.asarray(p)[:, 0].max() for p in polys) \
-        < D.BOX_X1 + 0.05 - 1e-6                   # 够不到框右界了
+    # 取禁区带**中心**那一列（带外沿那一列 φ 判不出被没被削）
+    x_mid = D.BOX_X0 + D.FEED_OVERLAP + 0.5 * gap
+    col = int(round((x_mid - ls.xs[0]) / ls.dx))
+    assert ls.xs[col] == pytest.approx(x_mid)
+    assert np.all(ls.phi[col, strip_y] <= 1e-9)     # 真实配置：那一列是金属
+    assert np.all(ls2.phi[col, strip_y] > 0)        # gap=0.2：被削成空气
+
+    n_real = ndimage.label(ls.phi < 0, structure=np.ones((3, 3)))[1]
+    n_broken = ndimage.label(ls2.phi < 0, structure=np.ones((3, 3)))[1]
+    # 削断的判据看**连通域**而不是轮廓条数：轮廓提取按"零等值线"追踪，
+    # 岛上浮着一块金属照样只给出同样条数的折线（实测 3 条 = 没断的样子），
+    # 拿它当断没断的代理会漏判。
+    assert n_real == 1                              # 真实配置：一块
+    assert n_broken > 1                             # 非 0 的间隙：断开
 
 
 def test_anchors_are_frozen_by_the_velocity_mask(ls, cfg):
