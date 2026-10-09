@@ -6,7 +6,8 @@ import pytest
 from eaopt.config import BoxSpec
 from eaopt.geometry import contour as C
 from eaopt.geometry.contour import (close_open_contours, extract_contours,
-                                    self_intersections, smooth_resample)
+                                    self_intersections, simplify_polygon,
+                                    smooth_resample)
 from eaopt.geometry.levelset import LevelSet2D
 
 RECT = np.array([[2.0, -1.0], [10.0, -1.0], [10.0, 1.0], [2.0, 1.0]])
@@ -104,6 +105,98 @@ def test_dedupe_vertices_handles_near_closure():
                      [1e-9, -1e-9]])
     out = C.dedupe_vertices(ring)
     assert np.array_equal(out[0], out[-1])
+
+
+# --------------------------------------------------------------------------- #
+# 简化：送 CST 前的必要条件（2026-10-09 功分器 Stage 1 事故）
+# --------------------------------------------------------------------------- #
+def _point_to_polyline_dist(points: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """每个点到闭合折线（逐段，含首尾收尾段）的最短距离。"""
+    a = poly[:-1][:, None, :]
+    ab = (poly[1:] - poly[:-1])[:, None, :]
+    p = np.asarray(points)[None, :, :]
+    t = np.clip(np.sum((p - a) * ab, axis=2) / np.sum(ab * ab, axis=2), 0.0, 1.0)
+    return np.linalg.norm(p - (a + t[:, :, None] * ab), axis=2).min(axis=0)
+
+
+def test_simplify_polygon_drops_collinear_points_keeps_corners():
+    """零等值线在**直边**上发的顶点是精确共线的（marching 的线性插值保的），
+    简化把它们全删掉、只留真正的角：Y 形初始轮廓 854 点就是这么变成 18 点的。"""
+    ring = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0],
+                     [3.0, 1.0], [3.0, 2.0], [2.0, 2.0], [1.0, 2.0],
+                     [0.0, 2.0], [0.0, 1.0], [0.0, 0.0]])
+    out = simplify_polygon(ring, 0.01)
+    assert np.allclose(out, [[0.0, 0.0], [3.0, 0.0], [3.0, 2.0],
+                             [0.0, 2.0], [0.0, 0.0]])
+    # 开放折线走同一条路径，端点必留
+    open_line = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.0, 0.5]])
+    assert np.allclose(simplify_polygon(open_line, 0.01),
+                       [[0.0, 0.0], [2.0, 0.0], [2.0, 0.5]])
+
+
+def test_simplify_polygon_tol_zero_is_a_no_op():
+    """0 = 关掉（回归对比/调试用）：逐位原样返回。"""
+    ring = circle_polygon(2.0, 6.0, 0.0, n=32)
+    ring = np.vstack([ring, ring[0]])
+    assert np.array_equal(simplify_polygon(ring, 0.0), ring)
+
+
+def test_simplify_polygon_never_invents_vertices():
+    """RDP 只**删**点：输出顶点必须能在输入里原样找到。
+
+    这条是"顶点仍压在网格线上"的前提（``test_cst_solver`` 的导出网格回归
+    查的就是它），也保证简化不会把多边形顶出设计区外扩包络。"""
+    ring = circle_polygon(2.0, 6.0, 0.0, n=64)
+    ring = np.vstack([ring, ring[0]])
+    out = simplify_polygon(ring, 0.02)
+    assert np.array_equal(out[0], out[-1])                    # 闭合性保持
+    assert all(any(np.array_equal(q, r) for r in ring) for q in out)
+
+
+def test_simplify_polygon_short_side_survives_a_long_one():
+    """容差由**网格步长**定，不看轮廓自己的段长统计。
+
+    3×0.1 的矩形段长 3.0 / 0.1 混排，中位段长 1.55 mm——容差若取
+    "0.2 × 中位段长" = 0.31 mm，短边只偏 0.1 < 0.31 会被整条吃掉、矩形塌成
+    3 个点（``test_cst_solver`` / ``test_cst_update_script`` 的手写矩形就是
+    这么被压坏的）。0.2 格 = 0.01 mm 时短边安然无恙。"""
+    rect = np.array([[0.5, 0.3], [3.5, 0.3], [3.5, 0.2], [0.5, 0.2], [0.5, 0.3]])
+    assert np.allclose(simplify_polygon(rect, 0.01), rect)
+    assert len(simplify_polygon(rect, 0.31)) == 3             # 反面教材
+
+
+def test_simplify_polygon_honours_the_point_budget():
+    """超预算就把容差翻倍重试：宁可多丢远小于一格的细节，也不让 CST 的
+    点表溢出（实测 497 点能用、854 点被拒）。"""
+    ring = circle_polygon(2.0, 6.0, 0.0, n=256)
+    ring = np.vstack([ring, ring[0]])
+    out = simplify_polygon(ring, 0.005, max_points=12)
+    assert len(out) <= 12
+    assert np.array_equal(out[0], out[-1])
+    assert self_intersections(out) == []
+    # 弓高 ≤ 最终容差：半径 2 的圆，容差从 0.005 翻到 0.16（连续 5 次）才把
+    # 65 点收进 12 点的预算，输出的 9 个点与原圆的最大偏离 0.153 ≈ 该容差
+    assert _point_to_polyline_dist(ring, out).max() < 0.17
+    assert _point_to_polyline_dist(out, ring).max() == 0.0    # 输出点全在圆上
+
+
+def test_close_open_contours_simplifies_only_when_asked():
+    """闭合与简化是两件事：默认**不**简化（回归对比看原样输出），给了容差
+    才简化。送 CST 的两个调用点显式传 ``SIMPLIFY_TOL_CELLS × 网格步长``
+    （守卫见 ``test_cst_solver.test_build_model_hands_cst_simplified_contours``）。"""
+    raw = close_open_contours([ARM_TOP, ARM_BOT], _arm_box())
+    assert len(raw[0]) == 9                      # 上边 4 点 + 下边 4 点 + 闭合点
+    out = close_open_contours([ARM_TOP, ARM_BOT], _arm_box(),
+                              simplify_tol_mm=0.05)
+    poly = out[0]
+    assert np.allclose(poly, [[-0.05, 0.0], [12.05, 0.0],
+                              [12.05, -1.6], [-0.05, -1.6], [-0.05, 0.0]])
+    assert self_intersections(poly) == []
+    from matplotlib.path import Path as MplPath
+
+    p = MplPath(poly)
+    assert p.contains_point((6.0, -0.8))         # 条带内仍是金属
+    assert not p.contains_point((6.0, 1.0))      # 条带上方仍是空气
 
 
 def _arm_box() -> BoxSpec:

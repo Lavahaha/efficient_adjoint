@@ -135,6 +135,30 @@ def test_update_from_ls_rebuilds_the_contours(ready):
     assert ys.min() < 0.0 and ys.max() <= 0.15
 
 
+def test_resolve_shape_hands_cst_simplified_contours(ready, monkeypatch):
+    """送 CST 的轮廓必须简化，参数与 ``CstSolver.build_model`` 同一套。
+
+    2026-10-09 功分器 Stage 1：854 点的网格描线超过 CST ``Extrude .Create``
+    的点表容量，CST 只回一句 "Profile is self-intersecting"（497 点能用）。
+    两个调用点各有一份路径，所以各守一条。"""
+    from eaopt.geometry.contour import SIMPLIFY_TOL_CELLS
+
+    path, cfg = ready
+    artifacts.save_ls_phi(cfg.output.dir, 0, make_level_set(cfg))
+
+    seen = {}
+    real = UPDATE.close_open_contours
+
+    def spy(contours, box, **kw):
+        seen.update(kw)
+        return real(contours, box, **kw)
+
+    monkeypatch.setattr(UPDATE, "close_open_contours", spy)
+    assert UPDATE.main([str(path), "--from-ls"]) == 0
+    assert seen["simplify_tol_mm"] == pytest.approx(
+        SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm)
+
+
 # --------------------------------------------------------------------------- #
 # 无人值守：模态框（已有结果 + 重跑 ⇒ CST 弹框等人点）
 # --------------------------------------------------------------------------- #

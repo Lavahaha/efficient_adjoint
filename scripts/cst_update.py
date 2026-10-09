@@ -43,7 +43,7 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.cli import base_parser, banner, make_log, report_solution, safe_console
-from eaopt.geometry.contour import close_open_contours
+from eaopt.geometry.contour import SIMPLIFY_TOL_CELLS, close_open_contours
 from eaopt.config import CaseConfig
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution
@@ -363,7 +363,12 @@ def _resolve_shape(cfg: CaseConfig, args, *, log=print):
         if not npz.is_file():
             raise SystemExit(f"缺少 φ 快照 {npz}（只有 pipeline 跑过的轮次才有）")
         polys = _contours_from_phi(cfg, artifacts.load_ls_phi(npz), log=log)
-    return close_open_contours(polys, cfg.design_region.box)
+    # 与 CstSolver.build_model 同一套参数：网格描线不简化就送 CST 会撞上
+    # Extrude 的点表容量（2026-10-09 功分器实测），容差 = 0.2 格。
+    return close_open_contours(
+        polys, cfg.design_region.box,
+        simplify_tol_mm=SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm,
+    )
 
 
 def _contours_from_phi(cfg: CaseConfig, snap: dict, *, log=print):

@@ -15,6 +15,7 @@ __all__ = [
     "dedupe_vertices",
     "smooth_resample",
     "close_open_contours",
+    "simplify_polygon",
     "self_intersections",
 ]
 
@@ -71,6 +72,93 @@ def dedupe_vertices(vertices: np.ndarray, tol_mm: float = 1e-6) -> np.ndarray:
     if closed:
         out = np.vstack([out, out[0]])
     return out
+
+
+#: 送进 CST 的轮廓简化容差 = **网格步长**的这个倍数（调用方乘出来给
+#: :func:`close_open_contours`）：0.2 格 = 20 µm（dx=0.1 时）。取这个值
+#: 是因为它远小于提取精度（一个网格）本身，又足以吃掉"斜边擦过格点"挤出来
+#: 的那类微段。
+#:
+#: **不做"自动容差"**：拿轮廓自己的段长统计（中位/分位）去定容差看着省事，
+#: 但长短段混排的多边形会给出发散的值——3×0.1 的矩形中位段长 1.55 mm，
+#: 0.2 倍就是 0.31 mm，足以把整个短边吃掉（`tests/test_cst_solver.py` 与
+#: `tests/test_cst_update_script.py` 里那几个手写矩形当场被压成 3 个点）。
+#: 网格步长只有调用方知道，就由调用方给。
+SIMPLIFY_TOL_CELLS = 0.2
+
+#: 简化后**每个多边形**的点数上限（超了就把容差翻倍重试）。CST 的
+#: ``Extrude ... .Create`` 对点表有容量：实测 249 点 / 6.9 KB 可用、
+#: 497 点 / 13.7 KB 可用、854 点 / 23.6 KB 直接报 "Profile is
+#: self-intersecting"。取 250 = 已知能用里最大的那个量级，留一倍余量。
+SIMPLIFY_MAX_POINTS = 250
+
+
+def _rdp_keep(pts: np.ndarray, tol: float) -> np.ndarray:
+    """Douglas–Peucker 的保留掩膜（首末点必留）。
+
+    闭合折线（首末点重合）也走这条路径：首末弦退化成点，于是先挑"离起点
+    最远的顶点"把环劈成两段再各自简化——起点因此必留，闭合性不变。
+    """
+    keep = np.zeros(len(pts), dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b <= a + 1:
+            continue
+        seg = pts[b] - pts[a]
+        length = float(np.hypot(seg[0], seg[1]))
+        d = pts[a + 1:b] - pts[a]
+        dist = (np.hypot(d[:, 0], d[:, 1]) if length < 1e-12
+                else np.abs(seg[0] * d[:, 1] - seg[1] * d[:, 0]) / length)
+        k = int(np.argmax(dist))
+        if dist[k] > tol:
+            i = a + 1 + k
+            keep[i] = True
+            stack.extend([(a, i), (i, b)])
+    return keep
+
+
+def simplify_polygon(points, tol_mm, max_points=SIMPLIFY_MAX_POINTS):
+    """把网格描线简化成"真实顶点"多边形：偏离相邻弦 ≤ tol_mm 的顶点全删掉。
+
+    **为什么必须简化**（2026-10-09 功分器 Stage 1 实测）：零等值线来自
+    marching squares，每个格子发射 1~2 个顶点；边界是斜的时候（功分器两臂
+    斜 27.9°），斜边擦过某个格点时这一两个交点会挤成几微米的小段——Y 形
+    初始轮廓 854 点里 56 段短于 20 µm、最短 4.4 µm。这份折线在 Python 侧
+    **无自交**（``self_intersections`` 逐对检查通过，容差放到 1e-3 也没有
+    重合/接触），但 CST 的 ``Extrude ... .Create`` 只回一句
+    "Profile is self-intersecting"。对照三种真实命令：249 点 / 6.9 KB 可用、
+    497 点 / 13.7 KB 可用、854 点 / 23.6 KB 被拒——**点表容量**是与
+    "能用 / 不能用"完全吻合的那个变量（微段不是：旧耦合器带着 2 µm 的微段
+    实跑了 6 轮都没事）。超限后 CST 截断点表、再自动闭合出的斜切段，才是
+    它眼里的自交。所以**送进 CST 的轮廓不该是网格描线，而是简化后的多边形**：
+    初始 Y 形 854 → 18 点、命令 23.6 KB → 不到 1 KB。
+
+    tol_mm：必给（没有"自动"档，理由见 :data:`SIMPLIFY_TOL_CELLS`）。取
+    :data:`SIMPLIFY_TOL_CELLS` × 网格步长，即 0.2 格；≤0 = 原样返回
+    （调试/回归对比用）。
+    max_points：简化后仍超预算（形状过碎）就把容差翻倍重试，最多 8 轮——
+    宁可多丢一点远小于一格的细节，也不让 CST 跑到一半才炸。
+    None = 不设上限。
+
+    闭合折线（首末点相同）与开放折线同一条路径；首末点必留，故输入闭合
+    则输出闭合。返回新数组，不动调用方的数据。
+    """
+    pts = np.asarray(points, dtype=float)
+    if len(pts) < 4:
+        return pts.copy()
+    tol = float(tol_mm)
+    if tol <= 0.0:
+        return pts.copy()
+    keep = _rdp_keep(pts, tol)
+    if max_points is not None:
+        for _ in range(8):
+            if int(keep.sum()) <= max_points:
+                break
+            tol *= 2.0
+            keep = _rdp_keep(pts, tol)
+    return pts[keep]
 
 
 def smooth_resample(
@@ -130,7 +218,9 @@ def _closed_length(pts: np.ndarray) -> float:
 
 
 def close_open_contours(
-    contours: list[np.ndarray], box, pad_mm: float = 0.05
+    contours: list[np.ndarray], box, pad_mm: float = 0.05,
+    simplify_tol_mm: float = 0.0,
+    max_points: int | None = SIMPLIFY_MAX_POINTS,
 ) -> list[np.ndarray]:
     """把穿出设计区边界的开放轮廓闭合为多边形（供求解器几何重建）。
 
@@ -149,9 +239,17 @@ def close_open_contours(
     闭合轮廓原样保留。pad_mm：端点沿所在边界的外法向向外延伸的余量
     （与设计区外的固定馈线重叠，同材料在求解器中自动合并）。
 
+    simplify_tol_mm：返回前按 :func:`simplify_polygon` 简化用的容差。
+    **默认 0 = 不简化**（本函数只管"闭合"这一件事，闭合的正确性与点的疏密
+    无关，回归对比也要看原样输出）；送 CST 的调用方必须显式传
+    :data:`SIMPLIFY_TOL_CELLS` × 网格步长——CST 的 Extrude 点表吃得下 497
+    点、吃不下 854 点（实测），而网格描线在斜边界上每格发射 1~2 点，Y 形
+    功分器一开始就 854 点。这一步是**送进 CST 的必要条件**，不是可选的洁癖。
+
     返回的多边形保证**无自交**（有自交时抛 ValueError 并指出相交的边）：
     CST 的 `Extrude ... .Create` 对自交轮廓只报 "Profile is self-intersecting"，
-    在这里拦下能给出可定位的诊断。
+    在这里拦下能给出可定位的诊断。简化前后各查一次——简化若把两条只差
+    不到两倍容差的边并到一起，会单独报"简化后自交"。
     """
     opens = [c for c in contours if not np.allclose(c[0], c[-1])]
     closed = [c for c in contours if np.allclose(c[0], c[-1])]
@@ -180,7 +278,21 @@ def close_open_contours(
                 "（每条开放轮廓的两个端点都该落在设计区边界上）。"
             )
     _check_no_nested(out)
-    return out
+    if simplify_tol_mm <= 0.0:
+        return out
+    simple = [simplify_polygon(p, simplify_tol_mm, max_points) for p in out]
+    for k, poly in enumerate(simple):
+        bad = self_intersections(poly)
+        if bad:
+            i, j = bad[0]
+            raise ValueError(
+                f"第 {k} 个多边形**简化后**自交：边 {i} {_fmt(poly[i])}→"
+                f"{_fmt(poly[i + 1])} 与边 {j} {_fmt(poly[j])}→{_fmt(poly[j + 1])} "
+                "相交。原始折线本来无自交，是简化把两条只差不到两倍容差的边"
+                "并到了一起——把 close_open_contours 的 simplify_tol_mm 调小，"
+                "或检查 φ 是否长出了亚网格细缝。"
+            )
+    return simple
 
 
 def _check_no_nested(polys: list[np.ndarray]) -> None:

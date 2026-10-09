@@ -26,7 +26,8 @@ from matplotlib.path import Path as MplPath
 from scipy import ndimage
 
 from eaopt.config import CaseConfig
-from eaopt.geometry.contour import close_open_contours
+from eaopt.geometry.contour import (SIMPLIFY_MAX_POINTS, SIMPLIFY_TOL_CELLS,
+                                    close_open_contours)
 from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import apply_min_gap, build_velocity_mask
 from eaopt.pipeline import make_level_set, movable_contours
@@ -57,6 +58,12 @@ def _at_edge(poly, x_edge: float) -> list[float]:
 def _inside(poly, pt) -> bool:
     """点是否在多边形内（重叠判定用；测试点都远离边界，半开约定无所谓）。"""
     return bool(MplPath(np.asarray(poly, float)).contains_points([pt])[0])
+
+
+def _area(poly) -> float:
+    """闭合多边形的面积（鞋带公式）。"""
+    x, y = np.asarray(poly, float).T
+    return float(abs(np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])) / 2.0)
 
 
 # =========================================================================== #
@@ -348,6 +355,35 @@ def test_closed_contours_preserve_the_y_shape_and_the_v_notch(cfg, ls):
     # 闭合时沿框边界外扩 0.05 mm（与固定馈线重叠，CST 侧压实连通）
     assert poly[:, 0].min() == pytest.approx(D.BOX_X0 - 0.05)
     assert poly[:, 0].max() == pytest.approx(D.BOX_X1 + 0.05)
+
+
+def test_the_outline_handed_to_cst_is_simplified(cfg, ls):
+    """**2026-10-09 Stage 1 事故回归**：网格描线原样送 CST，``Extrude ...
+    .Create`` 回 `(&H8000ffff) Profile is self-intersecting`。
+
+    实测三种真实命令：耦合器 249 点 / 6.9 KB 可用、旧耦合器 497 点 / 13.7 KB
+    可用、功分器 854 点 / 23.6 KB 被拒——吻合"能用/不能用"的变量是**点表
+    容量**，不是微段（旧耦合器带着 2 µm 微段实跑了 6 轮）。所以送 CST 的一份
+    必须简化，且微段随之消失（它们是点数的来源）。
+    """
+    mov = movable_contours(ls, cfg)
+    box = cfg.design_region.box
+    tol = SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm
+    raw = close_open_contours(mov, box)[0]
+    poly = close_open_contours(mov, box, simplify_tol_mm=tol)[0]
+
+    assert len(raw) == 854                        # 网格描线原样：854 点
+    assert len(poly) <= SIMPLIFY_MAX_POINTS       # 送 CST 的一份：18 点
+    seg = np.linalg.norm(np.diff(poly, axis=0), axis=1)
+    assert (seg < 5 * tol).sum() == 0             # 原样有 56 段 < 20 µm
+    # 简化只删点、不造点：顶点仍是网格描线上的原顶点（提取器契约不变）
+    assert all(any(np.array_equal(q, r) for r in raw) for q in poly)
+    # 几何没走样：面积 74.1537 → 74.1206（−0.05%），V 形缺口与三个锚点照旧
+    assert _area(poly) == pytest.approx(_area(raw), rel=5e-3)
+    for pt in [(6.2, 0.0), (18.0, 0.0), (30.0, 2.7), (33.4, 4.0), (33.4, -4.0)]:
+        assert _inside(poly, pt), f"({pt[0]}, {pt[1]}) 丢了金属"
+    for pt in [(28.0, 0.0), (31.0, 0.0), (8.0, 5.0), (20.0, -4.0)]:
+        assert not _inside(poly, pt), f"({pt[0]}, {pt[1]}) 是空气却被填成金属"
 
 
 def test_the_outline_matches_the_level_set_inside_the_box(cfg, ls):

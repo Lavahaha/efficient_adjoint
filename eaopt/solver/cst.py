@@ -38,7 +38,7 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.config import CaseConfig
-from eaopt.geometry.contour import close_open_contours
+from eaopt.geometry.contour import SIMPLIFY_TOL_CELLS, close_open_contours
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution, SolverInterface
 from eaopt.solver.case import load_case
@@ -153,7 +153,13 @@ class CstSolver(SolverInterface):
         fixed: 固定金属与馈线——**模板里已经有了，这里忽略**（固定几何只在
         建模板时写一次，pipeline 不重复施加）。
         """
-        polys = close_open_contours(movable, self.cfg.design_region.box)
+        # 送 CST 前必须简化：网格描线（尤其斜边界）点数可达 800+，超过 CST
+        # ``Extrude .Create`` 的点表容量后它只回一句 "Profile is
+        # self-intersecting"（2026-10-09 功分器 Stage 1 实测）。容差 = 0.2 格。
+        polys = close_open_contours(
+            movable, self.cfg.design_region.box,
+            simplify_tol_mm=SIMPLIFY_TOL_CELLS * self.cfg.design_region.grid_step_mm,
+        )
         self._ensure_projects()
         for tag in artifacts.TAGS:
             prj = self._open(tag)

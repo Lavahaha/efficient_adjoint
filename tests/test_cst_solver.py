@@ -169,6 +169,30 @@ def test_build_model_closes_open_contours_and_records_the_applied_shape(cfg):
     assert poly[:, 0].max() <= box.x[1] + pad
 
 
+def test_build_model_hands_cst_simplified_contours(cfg, monkeypatch):
+    """送 CST 的轮廓必须显式要简化：容差 = ``SIMPLIFY_TOL_CELLS`` × 网格步长。
+
+    2026-10-09 功分器 Stage 1：854 点的网格描线超过 CST ``Extrude .Create``
+    的点表容量，CST 只回一句 "Profile is self-intersecting"。``contour.py``
+    的默认是**不**简化（闭合与简化是两件事），所以这条守着调用点别把参数丢了。
+    """
+    from eaopt.geometry.contour import SIMPLIFY_TOL_CELLS
+
+    seen = {}
+    real = C.close_open_contours
+
+    def spy(contours, box, **kw):
+        seen.update(kw)
+        return real(contours, box, **kw)
+
+    monkeypatch.setattr(C, "close_open_contours", spy)
+    s = _solver(cfg, auto_init=True)
+    s.begin_iteration(0)
+    s.build_model(_open_arm(), [])
+    assert seen["simplify_tol_mm"] == pytest.approx(
+        SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm)
+
+
 def test_shape_json_is_overwritten_with_the_latest_shape(cfg):
     """重跑同一轮：磁盘上的形状必须等于工程里的形状（覆盖写）。"""
     s = _solver(cfg, auto_init=True)
@@ -180,7 +204,7 @@ def test_shape_json_is_overwritten_with_the_latest_shape(cfg):
                      [0.5, 0.2], [0.5, 0.3]])                # 闭合多边形
     s.build_model([want], [])
     second = artifacts.load_shape(artifacts.iteration_dir(cfg.output.dir, 0))[0]
-    assert len(second) != len(first)        # 确实覆盖写了（点数都不一样）
+    assert not np.allclose(second, first)   # 确实覆盖写了（不是还留着上一份）
     assert np.allclose(second, want)        # 且等于这一轮真正施加的形状
 
 
@@ -416,12 +440,15 @@ def test_pipeline_runs_on_the_server_measured_export_grid(cfg):
         assert p[:, 0].max() <= box.x[1] + pad + 1e-9
         assert p[:, 1].min() >= box.y[0] - pad - 1e-9
         assert p[:, 1].max() <= box.y[1] + pad + 1e-9
-        # 设计区内的顶点（= 交点折线本体，不含外扩的搭接段）压在网格线上
+        # 设计区内的顶点（= 交点折线本体，不含外扩的搭接段）压在网格线上。
+        # 这里这条臂是直条，简化（RDP 只删点、不造点）把折线上的交点删到只剩
+        # 四个角，而四角都在外扩边界上——于是 in_box 为空，没什么可查的；
+        # 简化只删点这条更强的性质由 test_contour.py 的 simplify_polygon 用例守。
         in_box = ((p[:, 0] >= box.x[0] - 1e-9) & (p[:, 0] <= box.x[1] + 1e-9)
                   & (p[:, 1] >= box.y[0] - 1e-9) & (p[:, 1] <= box.y[1] + 1e-9))
         r = (p[in_box] - np.array([box.x[0], box.y[0]])) / dx
         fx = np.abs(r[:, 0] - np.rint(r[:, 0]))
         fy = np.abs(r[:, 1] - np.rint(r[:, 1]))
-        assert np.minimum(fx, fy).max() < 1e-9
+        assert np.minimum(fx, fy).max(initial=0.0) < 1e-9
     # φ 真的被推了（假场的值随下标变化 → δp ≠ 0）
     assert np.abs(ls.phi - phi0).max() > 0
