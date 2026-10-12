@@ -55,6 +55,33 @@ def test_sample_boundary_spacing(ls, tmp_path):
     assert np.abs(d - cfg.sampling.point_spacing_mm).max() < 0.05
 
 
+def test_inside_offset_puts_samples_in_the_metal(tmp_path):
+    """``sample_side=inside`` + δz：采样点整体内移到金属里（φ ≈ −δz）。
+
+    论文 p.501：边缘上取场有奇异性，要贴着边缘、**在金属内侧**沿平行线
+    采样。偏移量恒为正，方向由 ``sample_side`` 定；法向仍在**未偏移的**
+    交点处求——pipeline 靠它把点还原回边界（散点/判活都在边界上做）。
+    """
+    cfg = make_compact_cfg(tmp_path)
+    ls = _slanted_ls(cfg)
+    polys = boundary_points(ls, cfg)
+
+    pts0, nrm0 = boundary_samples(polys, ls, cfg)          # outside, δz = 0
+    cfg.sampling.sample_side = "inside"
+    cfg.sampling.intersection_offset_mm = 0.3
+    pts, nrm = boundary_samples(polys, ls, cfg)
+
+    def phi(p):                                            # 解析 φ = y + 0.35 − 0.03x
+        p = np.asarray(p, dtype=float)
+        return p[:, 1] + 0.35 - 0.03 * p[:, 0]
+
+    assert np.allclose(nrm, nrm0)                          # 法向取自未偏移的点
+    assert np.abs(phi(pts0)).max() < 1e-9                  # δz=0 时就在界面上
+    assert np.median(phi(pts)) == pytest.approx(-0.3, abs=0.01)
+    # 反向还原（= pipeline 里 bnd = pts − side·δz·nrm）：必须回到界面上
+    assert np.abs(phi(pts + 0.3 * nrm)).max() < 1e-9
+
+
 def test_scatter_to_grid_assigns_and_averages(ls):
     p = np.array([[2.0, 0.2], [2.04, 0.2], [1.0, 0.0]])  # 前两点同最近节点
     v = scatter_to_grid(ls, p, np.array([3.0, 5.0, 7.0]))

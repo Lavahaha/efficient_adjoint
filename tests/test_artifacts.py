@@ -106,6 +106,28 @@ def test_save_solution_rejects_unknown_tag(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# 采样面切片（每轮电场分布图的数据源）
+# --------------------------------------------------------------------------- #
+def test_field_slice_roundtrip_keeps_one_plane_and_complex(tmp_path):
+    """切片 = 单层、复数、origin[2] 移到该面：画图与 δp 取场是同一个面。"""
+    grid = _solution().e_field                      # (2, 2, 3, 3) complex
+    sl = grid.slice_z(1)
+    assert sl.data.shape == (2, 2, 1, 3)
+    assert sl.origin[2] == pytest.approx(grid.origin[2] + grid.spacing[2])
+    assert sl.axes()[2][0] == pytest.approx(sl.origin[2])
+
+    path = A.save_field_slice(tmp_path, 3, "fwd", sl)
+    assert path == A.iteration_dir(tmp_path, 3) / "efield_fwd.npz"
+    back = A.load_field_slice(tmp_path, 3, "fwd")
+    assert back.data.dtype == sl.data.dtype
+    assert np.allclose(back.data, grid.data[:, :, 1:2, :])
+    assert back.origin == pytest.approx(sl.origin)
+
+    with pytest.raises(FileNotFoundError):
+        A.load_field_slice(tmp_path, 9, "fwd")
+
+
+# --------------------------------------------------------------------------- #
 # 形状
 # --------------------------------------------------------------------------- #
 def test_shape_roundtrip_from_file_or_directory(tmp_path):

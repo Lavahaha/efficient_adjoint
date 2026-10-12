@@ -2,13 +2,16 @@
 
 每轮迭代：
   提取轮廓 → 重建几何 → 正向仿真 → FoM 评估/收敛判断
-  → 后向仿真 → 边界采样 + 形状导数（式 25）→ 速度装配（固定步长
+  → 后向仿真 → 边界采样 + 形状导数（式 54–55）→ 速度装配（固定步长
   + 符号开关）→ 栅格化 + 速度延拓 → 掩膜 → HJ 演化
   → 最小间距投影 → 周期性重初始化 → 日志/快照。
 
-输出（cfg.output.dir）：history.jsonl（逐迭代记录）、iter_NNN.png（形状快照）、
-fom.png（收敛曲线），以及 iter_NNN/ls_phi.npz（本轮 φ 快照，续跑用）；
-iter_NNN/ 里的仿真产物（shape.json、s_params_*.json、meta.json）由求解器写。
+输出（cfg.output.dir）：history.jsonl（逐迭代记录）、iter_NNN.png（左 = 形状
+快照，右 = 采样面 |E|）、fom.png（FoM 曲线）、sparams_vs_iter.png（各 S 参数
+随迭代，论文 Fig.11）、efield_evolution.png（电场分布演化，论文 Fig.10），
+以及 iter_NNN/ls_phi.npz（本轮 φ 快照，续跑用）与 iter_NNN/efield_fwd.npz
+（采样面 E 切片，画图用）；iter_NNN/ 里的仿真产物（shape.json、
+s_params_*.json、meta.json）由求解器写。
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from eaopt.geometry.extension import extend_velocity
 from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
                                         build_velocity_mask, interp_mask_at)
-from eaopt.optimize.objective import make_fom
+from eaopt.optimize.objective import fom_phase, make_fom
 from eaopt.optimize.step import fixed_step_velocity
 from eaopt.solver.cst_setup import COUPLER, CstSetup
 
@@ -130,10 +133,14 @@ class OptimizerPipeline:
                     "fom": float(fom),
                     "s31_db": float(20 * np.log10(abs(sol_f.s_params[(3, 1)]))),
                     "s21_db": float(20 * np.log10(abs(sol_f.s_params[(2, 1)]))),
+                    # 复数相角：目标 |S21| 必须用 Re[e^{-j·argS21}·∂S21] 才等价，
+                    # 缺相角是形状导数反号的根源（2026-10-12 已由场数据坐实）
+                    "arg_s21_deg": float(np.angle(sol_f.s_params[(2, 1)], deg=True)),
+                    "arg_s31_deg": float(np.angle(sol_f.s_params[(3, 1)], deg=True)),
                     "time_s": time.perf_counter() - t0,
                 }
                 self._record(rec)
-                self._snapshot(it)
+                self._snapshot(it, sol_f)
                 print(f"[iter {it:3d}] FoM={fom:.6f}  |S31|={rec['s31_db']:7.2f} dB  "
                       f"({rec['time_s']:.2f}s)")
 
@@ -178,6 +185,7 @@ class OptimizerPipeline:
             self.solver.close()
 
         self._plot_fom()
+        self._plot_results()
         print(f"\n优化结束（{self.history.stop_reason}）：{len(self.history.records)} 次迭代，"
               f"输出目录 {self.outdir}")
         return self.history
@@ -194,7 +202,10 @@ class OptimizerPipeline:
         if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新
             return np.zeros(self.ls.phi.shape)
         self._check_field_grids(sol_f, sol_b)
-        nrm3 = np.column_stack([nrm, np.zeros(len(nrm))])
+        # |S| 目标的链式法则因子 e^{-j arg S}：式 (54) 只给出 dS，FoM = |S|
+        # 要求乘上它（缺相位 = 在优化 Re[S]）。取自本轮前向解的 S 参数。
+        phase = fom_phase(cfg, sol_f)
+        phase_deg = float(np.angle(phase, deg=True))
 
         if s.scheme == "intersection":
             # 交点方案：采样点是亚格点，场值按**坐标**用 WLS 取（导出网格
@@ -211,20 +222,29 @@ class OptimizerPipeline:
                 f.sample_wls(pts, iz, stencil=st).values
                 for f in (sol_f.e_field, sol_f.h_field, sol_b.e_field, sol_b.h_field)
             )
-            dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin,
-                                  self.omega, self.eps_r)
+            dp = shape_derivative(e_f, h_f, e_b, h_b, sol_f.pin,
+                                  self.omega, self.eps_r, phase=phase)
+            # 栅格化必须回填到**边界点** bnd（偏移前），不能直接撒在采样点
+            # pts 上：采样点按论文内移 δz 后离界面 δz 远，散点（只写
+            # d ≤ scatter_max_cells·dx 的节点）就够不着 φ=0 两侧的界面节点，
+            # 而 skfmm 的延拓值正是从跨 φ=0 的那对节点插值出来的 → 速度恒 0、
+            # 形状一动不动且不报错（服务器装 skfmm 才显形，本机走 PDE 分支
+            # 有 known 种子兜着）。contour 分支早就为此回填，这里同理。
+            side = 1.0 if s.sample_side == "outside" else -1.0
+            bnd = pts - side * s.intersection_offset_mm * nrm
             # 掩膜先于归一化：被禁点（角点奇异性、固定区邻域）不参与
             # max|δp|，否则它们会劫持速度尺度拖慢全场
-            active = interp_mask_at(self.ls, pts, v_mask_grid) > 0.5
+            active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
             v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
             v_seed, counts = scatter_inverse_distance(
-                self.ls, pts, v, max_dist_cells=s.scatter_max_cells)
+                self.ls, bnd, v, max_dist_cells=s.scatter_max_cells)
             V, method = extend_velocity(
                 self.ls, v_seed, cfg.level_set.extension_band_mm,
                 method=cfg.level_set.extension_method, known=counts > 0)
-            print(f"[采样] 交点 {len(pts)} 个（WLS {s.wls_order} 阶 R="
+            print(f"[采样] 交点 {len(pts)} 个（{s.sample_side} δz="
+                  f"{s.intersection_offset_mm:g} mm，WLS {s.wls_order} 阶 R="
                   f"{s.wls_radius_cells} 格，回退 {st.n_fallback}），种子节点 "
-                  f"{int((counts > 0).sum())} 个，延拓 {method}")
+                  f"{int((counts > 0).sum())} 个，延拓 {method}，相位 {phase_deg:+.1f}°")
             return V * v_mask_grid
 
         # 不走吸附（直接按 z 插值），但采样面落进金属体内的错误同样要拦
@@ -234,8 +254,8 @@ class OptimizerPipeline:
         h_f = sol_f.h_field.interp(pts3)
         e_b = sol_b.e_field.interp(pts3)
         h_b = sol_b.h_field.interp(pts3)
-        dp = shape_derivative(e_f, h_f, e_b, h_b, nrm3, sol_f.pin,
-                              self.omega, self.eps_r)
+        dp = shape_derivative(e_f, h_f, e_b, h_b, sol_f.pin,
+                              self.omega, self.eps_r, phase=phase)
         # 栅格化必须回填到边界点（bnd，偏移前），否则落在速度延拓
         # 种子带（|φ|≤0.75·dx）之外，速度场无法播种
         side = 1.0 if s.sample_side == "outside" else -1.0
@@ -246,7 +266,7 @@ class OptimizerPipeline:
         V, method = extend_velocity(
             self.ls, v_boundary, cfg.level_set.extension_band_mm,
             method=cfg.level_set.extension_method)
-        print(f"[采样] 轮廓点 {len(pts)} 个，延拓 {method}")
+        print(f"[采样] 轮廓点 {len(pts)} 个，延拓 {method}，相位 {phase_deg:+.1f}°")
         return V * v_mask_grid
 
     def _check_field_grids(self, sol_f, sol_b) -> None:
@@ -302,46 +322,25 @@ class OptimizerPipeline:
         with open(self._log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    def _snapshot(self, it: int) -> None:
-        """本轮 φ 的金属俯视图（金属深色、空气浅色，与 layout_reference.png 同款）。
+    def _snapshot(self, it: int, sol_f=None) -> None:
+        """本轮快照 ``iter_NNN.png``：左 = φ 金属俯视，右 = 采样面 |E|（论文 Fig.10）。
 
-        图上必须画出**设计区**（红虚线）——早先只画了固定区（直通线）的红框，
-        被当成了"设计区画错了"。三类区域的样式与图例文案在 ``eaopt.plotting``
-        （与 `scripts/plot_layout.py` 共用一套，见该模块说明）。
+        右栏用的 E 切片顺手落一份 ``iter_NNN/efield_fwd.npz``（~0.3 MB/轮）：
+        事后重画与电场演化图都用它，不用重跑仿真。画面的两条硬约定（金属按
+        φ=0 零等值线填色、视野夹在设计区 ± 0.5 mm）在 ``eaopt.plotting``，
+        与 scripts/plot_results.py 共用一套，见该模块说明。
         """
-        import matplotlib.pyplot as plt
-
         from eaopt import plotting
 
-        fig, ax = plt.subplots(figsize=(9, 4.6))
-        ax.set_facecolor(plotting.OUTSIDE_COLOR)     # 设计区之外不是优化对象
-        box_patch = self.cfg.design_region.box
-        ax.add_patch(plt.Rectangle((box_patch.x[0], box_patch.y[0]),
-                                   box_patch.width, box_patch.height,
-                                   facecolor=plotting.AIR_COLOR, lw=0, zorder=1))
-        # 金属按 **φ=0 的零等值线**填色（与 extract_contours 提取轮廓用的是
-        # 同一条线）。早先用 pcolormesh 给节点上色：单元画在节点**上方**，
-        # 整块金属看起来平移了半格（臂顶边 y=0 画到 +0.1），对着设计区边界
-        # 看就像形状不对——而 φ 本身没问题。也别用 ``phi < 0`` 判断：界面
-        # 正好压着节点时（臂顶边 y=0 就压着）φ 是 ±1e-15 的噪声，会画出一
-        # 排假毛刺。等值线插值把这两件事一起解决了。
-        ax.contourf(self.ls.xs, self.ls.ys, self.ls.phi.T,
-                    levels=[-1e9, 0.0], colors=[plotting.METAL_COLOR], zorder=2)
-        plotting.draw_regions(ax, self.cfg)
-        box = self.cfg.design_region.box
-        # 视野 = 设计区 ± 0.5 mm。固定区（直通线）在 x 上比设计区宽，不夹住
-        # 坐标轴的话它会把视野撑开，设计区在图上只占中间一小块
-        ax.set_xlim(box.x[0] - 0.5, box.x[1] + 0.5)
-        ax.set_ylim(box.y[0] - 0.5, box.y[1] + 0.5)
-        ax.set_aspect("equal")
-        ax.set_xlabel("x (mm)")
-        ax.set_ylabel("y (mm)")
-        ax.set_title(f"iteration {it}", pad=24)
-        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3,
-                  fontsize=8, frameon=False)
-        fig.savefig(self.outdir / f"iter_{it:03d}.png", dpi=110,
-                    bbox_inches="tight")
-        plt.close(fig)
+        e_slice, z_used = None, None
+        grid = getattr(sol_f, "e_field", None)
+        if grid is not None:
+            iz, z_used = grid.nearest_z_plane(self.cfg.sampling.field_z_mm)
+            e_slice = grid.slice_z(iz)
+            artifacts.save_field_slice(self.outdir, it, "fwd", e_slice)
+        plotting.snapshot_figure(self.cfg, self.ls, it=it, e_slice=e_slice,
+                                 z_used=z_used,
+                                 path=self.outdir / f"iter_{it:03d}.png")
 
     def _plot_fom(self) -> None:
         import matplotlib.pyplot as plt
@@ -355,3 +354,16 @@ class OptimizerPipeline:
         ax.set_title(self.cfg.name)
         fig.savefig(self.outdir / "fom.png", dpi=120)
         plt.close(fig)
+
+    def _plot_results(self) -> None:
+        """整套过程图（论文 Fig.10/11）：S 参数曲线 + 电场演化。
+
+        都从 ``iter_NNN/`` 的产物重建（不依赖内存状态），所以中断续跑、
+        服务器事后重画（scripts/plot_results.py）走的是同一条路。
+        """
+        from eaopt import plotting
+
+        plotting.sparams_figure(self.cfg, self.outdir,
+                                self.outdir / "sparams_vs_iter.png")
+        plotting.efield_evolution_figure(self.cfg, self.outdir,
+                                         self.outdir / "efield_evolution.png")

@@ -8,6 +8,7 @@
       s_params_bwd.json   反向工程（伴随仿真）的 S 参数
       fields_fwd_e.npz    E 场（save_fields=true 时才写）
       fields_fwd_h.npz    H 场
+      efield_fwd.npz      采样面 |E| 图用的单层 E 切片（~0.3 MB，**总是**写）
       ls_phi.npz          φ 快照（水质集），续跑的**关键**文件
       meta.json           轮次、时间戳、耗时、各文件摘要
     history.jsonl        逐轮 FoM 记录（pipeline 写）
@@ -32,7 +33,8 @@ __all__ = [
     "TAGS", "iteration_dir", "list_iterations", "latest_iteration",
     "save_json", "load_json", "s_params_to_json", "s_params_from_json",
     "save_shape", "load_shape", "save_solution", "load_s_params",
-    "load_field", "save_ls_phi", "load_ls_phi", "truncate_history",
+    "load_field", "save_field_slice", "load_field_slice",
+    "save_ls_phi", "load_ls_phi", "truncate_history",
 ]
 
 #: 两个 CST 工程的标签（fwd = 输入端口激励，bwd = 观测端口激励/伴随仿真）。
@@ -224,6 +226,24 @@ def load_field(path):
     with np.load(path) as z:
         return FieldGrid(origin=tuple(z["origin"]), spacing=tuple(z["spacing"]),
                          data=z["data"])
+
+
+def save_field_slice(outdir, n: int, tag: str, grid) -> Path:
+    """采样面**单层** E 场切片 → ``iter_NNN/efield_<tag>.npz``。
+
+    只给图用（每轮电场分布，论文 Fig.10），与 ``save_fields`` 的全量三维场
+    互不影响：切片是 (nx, ny, 1, 3) 复数、~0.3 MB/轮，所以**总是**写。
+    落盘格式与 ``fields_<tag>_<e|h>.npz`` 完全相同（origin/spacing/data），
+    :func:`load_field_slice` 读回的就是 FieldGrid。
+    """
+    d = iteration_dir(outdir, n)
+    d.mkdir(parents=True, exist_ok=True)
+    return _save_field(d / f"efield_{tag}.npz", grid)
+
+
+def load_field_slice(outdir, n: int, tag: str):
+    """读回采样面切片（FieldGrid，nz=1）；没有该轮切片时抛 FileNotFoundError。"""
+    return load_field(iteration_dir(outdir, n) / f"efield_{tag}.npz")
 
 
 # --------------------------------------------------------------------------- #

@@ -120,8 +120,20 @@ python scripts/run_coupler.py configs/coupler.yaml
 | `s_params_bwd.json` | bwd 工程（端口 3 激励）的 S 参数 | 同上（bwd 没跑） |
 | `meta.json` | 该轮的标签清单 | 半截轮次 |
 | `ls_phi.npz` | 产生该轮形状的 φ 快照（`cst_update --from-ls` 用） | pipeline 没跑到 |
+| `efield_fwd.npz` | 采样面**单层** E 切片（~0.3 MB，画电场图用） | pipeline 没跑到（旧版本没有） |
 
-外加 `<output.dir>/history.jsonl`（逐轮 FoM）与 `fom.png`（收敛曲线）。
+外加 `<output.dir>/history.jsonl`（逐轮 FoM）与四张过程图：
+
+| 图 | 内容 | 对应论文 |
+|---|---|---|
+| `fom.png` | FoM 随迭代 | — |
+| `iter_NNN.png` | 左 = 金属形状，右 = 采样面 \|E\| | Fig.10 |
+| `sparams_vs_iter.png` | 各响应端口 \|S_i1\|（dB）随迭代，FoM 加粗 | Fig.11 |
+| `efield_evolution.png` | 等间隔若干轮的 \|E\| 演化（共享色标） | Fig.10 |
+
+这些都只读 `iter_NNN/` 的产物，**事后可以重画、不用重跑仿真**：
+`python scripts/plot_results.py <结果目录> <config.yaml>`（`--only sparams` 只画
+S 参数曲线；旧轮次没有 `efield_fwd.npz` 时电场演化图会跳过并提示）。
 
 **验证**：CST 里看第 N 轮，设计区形状应逐轮变化，且 History List 每轮
 只**多一条**记录（删+重建合成一条）。若形状没变或历史表暴涨，贴回输出。
@@ -147,16 +159,23 @@ python scripts/run_coupler.py configs/coupler.yaml
 
 1. 边界 = **marching 在网格线上的交点**（两端节点 φ 线性插值，亚格点），
    它同时是交给 CST 重建的几何和做灵敏度分析的采样点；
-2. 每个交点处用**加权最小二乘**从周围**介质侧**节点（`sample_side`，且不在
-   固定金属里）拟合出 E/H（`wls_order` 阶、半径 `wls_radius_cells` 格），
-   4 个场共用同一套插值算子；
-3. δp 换算为速度后**反距离平方回写**到最近节点 + 四邻居（`scatter_max_cells`
-   格内），再延拓到窄带（`level_set.extension_method`）。
+2. 采样点沿法向**内移 δz = `intersection_offset_mm`**（现为 0.3 mm）——
+   论文 p.501 原文：边缘上取场有奇异性，要贴着边缘、**在金属内侧**沿平行线
+   采样（`sample_side: inside`；方向由它定，偏移量恒为正）；
+3. 每个采样点用**加权最小二乘**从周围**同侧**节点（`sample_side=inside` →
+   金属内侧 φ<0 的节点，且这侧天然排掉固定金属）拟合出 E/H（`wls_order`
+   阶、半径 `wls_radius_cells` 格），4 个场共用同一套插值算子；
+4. δp 换算为速度后**反距离平方回写**到最近节点 + 四邻居（`scatter_max_cells`
+   格内），再延拓到窄带（`level_set.extension_method`）。回写点必须用
+   **未偏移的**交点（pipeline 里回填）：δz 之后的采样点离界面 δz 远，撒在
+   采样点上会让界面节点收不到值，skfmm 延拓（边界值从跨 φ=0 的节点对插值）
+   就恒为 0——形状一动不动且不报错。这条有测试锁着。
 
 一轮最大位移 = `optimizer.step_cells` 格（1 格 = 0.1 mm）。每轮会打印一行
-诊断：`[采样] 交点 N 个（WLS 1 阶 R=2.0 格，回退 K），种子节点 M 个，延拓
-skfmm|pde`——**K 应该为 0**（有回退 = 邻域太稀，把 `wls_radius_cells` 调大）；
-**延拓应为 skfmm**（服务器装得上；打印 pde = 没装 scikit-fmm）。
+诊断：`[采样] 交点 N 个（inside δz=0.3 mm，WLS 1 阶 R=2.0 格，回退 K），种子
+节点 M 个，延拓 skfmm|pde，相位 ±P°`——**K 应该为 0**（有回退 = 邻域太稀，
+把 `wls_radius_cells` 调大）；**延拓应为 skfmm**（服务器装得上；打印 pde =
+没装 scikit-fmm）；**种子节点 M 不能是 0**（0 = 速度场没播上种，形状不会动）。
 
 跑起来要盯的三件事：
 
@@ -179,8 +198,10 @@ skfmm|pde`——**K 应该为 0**（有回退 = 邻域太稀，把 `wls_radius_c
 O(网格) 级误差，WLS 单侧拟合会把它带进 δp）：首次正式运行建议先 `scheme:
 contour` 跑一轮做 A/B（同一份场数据下的 δp 空间相关与 FoM 曲线），再切回
 `intersection`。δp 若沿边界出现格距尺度的锯齿，先试 `wls_order: 2`，再试
-`wls_radius_cells: 3.0`，最后才把 `intersection_offset_mm` 调到 0.05（半格，
-把单侧外推变成内插、对阶梯噪声更鲁棒）。
+`wls_radius_cells: 3.0`，最后才考虑把 `intersection_offset_mm` 从 0.3 调大
+（默认值本身就是论文的"贴着边缘、在金属内侧"；调大 = 离边缘更远，奇异性更弱
+但接近度更差）。**薄结构要留意**：特征宽度小于 2δz 时，两侧的采样点会互相
+穿过（跑到对侧），论文与我们的实现都按常数 δz 处理、不钳制。
 
 ## 3.6 第二个算例：不等分 Wilkinson 功分器（论文 III-B）
 

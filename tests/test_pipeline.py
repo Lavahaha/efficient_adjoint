@@ -224,6 +224,54 @@ def test_intersection_scheme_accepts_a_half_cell_offset_export_grid(tmp_path):
     assert dphi.max() > 0.2 * step          # 真的在动，不是空转
 
 
+def test_inside_sampling_scatters_to_the_boundary_not_the_sample_points(
+        tmp_path, monkeypatch):
+    """论文式采样（金属内侧 δz）时，速度回写与判活仍落在**边界点**上。
+
+    δz 之后采样点离界面 δz 远，若把散点也撒在采样点上，φ=0 两侧的界面节点
+    一个都收不到值；而 skfmm 的延拓值正是从跨 φ=0 的那对节点插值出来的
+    → 延拓速度恒 0、形状一动不动且**不报错**。本机没装 skfmm 走 PDE 分支
+    （有 known 种子兜着）看不出问题，只有这条锁能防服务器上的静默空转。
+    """
+    from scipy.interpolate import RegularGridInterpolator
+
+    from eaopt.adjoint.fields import build_wls_stencil as real_stencil
+    from eaopt.adjoint.sampling import scatter_inverse_distance as real_scatter
+
+    cfg = make_compact_cfg(tmp_path, max_iterations=1)
+    cfg.sampling.sample_side = "inside"
+    cfg.sampling.intersection_offset_mm = 0.3
+    seen: dict[str, np.ndarray] = {}
+
+    def spy_scatter(ls, points, values, **kw):
+        seen["scatter"] = np.array(points, dtype=float)
+        return real_scatter(ls, points, values, **kw)
+
+    def spy_stencil(points, axes, mask, **kw):
+        seen["wls"] = np.array(points, dtype=float)
+        return real_stencil(points, axes, mask, **kw)
+
+    monkeypatch.setattr("eaopt.pipeline.scatter_inverse_distance", spy_scatter)
+    monkeypatch.setattr("eaopt.pipeline.build_wls_stencil", spy_stencil)
+
+    ls0 = make_level_set(cfg)
+    phi0 = ls0.phi.copy()          # 本轮采样用的 φ：run() 里 HJ 会就地改 ls0.phi
+    solver = OffsetGridStubSolver(cfg, foms=(0.2,))
+    OptimizerPipeline(cfg, solver, ls0).run()
+
+    phi = RegularGridInterpolator((ls0.xs, ls0.ys), phi0,
+                                  bounds_error=False, fill_value=None)
+    assert len(seen["wls"]) == len(seen["scatter"]) > 0
+    # 取场点：金属内侧 δz = 0.3 mm。本测试几何里金属的角点与设计盒角点重合，
+    # 顶边内移在角附近会逐步落到相邻边上（φ 从 −0.3 爬到 0）——那是几何
+    # 使然；这里要锁的是**没有一个点越到介质侧**（细结构被 δz 打穿）。
+    assert np.median(phi(seen["wls"])) == pytest.approx(-0.3, abs=0.02)
+    assert phi(seen["wls"]).max() <= 1e-9
+    # 回写/判活点：仍在 φ=0 的界面上（δz 只对取场有效）
+    assert np.abs(phi(seen["scatter"])).max() < 1e-6
+    assert not np.allclose(seen["scatter"], seen["wls"])
+
+
 def test_contour_scheme_still_runs_for_the_server_ab(tmp_path):
     """旧 contour 路径（弧长重采样 + 三线性取场 + 最近节点回写）留作 A/B。
 

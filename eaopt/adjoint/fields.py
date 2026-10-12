@@ -10,7 +10,9 @@
   取多项式在采样点处的值，比三线性插值更稳（尤其单侧邻域：PEC 两侧的场
   不连续，只用同侧节点拟合才不会被金属体内的 E≈0 拉低）。
 
-法向/切向分解服务于形状导数（论文式 25）。
+形状导数走论文式 (54)（顶面 E_z 与面内 H 配对，见 adjoint/derivative.py），
+不再需要沿面内轮廓法向的分解；``decompose_normal_tangential`` 保留给后续
+可能用到的侧壁/其它配对，当前生产路径不调用。
 """
 
 from __future__ import annotations
@@ -70,6 +72,19 @@ class FieldGrid:
     def plane(self, iz: int) -> np.ndarray:
         """第 ``iz`` 个 z 面的场（nx, ny, 3）complex。"""
         return self.data[:, :, int(iz), :]
+
+    def slice_z(self, iz: int) -> "FieldGrid":
+        """第 ``iz`` 个 z 面 → 新的单层 FieldGrid（nz=1，origin[2] 移到该面）。
+
+        给"每轮电场分布图"落盘用（``artifacts.save_field_slice``）：切片
+        (nx, ny, 1, 3) 比整场小两个量级，可以每轮都存。
+        """
+        return FieldGrid(
+            origin=(self.origin[0], self.origin[1],
+                    self.origin[2] + self.spacing[2] * int(iz)),
+            spacing=self.spacing,
+            data=self.data[:, :, int(iz):int(iz) + 1, :],
+        )
 
     def nearest_z_plane(self, z_mm: float) -> tuple[int, float]:
         """吸附到最近的导出 z 面，返回 ``(iz, z_used)``。

@@ -82,13 +82,16 @@ sampling:
                           # 吸附过去就落在金属体内（PEC 里 E/H≈0，δp 恒为 0 且不报错）；
                           # -0.1 会吸附到 z=-0.0985（基板内 0.1 mm 处）
   # --- intersection 方案参数 ---
-  intersection_offset_mm: 0.0   # 0 = 场就取在交点上（单侧拟合出空气侧极限）；
-                                # 调到 0.05（半格）可把外推变内插、更抗 CST 阶梯噪声
-  wls_radius_cells: 2.0   # WLS 邻域半径（单位 = 场导出网格步长）；单侧（介质侧）
+  # 采样位置照论文 p.501：边缘上取场奇异，要**贴着边缘、在金属内侧**采样。
+  # δz = 0.3 mm（论文只给符号不给数值；本算例场导出 0.1 mm → 3 格）。
+  # 不做薄结构钳制：特征薄于 2δz 时采样点会落到金属对侧（已知代价）。
+  intersection_offset_mm: 0.3
+  wls_radius_cells: 2.0   # WLS 邻域半径（单位 = 场导出网格步长）；单侧（金属侧）
                           # 拟合，半径要够大才凑得满模板
   wls_order: 1            # 1=局部线性（默认）| 2=局部二次
-  scatter_max_cells: 1.0  # 速度回写作用半径（φ 网格格数）
-  sample_side: outside    # 两方案共用：取金属外侧（介质侧）的场
+  scatter_max_cells: 1.0  # 速度回写作用半径（φ 网格格数）；回写点在**未偏移的**
+                          # 交点上，与 δz 无关（否则 skfmm 延拓没种子，见 pipeline）
+  sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
   # --- 旧 contour 方案参数（scheme=contour 时才用，留作 A/B）---
   point_spacing_mm: 0.2
   sample_offset_mm: 0.05

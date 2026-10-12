@@ -17,7 +17,9 @@
 ```
 正向仿真（input 端口激励）      → E, H, S 参数, P_in
 后向仿真（observation 端口激励）→ E_back, H_back
-形状导数 δp_i = Re[−2jω/P_in·(ε E_⊥·E_⊥^back + μ0 H_∥·H_∥^back)]   ← 式(25)
+形状导数 δp_i = Re[e^{−j·arg S}·(−2jω/P_in)·(ε E_⊥·E_⊥^back + μ0 H_∥·H_∥^back)]
+    E_⊥ = E_z（顶面法向）、H_∥ = (H_x, H_y)（面内切向）        ← 式(54)–(55)
+    相位因子 e^{−j·arg S}：FoM = |S| 的链式法则（式 (5)），缺它 = 在优化 Re[S]
 梯度下降（固定步长 + 符号开关）→ 水准集 HJ 演化 → 最小间距投影 → 重建几何
 ```
 
@@ -27,10 +29,13 @@ Hamilton–Jacobi 方程 ∂φ/∂t + V|∇φ| = 0（Godunov 一阶上风格式�
 
 边界采样（`sampling.scheme: intersection`，现行）：
 **marching 在网格线上的交点**（两端节点 φ 线性插值，亚格点）既是交给 CST
-重建的几何、也是做灵敏度分析的采样点；场值按**坐标**用加权最小二乘从 CST
-导出网格取得（导出网格原点由包围盒定，与 φ 网格不必对齐——`nodes` 方案
-要求逐点重合，在服务器上做不到，已删除）；边界点速度按反距离平方回写到
-最近节点 + 四邻居。旧 `contour` 路径（弧长重采样 + 三线性取场）留作 A/B。
+重建的几何、也是做灵敏度分析的采样点；取场点再沿法向**内移 δz**
+（`sample_side: inside` + `intersection_offset_mm: 0.3`）——论文 p.501：边缘上
+取场有奇异性，要贴着边缘、**在金属内侧**采样；场值按**坐标**用加权最小二乘
+从 CST 导出网格取得（导出网格原点由包围盒定，与 φ 网格不必对齐——`nodes`
+方案要求逐点重合，在服务器上做不到，已删除）；速度按反距离平方回写到
+**未偏移的**交点（最近节点 + 四邻居），再延拓到窄带。旧 `contour` 路径
+（弧长重采样 + 三线性取场）留作 A/B。
 
 ## 项目结构
 
@@ -38,14 +43,15 @@ Hamilton–Jacobi 方程 ∂φ/∂t + V|∇φ| = 0（Godunov 一阶上风格式�
 eaopt/
 ├── config.py            # 算例配置（一个算例 = 一份 YAML，**只描述优化问题**）
 ├── pipeline.py          # 优化主循环（Fig. 4）+ 日志/快照/φ 快照
-├── artifacts.py         # iter_NNN/ 产物读写（shape / s_params / meta / ls_phi）
+├── artifacts.py         # iter_NNN/ 产物读写（shape / s_params / meta / ls_phi / efield 切片）
+├── plotting.py          # 图约定（区域框 / 金属）+ 快照两栏 / S 参数曲线 / 电场演化
 ├── geometry/
 │   ├── levelset.py      # 水准集：SDF 初始化、HJ 演化、重初始化、PDE 速度延拓、法向
 │   ├── contour.py       # 零等值面提取（marching，亚格点交点）+ B 样条平滑重采样
 │   └── extension.py     # 窄带速度延拓：scikit-fmm 优先，缺库回退 PDE
 ├── adjoint/
 │   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + WLS 取场 + 法/切分解
-│   ├── derivative.py    # 形状导数（论文式 25）
+│   ├── derivative.py    # 形状导数（论文式 54–55：顶面 E_z 与面内 H 配对）
 │   └── sampling.py      # 边界点（交点/轮廓）+ 固定金属剔除 + 反距离平方回写
 ├── optimize/
 │   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）
@@ -64,8 +70,9 @@ scripts/cst_init_bwd.py  # 建反向工程（端口 3 激励）+ 首次仿真
 scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 iter_NNN/
 scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
+scripts/plot_results.py  # 事后重画结果图（S 参数曲线 / 电场演化 / 快照），不跑仿真
 docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
-tests/                   # 227 项测试（不装 CST 也全绿：含假 CST 库的端到端）
+tests/                   # 292 项测试（不装 CST 也全绿：含假 CST 库的端到端）
 ```
 
 三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层
@@ -184,7 +191,7 @@ YAML 只管优化问题（设计区、初始/固定金属、采样、约束、�
 
 - [x] 第 1 步：项目骨架 + 配置系统
 - [x] 第 2 步：几何核心（水准集 + 轮廓）
-- [x] 第 3 步：场与导数（FieldGrid + 式 25）
+- [x] 第 3 步：场与导数（FieldGrid + 式 54–55）
 - [x] 第 4 步：优化闭环
 - [x] 第 5 步：CST 交互（官方 Python API：两个 init / 形状更新 /
       CstSolver 适配器；CST 侧常量收敛到 `cst_setup`）

@@ -60,8 +60,10 @@ def test_coupler_samples_intersections_with_the_phi_grid_step():
     assert cfg.field_export_step_mm == cfg.design_region.grid_step_mm == 0.1
     # 优化器步长以格为单位：1 格
     assert cfg.optimizer.step_cells == 1.0
-    # 场就取在交点上（论文式 25 的边界值），不作沿法向的额外偏移
-    assert cfg.sampling.intersection_offset_mm == 0.0
+    # 采样沿法向**内移** δz = 0.3 mm（论文 p.501：边缘上取场奇异，要贴着
+    # 边缘、在金属内侧采样）；偏移方向由 sample_side 定，数值恒为正
+    assert cfg.sampling.intersection_offset_mm == 0.3
+    assert cfg.sampling.sample_side == "inside"
 
 
 def test_contour_scheme_export_step_follows_point_spacing():
@@ -79,7 +81,7 @@ def test_validate_rejects_grid_step_that_does_not_divide_the_box():
 
 
 @pytest.mark.parametrize("key, bad", [
-    ("intersection_offset_mm", -0.1),   # 只能沿外法向偏（负=往金属里钻）
+    ("intersection_offset_mm", -0.1),   # 偏移量恒为正：方向由 sample_side 定
     ("wls_radius_cells", 0.0),          # 邻域半径必须为正
     ("wls_order", 3),                   # 只支持 1 / 2
     ("scatter_max_cells", 0.0),         # 回写作用半径必须为正
