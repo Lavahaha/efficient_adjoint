@@ -7,8 +7,6 @@ build/
 dist/
 .pytest_cache/
 
-# 运行产物
-results/
 
 # 本地临时文件（论文插图/正文提取、分析/探针/冒烟脚本、场数据、绘图产物等，
 # 全部可再生）：**仓库根下的 `_*` 一律不进版本库**——`_*.py`、`_*.npz`、
@@ -25,3 +23,10 @@ results/
 # **必须锚定到仓库根**：写 "cst/" 会连 tests/fake_cst/cst/（假 CST 库，
 # 要提交）一起忽略掉——服务器上 clone 下来就跑不了测试。
 /cst/
+
+# 每轮迭代重写的场导出临时件（eaopt/solver/cst.py::_export 写到
+# <output.dir>/cst_work/{tag}_{E,H}field.txt，每份 200 MB 以上）。
+# 这些是**逐轮中间产物、同名覆盖**，不进版本库；定稿快照才拷进
+# results/<case>/ 提交（走 LFS，见 .gitattributes）。
+# 不锚定是故意的：output.dir 可指向仓库外/任意算例目录。
+cst_work/
