@@ -66,10 +66,9 @@ fixed_region:
 
 constraints:
   min_gap_mm: 0.1       # 论文：最小间距 0.1 mm
-  # taper 只作用在 x 两端：可动金属（耦合臂）在那里穿出设计区接固定腿，
-  # 需要与区外固定几何平滑衔接。上下边是设计区自身的边界（论文约束），
-  # 臂顶要能长进耦合间隙——在那两条边上 taper 等于把优化目标削掉。
-  taper_edges: x
+  # 当前关闭 x taper，检查它对耦合臂端部速度截断的影响；若端部几何出现
+  # 不连续，再按结果恢复或缩窄 taper。上下边不 taper，以允许臂顶长进耦合间隙。
+  taper_edges: none
 
 sampling:
   # 交点方案：边界点 = marching 在网格线上的交点（两端节点 φ 线性插值，
