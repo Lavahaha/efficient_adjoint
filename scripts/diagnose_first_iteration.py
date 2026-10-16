@@ -47,22 +47,43 @@ def _read_complex_sparams(path: Path) -> dict[tuple[int, int], complex]:
 
 
 def _read_field_plane(path: Path, z_requested: float) -> tuple[FieldGrid, dict]:
-    """Read the requested plane; at z=0 choose the nearest plane with z>=0."""
+    """Read a field plane; interpolate to exact z=0 when no exported plane exists."""
     values = np.loadtxt(path, skiprows=2, usecols=range(9))
     z_axis = np.unique(values[:, 2])
-    candidates = z_axis[z_axis >= z_requested - 1e-12] if z_requested == 0.0 else z_axis
-    if not len(candidates):
-        raise ValueError(f"field export has no z>={z_requested:g} mm plane")
-    z_used = float(candidates[np.argmin(np.abs(candidates - z_requested))])
-    plane = values[np.isclose(values[:, 2], z_used, atol=1e-9)]
-    xs, ys = np.unique(plane[:, 0]), np.unique(plane[:, 1])
-    ix = np.searchsorted(xs, plane[:, 0])
-    iy = np.searchsorted(ys, plane[:, 1])
-    components = plane[:, 3::2] + 1j * plane[:, 4::2]
-    data = np.empty((len(xs), len(ys), 1, 3), dtype=np.complex128)
-    data[ix, iy, 0, :] = components
+    if z_requested == 0.0:
+        below = z_axis[z_axis <= 0.0]
+        above = z_axis[z_axis >= 0.0]
+        if not len(below) or not len(above):
+            raise ValueError("field export must span z=0 to interpolate the boundary plane")
+        z0 = float(below[-1])
+        z1 = float(above[0])
+        z_planes = [z0] if np.isclose(z0, z1, rtol=0.0, atol=1e-10) else [z0, z1]
+    else:
+        z0 = float(z_axis[np.argmin(np.abs(z_axis - z_requested))])
+        z1 = z0
+        z_planes = [z0]
+    planes = [values[np.isclose(values[:, 2], z, atol=1e-9)] for z in z_planes]
+    xs, ys = np.unique(planes[0][:, 0]), np.unique(planes[0][:, 1])
+
+    def to_xy(plane):
+        if not np.array_equal(np.unique(plane[:, 0]), xs) or not np.array_equal(
+                np.unique(plane[:, 1]), ys):
+            raise ValueError(f"{path}: z 切片的 x/y 网格不一致")
+        ix = np.searchsorted(xs, plane[:, 0])
+        iy = np.searchsorted(ys, plane[:, 1])
+        components = plane[:, 3::2] + 1j * plane[:, 4::2]
+        out = np.empty((len(xs), len(ys), 3), dtype=np.complex128)
+        out[ix, iy, :] = components
+        return out
+
+    data_xy = to_xy(planes[0])
+    if len(planes) == 2:
+        data_hi = to_xy(planes[1])
+        alpha = (z_requested - z0) / (z1 - z0)
+        data_xy = data_xy * (1.0 - alpha) + data_hi * alpha
+    data = data_xy[:, :, None, :]
     grid = FieldGrid(
-        origin=(float(xs[0]), float(ys[0]), z_used),
+        origin=(float(xs[0]), float(ys[0]), float(z_requested)),
         spacing=(float(xs[1] - xs[0]), float(ys[1] - ys[0]), 0.1),
         data=data,
     )
@@ -71,10 +92,11 @@ def _read_field_plane(path: Path, z_requested: float) -> tuple[FieldGrid, dict]:
         "shape_xy": [int(len(xs)), int(len(ys))],
         "spacing_mm": [float(xs[1] - xs[0]), float(ys[1] - ys[0])],
         "z_requested_mm": float(z_requested),
-        "z_used_mm": z_used,
+        "z_used_mm": float(z_requested),
+        "z_bracket_mm": [z0, z1],
         "finite": bool(np.isfinite(data).all()),
     }
-    del values, plane, components
+    del values, planes, data_xy
     return grid, meta
 
 

@@ -57,4 +57,4 @@ def shape_derivative(
     e_perp = e_fwd[:, 2] * e_back[:, 2]
     h_par = h_fwd[:, 0] * h_back[:, 0] + h_fwd[:, 1] * h_back[:, 1]
     integrand = EPS0 * eps_r * e_perp + MU0 * h_par
-    return np.real(phase * (-2j * omega / pin) * integrand)
+    return np.real((-2j * omega / pin) * integrand)

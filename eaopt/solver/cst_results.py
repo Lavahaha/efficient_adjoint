@@ -295,9 +295,9 @@ def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
     step_mm 是面内(x,y)采样步长、step_z_mm 是 z 向步长（mm，None = 与面内同值）：
     取 ``CstSetup.resolve_export_steps``（缺省 = CaseConfig.field_export_step_mm）。
     导出范围是整个监视器（Volume => 整个计算域），**原点由 CST 包围盒定、
-    不可指定**，所以调用方拿到后要用 :func:`crop_grid` 裁到设计区（文件本身的
-    体积改不了——ASCIIExport 没有区域属性）。解析端逐轴反推坐标与步长，
-    不假设三个轴同步长。
+    不可指定**。解析后 z 轴重采样到同一步长且以 z=0 为锚点的规则网格，保证
+    返回的 FieldGrid 含精确 z=0 数据；随后调用方可用 :func:`crop_grid` 裁到设计区。
+    ASCIIExport 没有区域属性，文件本身体积无法通过这里缩小。
     """
     item = resolve_field_item(model3d, field_type, freq_ghz, log=log)
     _select_item(model3d, item)
@@ -309,12 +309,57 @@ def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
                        step_z_mm=step_z_mm)
 
     data, axes = parse_ascii_field(str(out_path))
+    data, axes = _align_z_axis_to_zero(data, axes, out_path, log=log)
     grid = FieldGrid(origin=tuple(float(a[0]) for a in axes),
                      spacing=_spacing(axes, out_path), data=data)
     log(f"    [OK] {field_type} 场导出：{item} → {data.shape} "
         f"@ ({grid.origin[0]:g}, {grid.origin[1]:g}, {grid.origin[2]:g}) mm，"
         f"步长 {grid.spacing[0]:g} mm")
     return grid
+
+
+def _align_z_axis_to_zero(data: np.ndarray, axes: tuple, out_path,
+                          *, log=print) -> tuple[np.ndarray, tuple]:
+    """将 CST 导出场重采样到以 z=0 为锚点的等间距 z 网格。
+
+    ASCIIExport 只能指定 StepZ，采样起点由 CST 包围盒决定，原始坐标不一定
+    命中 z=0。FieldGrid 要求等间距轴，因此不能只插入一层而保留其余坐标；
+    这里保持原 z 步长，把整个 z 轴对齐到零，并沿 z 对复数场线性插值。
+    要求原始导出范围跨过 z=0，避免静默外推。
+    """
+    z = np.asarray(axes[2], dtype=float)
+    dzs = np.diff(z)
+    if len(z) < 2 or np.any(dzs <= 0):
+        raise ValueError(f"场导出 z 轴无效，无法对齐 z=0：{z.tolist()}")
+    dz = float(np.median(dzs))
+    if not np.allclose(dzs, dz, rtol=1e-6, atol=1e-9):
+        raise ValueError("CST 场导出 z 轴非均匀，无法安全重采样到 z=0")
+    if z[0] > 0.0 or z[-1] < 0.0:
+        raise ValueError(
+            f"CST 场导出范围 [{z[0]:g}, {z[-1]:g}] mm 不包含 z=0，无法生成边界面")
+    if np.any(np.isclose(z, 0.0, rtol=0.0, atol=1e-10)):
+        iz0 = int(np.argmin(np.abs(z)))
+        z = z.copy()
+        z[iz0] = 0.0
+        axes = (axes[0], axes[1], z)
+        return data, axes
+
+    k0 = int(np.ceil(z[0] / dz - 1e-10))
+    k1 = int(np.floor(z[-1] / dz + 1e-10))
+    z_new = np.arange(k0, k1 + 1, dtype=float) * dz
+    if not len(z_new):
+        raise RuntimeError("CST z 导出范围不足一个网格间距，无法建立零锚点网格")
+    if not np.any(np.isclose(z_new, 0.0, rtol=0.0, atol=1e-12)):
+        raise RuntimeError(f"重采样后的 z 轴没有包含 0：[{z_new[0]}, {z_new[-1]}]")
+    hi = np.searchsorted(z, z_new, side="right")
+    hi = np.clip(hi, 1, len(z) - 1)
+    lo = hi - 1
+    alpha = ((z_new - z[lo]) / (z[hi] - z[lo])).reshape(1, 1, -1, 1)
+    data_new = data[:, :, lo, :] * (1.0 - alpha) + data[:, :, hi, :] * alpha
+    log(f"    [场导出] z 轴从 CST 原点偏移重采样到零锚点："
+        f"{z[0]:g}..{z[-1]:g} → {z_new[0]:g}..{z_new[-1]:g} mm，"
+        f"StepZ={dz:g} mm，z=0 已包含")
+    return data_new, (axes[0], axes[1], z_new)
 
 
 def export_field_cropped(model3d, field_type: str, freq_ghz: float, step_mm: float,
