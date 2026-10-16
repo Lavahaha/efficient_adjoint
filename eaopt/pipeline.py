@@ -47,6 +47,10 @@ __all__ = ["make_level_set", "movable_contours", "History", "OptimizerPipeline"]
 #: 恰好把细颈剪断、而桥接也铺不出走廊；连续失败说明速度场整体在撕裂结构。
 _MAX_ROLLBACKS = 3
 
+# z=0 的界面坐标由 CST 导出并经规则网格重采样；容忍浮点舍入误差，但
+# 容差远小于金属厚度，不能把真正位于 PEC 内的导出面当作界面面。
+_Z_INTERFACE_TOL_MM = 1e-6
+
 
 def make_level_set(cfg: CaseConfig) -> LevelSet2D:
     """由配置的初始金属多边形构造水准集。"""
@@ -243,18 +247,23 @@ class OptimizerPipeline:
                         "fwd/bwd 必须导出在同一张网格上，否则按坐标取场会静默取错值")
 
     def _check_sample_plane(self, z_used: float) -> None:
-        """采样面吸附到导出网格面：说一声；**落进金属体内则报错**。
+        """采样面吸附到导出网格面：容忍 z=0 舍入误差；金属内部则报错。
 
         z 的约定来自 cst_setup：z=0 是基板顶面 = 金属底面，金属占
-        [0, metal_thickness]。导出网格的 z 面由 CST 包围盒定，请求的面吸附到
-        最近的面——0.1 mm 步长下 z=0 最近的面是 +0.0015（金属内部），PEC 里
-        E、H ≈ 0，δp 会全是 0：优化一轮都不动，却不报任何错。
+        [0, metal_thickness]。1e-9 mm 的界面容差用于吸收浮点数误差；它比当前
+        35 µm 金属厚度小很多，因此不会放行真正处于 PEC 内部的采样面。
         """
         if self._z_plane_logged:
             return
         self._z_plane_logged = True
         req, t = float(self.cfg.sampling.field_z_mm), float(self.setup.metal_thickness_mm)
-        if 0.0 < z_used <= t:
+        tol = min(_Z_INTERFACE_TOL_MM, t * 0.1)
+        if abs(z_used) <= tol:
+            if z_used != 0.0:
+                print(f"[采样] z={z_used:.12g} mm 与界面 z=0 的差小于 "
+                      f"容差 {tol:g} mm，按 z=0 处理")
+            return
+        if tol < z_used <= t:
             raise ValueError(
                 f"场采样面 z={req:g} mm 吸附到导出网格面 z={z_used:g} mm，落在金属"
                 f"体内（z ∈ [0, {t:g}] 是 {t * 1e3:.0f} µm 金属，内部场≈0，"
