@@ -91,18 +91,16 @@ sampling:
                           # 交点上，与 δz 无关（否则 skfmm 延拓没种子，见 pipeline）
   sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
 optimizer:
-  step_cells: 1.0      # 每轮最大法向位移 = 1 个网格 = 0.1 mm（论文 Fig.3b）
-  cfl: 0.5             # 子步长系数 → steps=2，位移正好 1 格
-  velocity_sign: 1.0   # 形状导数→速度的符号开关（±1）；mock 世界已确认 +1，
-                       # **CST 端尚未做 FD 裁决**：首次正式运行要小步数盯
-                       # FoM 单调性，符号错会让优化反向跑且不报错（见 runbook）
+  step_cells: 8.0      # 每轮最大法向位移 = 8 个网格 = 0.8 mm
+  cfl: 0.5             # 保持稳定子步长；每轮 16 个子步，每步最多 0.05 mm
+  velocity_sign: 1.0   # 局部 CST 有限差分验证支持 +1；完整迭代仍需监控 FoM
   max_iterations: 30
   fom_tolerance: 1.0e-4
   convergence_window: 5
 
 level_set:
-  reinit_every: 3      # 每轮走 1 格（旧配置 0.4 格），重初始化要更勤
-  extension_band_mm: 0.5
+  reinit_every: 1      # 0.8 mm 大步长后每轮重初始化，控制距离函数质量
+  extension_band_mm: 1.0  # 大于单轮最大位移 0.8 mm，避免速度窄带截断更新
   extension_method: auto   # auto（有 scikit-fmm 就用，缺库打印告警后回退 PDE）|
                            # skfmm（缺库直接报错，正式跑用这个更明确）| pde（对照）
 
