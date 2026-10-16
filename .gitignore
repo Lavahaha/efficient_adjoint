@@ -30,3 +30,4 @@ results/
 # results/<case>/ 提交（走 LFS，见 .gitattributes）。
 # 不锚定是故意的：output.dir 可指向仓库外/任意算例目录。
 cst_work/
+results/
