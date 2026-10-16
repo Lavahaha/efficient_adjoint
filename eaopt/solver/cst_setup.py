@@ -118,7 +118,7 @@ class CstSetup:
         面内步长决定 WLS 拟合分辨率（半径以场格数计），z 步长只决定采样面
         能吸附到哪些 z 面（每轴点数按各自步长线性增长）。功分器算例把面内
         放到 0.2 mm 省导出体积（±1.6 mm 厚的平板层在 5 GHz 下沿 z 变化很慢），
-        但 z 保持 0.1 mm 以便 `sampling.field_z_mm=-0.1` 附近有近处的网格面。
+        z 保持 0.1 mm；请求 `field_z_mm=0` 时优先选择最近的 z>=0 导出面。
         """
         xy = self.resolve_export_step(sampling_step_mm)
         return xy, (float(self.export_step_z_mm) if self.export_step_z_mm else xy)

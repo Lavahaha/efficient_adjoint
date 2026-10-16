@@ -86,14 +86,28 @@ class FieldGrid:
             data=self.data[:, :, int(iz):int(iz) + 1, :],
         )
 
-    def nearest_z_plane(self, z_mm: float) -> tuple[int, float]:
-        """吸附到最近的导出 z 面，返回 ``(iz, z_used)``。
+    def nearest_z_plane(
+        self, z_mm: float, *, side: str = "nearest"
+    ) -> tuple[int, float]:
+        """吸附到导出 z 面，返回 ``(iz, z_used)``。
 
         z 面由 CST 包围盒原点决定，一般不在 z=0 上；调用方须用返回的
         ``z_used`` 做"有没有落进金属体内"的判据（见 pipeline）。
+        ``side="above"`` 时只从 z>=请求高度的面中选择最近值，用于在金属底面
+        请求 z=0 时优先选取上侧导出面。
         """
         ax = self.axes()[2]
-        iz = int(np.argmin(np.abs(ax - float(z_mm))))
+        z_mm = float(z_mm)
+        if side == "above":
+            candidates = np.flatnonzero(ax >= z_mm - 1e-12)
+            if not len(candidates):
+                raise ValueError(
+                    f"场网格没有 z>={z_mm:g} mm 的导出面，无法从上侧采样")
+            iz = int(candidates[np.argmin(np.abs(ax[candidates] - z_mm))])
+        elif side == "nearest":
+            iz = int(np.argmin(np.abs(ax - z_mm)))
+        else:
+            raise ValueError(f"未知 z 采样侧 {side!r}，只支持 'nearest'/'above'")
         return iz, float(ax[iz])
 
     def sample_wls(

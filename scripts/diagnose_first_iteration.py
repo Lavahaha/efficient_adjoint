@@ -47,10 +47,13 @@ def _read_complex_sparams(path: Path) -> dict[tuple[int, int], complex]:
 
 
 def _read_field_plane(path: Path, z_requested: float) -> tuple[FieldGrid, dict]:
-    """Read only the nearest z plane from a CST ASCII vector-field export."""
+    """Read the requested plane; at z=0 choose the nearest plane with z>=0."""
     values = np.loadtxt(path, skiprows=2, usecols=range(9))
     z_axis = np.unique(values[:, 2])
-    z_used = float(z_axis[np.argmin(np.abs(z_axis - z_requested))])
+    candidates = z_axis[z_axis >= z_requested - 1e-12] if z_requested == 0.0 else z_axis
+    if not len(candidates):
+        raise ValueError(f"field export has no z>={z_requested:g} mm plane")
+    z_used = float(candidates[np.argmin(np.abs(candidates - z_requested))])
     plane = values[np.isclose(values[:, 2], z_used, atol=1e-9)]
     xs, ys = np.unique(plane[:, 0]), np.unique(plane[:, 1])
     ix = np.searchsorted(xs, plane[:, 0])
@@ -97,7 +100,9 @@ def _offset_replay(cfg, ls, fields, contours, offset_mm: float):
     cfg.sampling.intersection_offset_mm = float(offset_mm)
     pts, normals = boundary_samples(contours, ls, cfg)
     ef, hf, eb, hb = fields
-    iz, z_used = ef.nearest_z_plane(cfg.sampling.field_z_mm)
+    z_req = cfg.sampling.field_z_mm
+    z_side = "above" if z_req == 0.0 else "nearest"
+    iz, z_used = ef.nearest_z_plane(z_req, side=z_side)
     node_mask = field_node_mask(ls, ef, cfg)
     stencil = build_wls_stencil(
         pts, ef.axes()[:2], node_mask,

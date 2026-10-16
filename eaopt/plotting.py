@@ -26,7 +26,7 @@
     sparams_vs_iter.png     各响应端口 |S_i1|（dB）随迭代，FoM 那条加粗
     efield_evolution.png    等间隔若干轮的 |E| 演化（共享色标）
 
-电场一律画在**采样面**（``sampling.field_z_mm``，金属下方那张面）上——
+电场一律画在**实际使用的采样面**（请求 z=0 时优先取最近 z>=0 面）上——
 那是 δp 取场的位置（论文式 54 的配对就来自顶面 PEC 条件），标题里写明
 z 值，免得被当成顶面场（顶面上切向 E 恒为零，画出来是黑的）。
 
@@ -198,7 +198,7 @@ def snapshot_figure(cfg, ls, *, it: int, e_slice=None, z_used=None, path=None,
         draw_field_map(ax2, e_slice, ls=ls, cfg=cfg)
         # 图上的文字一律 ASCII：matplotlib 默认字体没有 CJK 字形，中文会画成
         # 一串方框（plot_layout.py 里踩过同一个坑）
-        zt = "" if z_used is None else f" @ z = {z_used:g} mm (below metal)"
+        zt = "" if z_used is None else f" @ z = {z_used:g} mm"
         ax2.set_title(f"|E|{zt}", pad=10)
         _design_view(ax2, cfg)                   # 两栏同视野，便于左右对照
     if path is not None:

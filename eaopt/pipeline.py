@@ -193,7 +193,9 @@ class OptimizerPipeline:
 
         # 采样点是亚格点，场值按坐标用 WLS 取。四个场共用一套算子：
         # fwd/bwd 必须用同一离散，否则伴随梯度会静默失真。
-        iz, z_used = sol_f.e_field.nearest_z_plane(s.field_z_mm)
+        # z=0 是金属底界面；若导出网格无精确 z=0，优先取最近的上侧切片。
+        z_side = "above" if s.field_z_mm == 0.0 else "nearest"
+        iz, z_used = sol_f.e_field.nearest_z_plane(s.field_z_mm, side=z_side)
         self._check_sample_plane(z_used)
         mask = field_node_mask(self.ls, sol_f.e_field, cfg)
         st = build_wls_stencil(
@@ -256,8 +258,8 @@ class OptimizerPipeline:
             raise ValueError(
                 f"场采样面 z={req:g} mm 吸附到导出网格面 z={z_used:g} mm，落在金属"
                 f"体内（z ∈ [0, {t:g}] 是 {t * 1e3:.0f} µm 金属，内部场≈0，"
-                "δp 会恒为 0、优化静默空转）。请把 sampling.field_z_mm 设到金属"
-                "下方的介质里（如 -0.1 mm）。")
+                "δp 会恒为 0）。若要采 z=0 边界，请让 CST 导出网格包含精确的 z=0 面；"
+                "否则请将采样面设在金属外部的介质区域。")
         if abs(z_used - req) > 1e-9:
             print(f"[采样] 场采样面 z={req:g} mm 吸附到导出网格面 z={z_used:g} mm")
 
@@ -288,7 +290,9 @@ class OptimizerPipeline:
         e_slice, z_used = None, None
         grid = getattr(sol_f, "e_field", None)
         if grid is not None:
-            iz, z_used = grid.nearest_z_plane(self.cfg.sampling.field_z_mm)
+            z_req = self.cfg.sampling.field_z_mm
+            z_side = "above" if z_req == 0.0 else "nearest"
+            iz, z_used = grid.nearest_z_plane(z_req, side=z_side)
             e_slice = grid.slice_z(iz)
             artifacts.save_field_slice(self.outdir, it, "fwd", e_slice)
         plotting.snapshot_figure(self.cfg, self.ls, it=it, e_slice=e_slice,

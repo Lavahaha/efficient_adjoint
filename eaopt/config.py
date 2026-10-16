@@ -90,9 +90,7 @@ class SamplingSpec:
     wls_radius_cells: float = 2.0   # WLS 邻域半径（单位 = 场导出网格步长）
     wls_order: int = 1              # 1=局部线性 | 2=局部二次
     scatter_max_cells: float = 1.0  # 速度回写的作用半径（φ 网格格数）
-    field_z_mm: float = -0.1  # 场采样平面的 z（mm，基板顶面=金属底面为 0，金属在其上方）
-                              # 吸附到最近的导出网格面；**必须为负**，否则可能
-                              # 吸附进金属体内（PEC 里 E/H≈0 → δp 恒 0，pipeline 会报错）
+    field_z_mm: float = 0.0   # 场采样高度（mm）；请求 0 时优先选 z>=0 的导出面
 
 
 @dataclass
@@ -249,7 +247,7 @@ class CaseConfig:
         sample = (f"marching 交点（亚格点）{s.sample_side}, "
                   f"偏移 {s.intersection_offset_mm} mm, "
                   f"WLS {s.wls_order} 阶 R={s.wls_radius_cells} 格, "
-                  f"z={s.field_z_mm} mm（吸附到导出网格面）")
+                  f"z={s.field_z_mm} mm（边界请求 0 时优先取上侧面）")
         lines = [
             f"算例        : {self.name} — {self.description}",
             f"设计区域    : x∈{dr.x} y∈{dr.y} mm, 网格步长 {self.design_region.grid_step_mm} mm",
