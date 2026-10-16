@@ -37,7 +37,7 @@ from eaopt.geometry.extension import extend_velocity
 from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
                                         build_velocity_mask, interp_mask_at)
-from eaopt.optimize.objective import fom_phase, make_fom
+from eaopt.optimize.objective import make_fom
 from eaopt.optimize.step import fixed_step_velocity
 from eaopt.solver.cst_setup import COUPLER, CstSetup
 
@@ -189,10 +189,7 @@ class OptimizerPipeline:
         if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新
             return np.zeros(self.ls.phi.shape)
         self._check_field_grids(sol_f, sol_b)
-        # |S| 目标的链式法则因子 e^{-j arg S}：式 (54) 只给出 dS，FoM = |S|
-        # 要求乘上它（缺相位 = 在优化 Re[S]）。取自本轮前向解的 S 参数。
-        phase = fom_phase(cfg, sol_f)
-        phase_deg = float(np.angle(phase, deg=True))
+        # 按当前设置直接使用式 (54) 的复数 S 参数导数，不乘 |S| 的相位链式因子。
 
         # 采样点是亚格点，场值按坐标用 WLS 取。四个场共用一套算子：
         # fwd/bwd 必须用同一离散，否则伴随梯度会静默失真。
@@ -207,7 +204,7 @@ class OptimizerPipeline:
             for f in (sol_f.e_field, sol_f.h_field, sol_b.e_field, sol_b.h_field)
         )
         dp = shape_derivative(e_f, h_f, e_b, h_b, sol_f.pin,
-                              self.omega, self.eps_r, phase=phase)
+                              self.omega, self.eps_r)
         # 速度回填到偏移前的边界点，确保 φ=0 邻域有延拓种子。
         side = 1.0 if s.sample_side == "outside" else -1.0
         bnd = pts - side * s.intersection_offset_mm * nrm
@@ -222,7 +219,7 @@ class OptimizerPipeline:
         print(f"[采样] 交点 {len(pts)} 个（{s.sample_side} δz="
               f"{s.intersection_offset_mm:g} mm，WLS {s.wls_order} 阶 R="
               f"{s.wls_radius_cells} 格，回退 {st.n_fallback}），种子节点 "
-              f"{int((counts > 0).sum())} 个，延拓 {method}，相位 {phase_deg:+.1f}°")
+              f"{int((counts > 0).sum())} 个，延拓 {method}")
         return V * v_mask_grid
 
     def _check_field_grids(self, sol_f, sol_b) -> None:

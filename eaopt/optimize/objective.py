@@ -3,8 +3,8 @@
 按配置的 objective 类型构造 FoM 计算函数；新类型（反射、定向性等）
 在此注册。FoM 输入为 Solution，输出实数（越大越好）。
 
-FoM 与形状导数必须用**同一个** S 参数下标，两处都从 :func:`fom_key` 取；
-|S| 型目标还要用 :func:`fom_phase` 的相位因子（见 adjoint/derivative.py）。
+FoM 与形状导数使用同一个 S 参数下标。当前优化流程按配置直接使用复数 S
+参数导数，不乘 :func:`fom_phase`；因此虽仍以 |S| 作为 FoM，更新方向不是其严格梯度。
 """
 
 from __future__ import annotations

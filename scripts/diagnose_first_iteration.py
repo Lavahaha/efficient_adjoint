@@ -92,7 +92,7 @@ def _json_stats(a: np.ndarray) -> dict:
     }
 
 
-def _offset_replay(cfg, ls, fields, contours, offset_mm: float, s31: complex):
+def _offset_replay(cfg, ls, fields, contours, offset_mm: float):
     """Recompute boundary derivative and velocity assembly for one xy offset."""
     cfg.sampling.intersection_offset_mm = float(offset_mm)
     pts, normals = boundary_samples(contours, ls, cfg)
@@ -105,12 +105,10 @@ def _offset_replay(cfg, ls, fields, contours, offset_mm: float, s31: complex):
         order=cfg.sampling.wls_order,
     )
     sampled = [f.sample_wls(pts, iz, stencil=stencil).values for f in fields]
-    phase = np.exp(-1j * np.angle(s31))
     dp = shape_derivative(
         *sampled, COUPLER.port_power_w,
         2 * np.pi * COUPLER.frequency_ghz * 1e9,
         COUPLER.eps_r,
-        phase=phase,
     )
 
     # boundary_samples has already offset pts toward sample_side. Reverse that
@@ -253,7 +251,7 @@ def main() -> int:
     if not offsets:
         raise ValueError("--offsets-mm must contain at least one offset")
     replay_cfg = copy.deepcopy(cfg)
-    replay = [_offset_replay(replay_cfg, ls0, fields, contours, d, s31) for d in offsets]
+    replay = [_offset_replay(replay_cfg, ls0, fields, contours, d) for d in offsets]
     current_offset = float(cfg.sampling.intersection_offset_mm)
     current_i = int(np.argmin([abs(r["offset_mm"] - current_offset) for r in replay]))
     cur = replay[current_i]

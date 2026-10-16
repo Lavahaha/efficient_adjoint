@@ -1,6 +1,6 @@
 """形状导数（论文式 25 / 附录式 54–55）。
 
-    δp_i = Re[ e^{−j·arg S} · (−2jω/P_in) · ( ε0 εr E_⊥·E_⊥^back + µ0 H_∥·H_∥^back ) ]
+    δp_i = Re[ (−2jω/P_in) · ( ε0 εr E_⊥·E_⊥^back + µ0 H_∥·H_∥^back ) ]
 
 **配对取式 (54) 原文**（"the tangential electric field and normal magnetic
 field are zero" ⇒ E_⊥ 是金属面法向分量、H_∥ 是金属面切向分量）。设计区是
@@ -14,9 +14,8 @@ H_∥侧壁^b，侧壁切向 = H_z + H_τ）**不是**同一个配对，后者�
 divider iter_000 实测（TL 敏感度目标）：错误配对 r = −0.48，式 (54) 配对
 r = +0.84（2026-10-12）。
 
-**相位因子**：目标 FoM = |S| 时，由 (5) 式 dFoM/dp_i = 2Re[(∂f/∂E)(dE/dp_i)]
-中的 ∂f/∂E 带出 e^{−j·arg S}。缺它等于在求 Re[S] 的导数，方向会整体跑偏，
-且**不会报错**——因此本函数把 phase 设为必填关键字参数。
+**相位因子**：当前优化设置省略 |S| 链式法则中的 e^{−j·arg S}，直接取复数
+S 参数形状导数的实部。因此 FoM 仍为 |S|，但此更新量不再是 |S| 的严格导数。
 
 要点：
   - 复场点积不取共轭：Re[−2jω X] = 2ω·Im[X]，导数信息全部来自前向场与
@@ -44,7 +43,7 @@ def shape_derivative(
     omega: float,
     eps_r: float,
     *,
-    phase: complex,
+    phase: complex = 1.0,
 ) -> np.ndarray:
     """按式 (54)–(55) 计算各采样点的形状导数。
 
@@ -52,9 +51,7 @@ def shape_derivative(
     e_back/h_back: 后向场 (N,3) complex（激励移到观测端口）；
     pin: 入射功率 (W)；omega: 角频率 (rad/s)；
     eps_r: 采样面所在介质的相对介电常数（基板内 = 基板 εr）；
-    phase: |S| 目标的链式法则因子 e^{−j·arg S}，S 取 FoM 用的那个 S 参数
-        （见 optimize/objective.py::fom_phase）。别给它默认值：默认 1 就是
-        "漏乘相位"那条静默 bug 本身。
+    phase: 可选复数乘子；省略时取 1，不进行 |S| 的相位链式修正。
     返回 (N,) 实数组 δp。
     """
     e_perp = e_fwd[:, 2] * e_back[:, 2]
