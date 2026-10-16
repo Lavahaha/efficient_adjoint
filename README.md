@@ -27,15 +27,14 @@
 优先用 scikit-fmm，缺库回退 PDE 上风格式）铺满窄带后驱动
 Hamilton–Jacobi 方程 ∂φ/∂t + V|∇φ| = 0（Godunov 一阶上风格式）。
 
-边界采样（`sampling.scheme: intersection`，现行）：
+边界采样：
 **marching 在网格线上的交点**（两端节点 φ 线性插值，亚格点）既是交给 CST
 重建的几何、也是做灵敏度分析的采样点；取场点再沿法向**内移 δz**
 （`sample_side: inside` + `intersection_offset_mm: 0.3`）——论文 p.501：边缘上
 取场有奇异性，要贴着边缘、**在金属内侧**采样；场值按**坐标**用加权最小二乘
 从 CST 导出网格取得（导出网格原点由包围盒定，与 φ 网格不必对齐——`nodes`
 方案要求逐点重合，在服务器上做不到，已删除）；速度按反距离平方回写到
-**未偏移的**交点（最近节点 + 四邻居），再延拓到窄带。旧 `contour` 路径
-（弧长重采样 + 三线性取场）留作 A/B。
+**未偏移的**交点（最近节点 + 四邻居），再延拓到窄带。
 
 ## 项目结构
 
@@ -47,7 +46,7 @@ eaopt/
 ├── plotting.py          # 图约定（区域框 / 金属）+ 快照两栏 / S 参数曲线 / 电场演化
 ├── geometry/
 │   ├── levelset.py      # 水准集：SDF 初始化、HJ 演化、重初始化、PDE 速度延拓、法向
-│   ├── contour.py       # 零等值面提取（marching，亚格点交点）+ B 样条平滑重采样
+│   ├── contour.py       # 零等值面提取（marching，亚格点交点）+ CST 几何简化
 │   └── extension.py     # 窄带速度延拓：scikit-fmm 优先，缺库回退 PDE
 ├── adjoint/
 │   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + WLS 取场 + 法/切分解

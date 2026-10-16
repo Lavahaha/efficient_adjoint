@@ -3,7 +3,7 @@
 求解器（CST / Mock）把 E、H 复矢量场导出在规则笛卡尔网格上
 （设计区包围盒 + 余量），FieldGrid 统一承载并支持两种取场方式：
 
-- :meth:`FieldGrid.interp`：三线性插值（旧轮廓方案用）；
+- :meth:`FieldGrid.interp`：三线性通用查询；
 - :func:`build_wls_stencil` / :meth:`FieldGrid.sample_wls`：**加权最小二乘**
   （新交点方案用）。导出网格的原点由 CST 包围盒决定、与 φ 网格不一定对齐，
   所以采样点一般不在场网格节点上；WLS 在采样点邻域内拟合局部多项式、

@@ -1,14 +1,10 @@
 """边界采样：轮廓 → 导数采样点；导数 → 网格速度。
 
-两种方案（``sampling.scheme``）：
-
-- ``intersection``（当前）：边界点 = **marching 在网格线上的交点**（两端
+边界点 = **marching 在网格线上的交点**（两端
   节点 φ 线性插值，亚格点）；场值用**加权最小二乘**按坐标从场导出网格取得
   （导出网格原点由 CST 包围盒定，与 φ 网格**不必对齐**）；速度回写 =
   最近节点 + 四邻居按反距离平方加权。交给 CST 的几何与做灵敏度分析的
   采样点是同一份交点折线。
-- ``contour``（旧）：轮廓按弧长重采样 + 沿法向偏移，三线性取场，再
-  scatter 到最近节点 + PDE 延拓。留作 A/B 对照。
 
 公共部分：make_fixed_sdf / is_fixed_contour 判定某条轮廓属于固定金属
 （不参与采样——论文只优化可动边界，且固定金属表面场强会劫持归一化）。
@@ -19,68 +15,17 @@ from __future__ import annotations
 import numpy as np
 
 from eaopt.config import CaseConfig
-from eaopt.geometry.contour import (dedupe_vertices, extract_contours,
-                                    smooth_resample)
+from eaopt.geometry.contour import dedupe_vertices, extract_contours
 from eaopt.geometry.levelset import LevelSet2D
 
 __all__ = [
     "boundary_points", "boundary_samples", "field_node_mask",
-    "scatter_inverse_distance", "sample_boundary", "scatter_to_grid",
+    "scatter_inverse_distance",
     "make_fixed_sdf", "is_fixed_contour",
 ]
 
 
 # ---------------------------------------------------------------------- #
-# 旧轮廓方案（contour）：按弧长重采样 + 偏移 + 最近节点栅格化
-# ---------------------------------------------------------------------- #
-def sample_boundary(
-    contours: list[np.ndarray],
-    ls: LevelSet2D,
-    cfg: CaseConfig,
-) -> tuple[np.ndarray, np.ndarray]:
-    """轮廓 → (采样点, 法向)。
-
-    返回 points (N,2)（已按 sample_side 沿法向偏移 sample_offset）
-    与 normals (N,2)（偏移前的边界法向，金属外法向）。
-
-    固定金属（fixed_region）的轮廓不参与采样：论文只优化可动边界，
-    且固定金属表面场强会劫持速度归一化（max|δp|），拖慢可动边界。
-    """
-    fixed_sdf = make_fixed_sdf(ls, cfg)
-    s = cfg.sampling
-    side = 1.0 if s.sample_side == "outside" else -1.0
-    pts_list, nrm_list = [], []
-    for c in contours:
-        if fixed_sdf is not None and is_fixed_contour(c, fixed_sdf):
-            continue
-        closed = np.allclose(c[0], c[-1])
-        r = smooth_resample(c, s.point_spacing_mm, smoothing=0.0, closed=closed)
-        n = ls.normals_at(r[:, :2])
-        pts_list.append(r[:, :2] + side * s.sample_offset_mm * n)
-        nrm_list.append(n)
-    if not pts_list:
-        return np.zeros((0, 2)), np.zeros((0, 2))
-    return np.vstack(pts_list), np.vstack(nrm_list)
-
-
-def scatter_to_grid(
-    ls: LevelSet2D, points: np.ndarray, values: np.ndarray
-) -> np.ndarray:
-    """采样点标量 → 最近网格节点（多值碰撞取平均）。"""
-    out = np.zeros(ls.phi.shape)
-    cnt = np.zeros(ls.phi.shape)
-    if len(points) == 0:
-        return out
-    ix = np.round((points[:, 0] - ls.box.x[0]) / ls.dx).astype(int)
-    iy = np.round((points[:, 1] - ls.box.y[0]) / ls.dx).astype(int)
-    ok = (ix >= 0) & (ix < ls.nx) & (iy >= 0) & (iy < ls.ny)
-    ix, iy = ix[ok], iy[ok]
-    v = np.asarray(values, dtype=float)[ok]
-    np.add.at(out, (ix, iy), v)
-    np.add.at(cnt, (ix, iy), 1.0)
-    return np.divide(out, cnt, out=np.zeros_like(out), where=cnt > 0)
-
-
 def make_fixed_sdf(ls: LevelSet2D, cfg: CaseConfig):
     """固定金属的带符号距离场（无固定区时返回 None）。"""
     if not cfg.fixed_region:
@@ -134,13 +79,10 @@ def boundary_samples(
 ) -> tuple[np.ndarray, np.ndarray]:
     """边界折线 → (采样点 (N,2), 边界法向 (N,2))，逐点对应。
 
-    ``intersection``：采样点就是交点本身（去掉闭合点重复，一个点只采样
-    一次），法向 = 该点的 φ 梯度方向；``intersection_offset_mm`` > 0 时
+    采样点就是交点本身（去掉闭合点重复，一个点只采样一次），法向 = 该点的
+    φ 梯度方向；``intersection_offset_mm`` > 0 时
     沿外法向再偏一段（把 WLS 从单侧外推变成内插）。
-    ``contour``：走旧路径（弧长重采样 + ``sample_offset_mm`` 偏移）。
     """
-    if cfg.sampling.scheme != "intersection":
-        return sample_boundary(polys, ls, cfg)
     s = cfg.sampling
     side = 1.0 if s.sample_side == "outside" else -1.0
     pts_list, nrm_list = [], []

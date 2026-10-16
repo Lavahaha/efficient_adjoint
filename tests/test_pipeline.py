@@ -272,24 +272,6 @@ def test_inside_sampling_scatters_to_the_boundary_not_the_sample_points(
     assert not np.allclose(seen["scatter"], seen["wls"])
 
 
-def test_contour_scheme_still_runs_for_the_server_ab(tmp_path):
-    """旧 contour 路径（弧长重采样 + 三线性取场 + 最近节点回写）留作 A/B。
-
-    服务器上要用同一份场数据比两种方案的 δp，这条路必须一直能跑。
-    """
-    cfg = make_compact_cfg(tmp_path, max_iterations=2)
-    cfg.sampling.scheme = "contour"
-    cfg.sampling.field_z_mm = -0.1
-    cfg.level_set.reinit_every = 100
-    solver = OffsetGridStubSolver(cfg, foms=(0.2, 0.3))
-    OptimizerPipeline(cfg, solver, make_level_set(cfg)).run()
-
-    d = tmp_path / "results"
-    phi = [artifacts.load_ls_phi(d / f"iter_{it:03d}" / "ls_phi.npz")["phi"]
-           for it in (0, 1)]
-    assert np.abs(phi[1] - phi[0]).max() > 0        # 真的在动
-
-
 def test_intersection_scheme_rejects_mismatched_field_grids(tmp_path):
     """四个场必须导出在同一张网格上（伴随法要求 fwd/bwd 同一离散）。
 

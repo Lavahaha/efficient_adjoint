@@ -1,19 +1,16 @@
 """轮廓提取与平滑：零等值面 -> 多边形（世界坐标，mm）。
 
 提取用 matplotlib 的 contour（网格上线性插值，等价 marching squares，
-避免自写 16 种情形表的出错风险）；平滑用 scipy B 样条；
-重采样按弧长均匀进行。
+避免自写 16 种情形表的出错风险）。
 """
 
 from __future__ import annotations
 
 import numpy as np
-from scipy import interpolate
 
 __all__ = [
     "extract_contours",
     "dedupe_vertices",
-    "smooth_resample",
     "close_open_contours",
     "simplify_polygon",
     "self_intersections",
@@ -161,60 +158,10 @@ def simplify_polygon(points, tol_mm, max_points=SIMPLIFY_MAX_POINTS):
     return pts[keep]
 
 
-def smooth_resample(
-    vertices: np.ndarray,
-    spacing_mm: float,
-    smoothing: float = 0.0,
-    closed: bool = True,
-) -> np.ndarray:
-    """B 样条平滑并按弧长均匀重采样。
-
-    vertices: (N,2) 轮廓顶点；spacing_mm: 目标点距；
-    smoothing: 样条平滑因子（0 = 插值过点，>0 平滑）；
-    closed: 闭合轮廓用周期样条（首尾重复）。
-    返回重采样后的顶点数组。
-    """
-    pts = np.asarray(vertices, dtype=float)
-    # 去除相邻重复点（marching squares 输出中常见，splprep 不接受）
-    keep = np.ones(len(pts), dtype=bool)
-    keep[1:] = np.linalg.norm(np.diff(pts, axis=0), axis=1) > 1e-12
-    pts = pts[keep]
-    if len(pts) < 4:
-        return pts
-    if closed:
-        tck, _ = interpolate.splprep(pts.T, s=smoothing, per=True)
-        dense_u = np.linspace(0.0, 1.0, 2000, endpoint=False)
-        n = max(int(round(_closed_length(pts) / spacing_mm)), 4)
-        uu = _arc_length_uniform(dense_u, tck, n, closed=True)
-        out = np.column_stack(interpolate.splev(uu, tck))
-        return np.vstack([out, out[0]])
-    tck, _ = interpolate.splprep(pts.T, s=smoothing)
-    dense_u = np.linspace(0.0, 1.0, 2000)
-    n = max(int(round(_polyline_length(pts) / spacing_mm)), 2)
-    uu = _arc_length_uniform(dense_u, tck, n, closed=False)
-    return np.column_stack(interpolate.splev(uu, tck))
-
-
-def _arc_length_uniform(dense_u, tck, n, closed: bool) -> np.ndarray:
-    """在样条上按弧长均匀取 n 个参数点 u。"""
-    dense = np.column_stack(interpolate.splev(dense_u, tck))
-    seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
-    cum = np.concatenate([[0.0], np.cumsum(seg)])
-    total = cum[-1]
-    target = np.linspace(0.0, total, n, endpoint=not closed)
-    return np.interp(target, cum, dense_u)
-
-
 def _polyline_length(pts: np.ndarray) -> float:
     if len(pts) < 2:
         return 0.0
     return float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
-
-
-def _closed_length(pts: np.ndarray) -> float:
-    if len(pts) < 3:
-        return 0.0
-    return _polyline_length(pts) + float(np.linalg.norm(pts[-1] - pts[0]))
 
 
 def close_open_contours(

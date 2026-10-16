@@ -49,14 +49,13 @@ def test_validate_rejects_unknown_taper_edges():
         cfg.validate()
 
 
-def test_coupler_samples_intersections_with_the_phi_grid_step():
-    """交点方案：φ 网格步长 = CST 场导出步长（分辨率对等），**不要求对齐**。
+def test_boundary_samples_use_intersections_and_phi_grid_step():
+    """边界采样使用亚格点交点；场网格不要求与 φ 网格对齐。
 
     导出网格原点由 CST 包围盒定（实测 y −3.55，与设计区 −2.6 差半格），
     采样点按坐标取场——"设计区必须与导出网格对齐"这条约定已经取消。
     """
     cfg = CaseConfig.from_yaml(CFG_PATH)
-    assert cfg.sampling.scheme == "intersection"
     assert cfg.field_export_step_mm == cfg.design_region.grid_step_mm == 0.1
     # 优化器步长以格为单位：1 格
     assert cfg.optimizer.step_cells == 1.0
@@ -64,12 +63,6 @@ def test_coupler_samples_intersections_with_the_phi_grid_step():
     # 边缘、在金属内侧采样）；偏移方向由 sample_side 定，数值恒为正
     assert cfg.sampling.intersection_offset_mm == 0.3
     assert cfg.sampling.sample_side == "inside"
-
-
-def test_contour_scheme_export_step_follows_point_spacing():
-    cfg = CaseConfig.from_yaml(CFG_PATH)
-    cfg.sampling.scheme = "contour"
-    assert cfg.field_export_step_mm == cfg.sampling.point_spacing_mm
 
 
 def test_validate_rejects_grid_step_that_does_not_divide_the_box():
@@ -90,14 +83,6 @@ def test_validate_rejects_bad_sampling_keys(key, bad):
     cfg = CaseConfig.from_yaml(CFG_PATH)
     setattr(cfg.sampling, key, bad)
     with pytest.raises(ValueError, match=key):
-        cfg.validate()
-
-
-def test_validate_rejects_unknown_scheme():
-    """nodes 方案已删：旧 YAML 必须报错，不能悄悄按默认值跑。"""
-    cfg = CaseConfig.from_yaml(CFG_PATH)
-    cfg.sampling.scheme = "nodes"
-    with pytest.raises(ValueError, match="采样方案"):
         cfg.validate()
 
 

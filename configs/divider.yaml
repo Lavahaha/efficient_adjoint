@@ -116,7 +116,6 @@ sampling:
   # CST 包围盒定，**不要求与 φ 网格对齐**）；速度回写 = 最近节点 + 四邻居
   # 反距离平方。参数与耦合器一致，只有 wls_radius_cells 的**物理**半径
   # 变大：本算例场导出步长是 0.2 mm（耦合器 0.1），2 格 = 0.4 mm。
-  scheme: intersection
   field_z_mm: -0.1        # 金属下方的介质里（z=0 是基板顶面=金属底面）
                           # **不能填 0.0**：吸附过去会落进金属体内
                           # （PEC 里 E/H≈0，δp 恒为 0 且不报错）
@@ -134,9 +133,6 @@ sampling:
   scatter_max_cells: 1.0  # 速度回写作用半径（φ 网格格数 = 0.1 mm）；
                           # 回写点在**未偏移的**交点上，与 δz 无关（见 pipeline）
   sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
-  # --- 旧 contour 方案参数（scheme=contour 时才用，留作 A/B）---
-  point_spacing_mm: 0.2
-  sample_offset_mm: 0.05
 
 optimizer:
   step_cells: 1.0      # 每轮最大法向位移 = 1 个网格 = 0.1 mm（论文 Fig.3b）

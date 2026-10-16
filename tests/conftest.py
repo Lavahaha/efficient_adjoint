@@ -107,8 +107,7 @@ def make_compact_cfg(tmp_path, min_gap: float = 0.1, velocity_sign: float = 1.0,
         constraints=ConstraintSpec(min_gap_mm=min_gap),
         # 偏移 0.06 > 半网格（dx=0.1/2）：插值窗口不得跨过金属边界，
         # 否则金属侧 E=0 会把采样场压掉一半
-        sampling=SamplingSpec(point_spacing_mm=0.2, sample_offset_mm=0.06,
-                              sample_side="outside"),
+        sampling=SamplingSpec(sample_side="outside"),
         # convergence_window > max_iterations：测试里常要跑满步数观察完整
         # 轨迹，不想被收敛窗口提前截断（收敛逻辑本身不变）
         optimizer=OptimizerSpec(step_cells=1.0, cfl=0.5, velocity_sign=velocity_sign,

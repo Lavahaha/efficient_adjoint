@@ -26,12 +26,13 @@ import numpy as np
 from eaopt import artifacts
 from eaopt.adjoint.derivative import shape_derivative
 from eaopt.adjoint.fields import build_wls_stencil
-from eaopt.adjoint.sampling import (boundary_points, boundary_samples,
-                                    field_node_mask, is_fixed_contour,
-                                    make_fixed_sdf, scatter_inverse_distance,
-                                    scatter_to_grid)
+from eaopt.adjoint.sampling import (
+    boundary_points,
+    boundary_samples,
+    field_node_mask,
+    scatter_inverse_distance,
+)
 from eaopt.config import CaseConfig
-from eaopt.geometry.contour import extract_contours, smooth_resample
 from eaopt.geometry.extension import extend_velocity
 from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
@@ -61,23 +62,9 @@ def movable_contours(ls: LevelSet2D, cfg: CaseConfig) -> list[np.ndarray]:
     cst_update 脚本要用同一份"初始轮廓"去建/改 CST 工程，各写一份迟早
     漂移（脚本里看到的形状 ≠ 迭代里演化的形状，而且不报错）。
 
-    ``scheme=intersection``：返回**零等值线交点折线**（亚格点，与灵敏度
-    分析的采样点是同一份离散）；``contour``：按点距重采样（旧，A/B）。
+    返回**零等值线交点折线**（亚格点，与灵敏度分析的采样点是同一份离散）。
     """
-    if cfg.sampling.scheme == "intersection":
-        return boundary_points(ls, cfg)
-    contours = extract_contours(ls.xs, ls.ys, ls.phi)
-    fixed_sdf = make_fixed_sdf(ls, cfg)
-    out = []
-    for c in contours:
-        if fixed_sdf is not None and is_fixed_contour(c, fixed_sdf):
-            continue
-        closed = np.allclose(c[0], c[-1])
-        out.append(
-            smooth_resample(c, cfg.sampling.point_spacing_mm,
-                            smoothing=0.0, closed=closed)
-        )
-    return out
+    return boundary_points(ls, cfg)
 
 
 @dataclass
@@ -192,7 +179,7 @@ class OptimizerPipeline:
 
     # ------------------------------------------------------------------ #
     def _assemble_velocity(self, sol_f, sol_b, movable) -> np.ndarray:
-        """一轮的形状导数 → 网格速度场 V（两种采样方案，见 sampling.py）。"""
+        """将一轮的边界形状导数装配为网格速度场 V。"""
         cfg = self.cfg
         s = cfg.sampling
         v_mask_grid = build_velocity_mask(
@@ -207,66 +194,35 @@ class OptimizerPipeline:
         phase = fom_phase(cfg, sol_f)
         phase_deg = float(np.angle(phase, deg=True))
 
-        if s.scheme == "intersection":
-            # 交点方案：采样点是亚格点，场值按**坐标**用 WLS 取（导出网格
-            # 原点由 CST 包围盒定，与 φ 网格不必对齐——这正是旧节点方案
-            # 在服务器上做不到的事）。四个场共用一套算子：fwd/bwd 必须用
-            # 同一离散，否则伴随梯度静默失真。
-            iz, z_used = sol_f.e_field.nearest_z_plane(s.field_z_mm)
-            self._check_sample_plane(z_used)
-            mask = field_node_mask(self.ls, sol_f.e_field, cfg)
-            st = build_wls_stencil(
-                pts, sol_f.e_field.axes()[:2], mask,
-                radius_cells=s.wls_radius_cells, order=s.wls_order)
-            e_f, h_f, e_b, h_b = (
-                f.sample_wls(pts, iz, stencil=st).values
-                for f in (sol_f.e_field, sol_f.h_field, sol_b.e_field, sol_b.h_field)
-            )
-            dp = shape_derivative(e_f, h_f, e_b, h_b, sol_f.pin,
-                                  self.omega, self.eps_r, phase=phase)
-            # 栅格化必须回填到**边界点** bnd（偏移前），不能直接撒在采样点
-            # pts 上：采样点按论文内移 δz 后离界面 δz 远，散点（只写
-            # d ≤ scatter_max_cells·dx 的节点）就够不着 φ=0 两侧的界面节点，
-            # 而 skfmm 的延拓值正是从跨 φ=0 的那对节点插值出来的 → 速度恒 0、
-            # 形状一动不动且不报错（服务器装 skfmm 才显形，本机走 PDE 分支
-            # 有 known 种子兜着）。contour 分支早就为此回填，这里同理。
-            side = 1.0 if s.sample_side == "outside" else -1.0
-            bnd = pts - side * s.intersection_offset_mm * nrm
-            # 掩膜先于归一化：被禁点（角点奇异性、固定区邻域）不参与
-            # max|δp|，否则它们会劫持速度尺度拖慢全场
-            active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
-            v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
-            v_seed, counts = scatter_inverse_distance(
-                self.ls, bnd, v, max_dist_cells=s.scatter_max_cells)
-            V, method = extend_velocity(
-                self.ls, v_seed, cfg.level_set.extension_band_mm,
-                method=cfg.level_set.extension_method, known=counts > 0)
-            print(f"[采样] 交点 {len(pts)} 个（{s.sample_side} δz="
-                  f"{s.intersection_offset_mm:g} mm，WLS {s.wls_order} 阶 R="
-                  f"{s.wls_radius_cells} 格，回退 {st.n_fallback}），种子节点 "
-                  f"{int((counts > 0).sum())} 个，延拓 {method}，相位 {phase_deg:+.1f}°")
-            return V * v_mask_grid
-
-        # 不走吸附（直接按 z 插值），但采样面落进金属体内的错误同样要拦
-        self._check_sample_plane(float(s.field_z_mm))
-        pts3 = np.column_stack([pts, np.full(len(pts), s.field_z_mm)])
-        e_f = sol_f.e_field.interp(pts3)
-        h_f = sol_f.h_field.interp(pts3)
-        e_b = sol_b.e_field.interp(pts3)
-        h_b = sol_b.h_field.interp(pts3)
+        # 采样点是亚格点，场值按坐标用 WLS 取。四个场共用一套算子：
+        # fwd/bwd 必须用同一离散，否则伴随梯度会静默失真。
+        iz, z_used = sol_f.e_field.nearest_z_plane(s.field_z_mm)
+        self._check_sample_plane(z_used)
+        mask = field_node_mask(self.ls, sol_f.e_field, cfg)
+        st = build_wls_stencil(
+            pts, sol_f.e_field.axes()[:2], mask,
+            radius_cells=s.wls_radius_cells, order=s.wls_order)
+        e_f, h_f, e_b, h_b = (
+            f.sample_wls(pts, iz, stencil=st).values
+            for f in (sol_f.e_field, sol_f.h_field, sol_b.e_field, sol_b.h_field)
+        )
         dp = shape_derivative(e_f, h_f, e_b, h_b, sol_f.pin,
                               self.omega, self.eps_r, phase=phase)
-        # 栅格化必须回填到边界点（bnd，偏移前），否则落在速度延拓
-        # 种子带（|φ|≤0.75·dx）之外，速度场无法播种
+        # 速度回填到偏移前的边界点，确保 φ=0 邻域有延拓种子。
         side = 1.0 if s.sample_side == "outside" else -1.0
-        bnd = pts - side * s.sample_offset_mm * nrm
+        bnd = pts - side * s.intersection_offset_mm * nrm
+        # 掩膜先于归一化：被禁点不参与 max|δp|，避免拖慢全场。
         active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
         v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
-        v_boundary = scatter_to_grid(self.ls, bnd, v)
+        v_seed, counts = scatter_inverse_distance(
+            self.ls, bnd, v, max_dist_cells=s.scatter_max_cells)
         V, method = extend_velocity(
-            self.ls, v_boundary, cfg.level_set.extension_band_mm,
-            method=cfg.level_set.extension_method)
-        print(f"[采样] 轮廓点 {len(pts)} 个，延拓 {method}，相位 {phase_deg:+.1f}°")
+            self.ls, v_seed, cfg.level_set.extension_band_mm,
+            method=cfg.level_set.extension_method, known=counts > 0)
+        print(f"[采样] 交点 {len(pts)} 个（{s.sample_side} δz="
+              f"{s.intersection_offset_mm:g} mm，WLS {s.wls_order} 阶 R="
+              f"{s.wls_radius_cells} 格，回退 {st.n_fallback}），种子节点 "
+              f"{int((counts > 0).sum())} 个，延拓 {method}，相位 {phase_deg:+.1f}°")
         return V * v_mask_grid
 
     def _check_field_grids(self, sol_f, sol_b) -> None:

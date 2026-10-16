@@ -81,13 +81,8 @@ class DesignRegionSpec:
 
 @dataclass
 class SamplingSpec:
-    # intersection=边界点取 marching 交点（亚格点）+ WLS 取场 + 反距离平方回写（现行）|
-    # contour=沿轮廓弧长重采样 + 三线性取场 + 最近节点回写（旧，留作 A/B）
-    scheme: str = "intersection"
-    point_spacing_mm: float = 0.2  # contour：边界导数采样点间距（论文经验 0.1~0.5）
-    sample_offset_mm: float = 0.05  # contour：采样点沿法向的偏移量（对应论文 delta_z）
-    sample_side: str = "outside"  # 两方案共用：outside=金属外侧(PEC) | inside=金属内侧
-    # --- intersection 方案参数 ---
+    # 采样侧：outside=设计金属外侧 | inside=设计金属内侧
+    sample_side: str = "outside"
     intersection_offset_mm: float = 0.0
     # 交点沿外法向的额外偏移：0 = 场就取在交点（边界）上，用介质侧节点做**单侧**
     # 拟合得到空气侧极限；调成半格（如 0.05）可把外推变内插，对 CST 近金属场
@@ -217,14 +212,6 @@ class CaseConfig:
             raise ValueError(
                 f"constraints.taper_edges={self.constraints.taper_edges!r} 未知："
                 '只认 "xy" / "x" / "y" / "none"（速度掩膜 taper 作用在哪些边）')
-        if self.sampling.scheme not in ("intersection", "contour"):
-            raise ValueError(
-                f"未知采样方案 {self.sampling.scheme}："
-                '只认 "intersection"（交点+WLS）与 "contour"（旧，A/B）')
-        if self.sampling.point_spacing_mm <= 0:
-            raise ValueError("sampling.point_spacing_mm 必须为正")
-        if self.sampling.sample_offset_mm < 0:
-            raise ValueError("sampling.sample_offset_mm 不能为负")
         if self.sampling.sample_side not in ("outside", "inside"):
             raise ValueError(f"未知采样侧 {self.sampling.sample_side}")
         if self.sampling.intersection_offset_mm < 0:
@@ -252,35 +239,22 @@ class CaseConfig:
 
     @property
     def field_export_step_mm(self) -> float:
-        """CST 场导出步长。
-
-        ``intersection``：导出网格按坐标被 WLS 使用（邻域半径以场格数计），
-        **不要求与 φ 网格对齐**——缺省取 φ 网格步长（分辨率对等）。
-        服务器若要省导出体积/时间，可调粗此值并把 wls_radius_cells 相应
-        放大（代价是拟合截断误差变大）。``contour``：沿用采样点距。
-        """
-        if self.sampling.scheme == "intersection":
-            return float(self.design_region.grid_step_mm)
-        return float(self.sampling.point_spacing_mm)
+        """CST 场导出步长；缺省与水准集网格步长一致。"""
+        return float(self.design_region.grid_step_mm)
 
     def summary(self) -> str:
         """优化侧配置摘要（CST 侧常量见 ``cst_setup.CstSetup``）。"""
         dr = self.design_region.box
         s = self.sampling
-        if s.scheme == "intersection":
-            sample = (f"marching 交点（亚格点）{s.sample_side}, "
-                      f"偏移 {s.intersection_offset_mm} mm, "
-                      f"WLS {s.wls_order} 阶 R={s.wls_radius_cells} 格, "
-                      f"z={s.field_z_mm} mm（吸附到导出网格面）")
-        else:
-            sample = (f"轮廓重采样 点距 {s.point_spacing_mm} mm, "
-                      f"偏移 {s.sample_offset_mm} mm ({s.sample_side}), "
-                      f"z={s.field_z_mm} mm")
+        sample = (f"marching 交点（亚格点）{s.sample_side}, "
+                  f"偏移 {s.intersection_offset_mm} mm, "
+                  f"WLS {s.wls_order} 阶 R={s.wls_radius_cells} 格, "
+                  f"z={s.field_z_mm} mm（吸附到导出网格面）")
         lines = [
             f"算例        : {self.name} — {self.description}",
             f"设计区域    : x∈{dr.x} y∈{dr.y} mm, 网格步长 {self.design_region.grid_step_mm} mm",
             f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}|",
-            f"边界采样    : {s.scheme} — {sample}",
+            f"边界采样    : intersection — {sample}",
             f"场导出步长  : {self.field_export_step_mm} mm",
             f"速度延拓    : {self.level_set.extension_method}"
             f"（带宽 {self.level_set.extension_band_mm} mm）",

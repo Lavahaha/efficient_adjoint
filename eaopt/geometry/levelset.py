@@ -9,7 +9,7 @@
   - 速度延拓：∂V/∂τ + S(φ) n̂·∇V = 0（n̂ = ∇φ/|∇φ|），仅在窄带 |φ|<band 内
     进行，边界邻域节点固定为已知值。
 
-仅依赖 numpy；轮廓提取与平滑见 contour.py。
+仅依赖 numpy；轮廓提取见 contour.py。
 """
 
 from __future__ import annotations

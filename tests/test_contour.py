@@ -6,8 +6,7 @@ import pytest
 from eaopt.config import BoxSpec
 from eaopt.geometry import contour as C
 from eaopt.geometry.contour import (close_open_contours, extract_contours,
-                                    self_intersections, simplify_polygon,
-                                    smooth_resample)
+                                    self_intersections, simplify_polygon)
 from eaopt.geometry.levelset import LevelSet2D
 
 RECT = np.array([[2.0, -1.0], [10.0, -1.0], [10.0, 1.0], [2.0, 1.0]])
@@ -59,24 +58,6 @@ def test_extract_contours_returns_open_paths_for_crossing_polygon():
     paths = extract_contours(ls.xs, ls.ys, ls.phi)
     assert len(paths) == 2
     assert all(not np.allclose(p[0], p[-1]) for p in paths)
-
-
-def test_smooth_resample_circle_uniform_spacing():
-    r, spacing = 2.0, 0.2
-    ls = make_ls(dx=0.05)
-    ls.init_from_polygons([circle_polygon(r, 6.0, 0.5)])
-    raw = extract_contours(ls.xs, ls.ys, ls.phi)[0]
-    out = smooth_resample(raw, spacing)
-    # 闭合且首尾一致
-    assert np.allclose(out[0], out[-1])
-    # 点数 ≈ 周长/点距
-    assert abs(len(out) - 1 - round(2.0 * np.pi * r / spacing)) <= 1
-    # 相邻点距均匀
-    seg = np.linalg.norm(np.diff(out, axis=0), axis=1)
-    assert np.abs(seg - spacing).max() < 0.02
-    # 仍接近圆：半径偏差小于一个网格
-    rad = np.linalg.norm(out - np.array([6.0, 0.5]), axis=1)
-    assert np.abs(rad - r).max() < 0.1
 
 
 def test_dedupe_vertices_removes_zero_length_segments():
@@ -412,16 +393,3 @@ def test_close_open_contours_allows_two_disjoint_pieces():
     closed = [p for p in extract_contours(ls.xs, ls.ys, ls.phi) if np.allclose(p[0], p[-1])]
     assert len(closed) == 2
     assert len(close_open_contours(closed, box)) == 2
-
-
-def test_smooth_resample_open_line_keeps_endpoints():
-    ls = make_ls()
-    strip = np.array([[-1.0, -1.0], [13.0, -1.0], [13.0, 0.5], [-1.0, 0.5]])
-    ls.init_from_polygons([strip])
-    open_path = [p for p in extract_contours(ls.xs, ls.ys, ls.phi)
-                 if not np.allclose(p[0], p[-1])][0]
-    out = smooth_resample(open_path, 0.3, closed=False)
-    # 开放样条两端点应保持在设计区边界上（x≈0 或 x≈12）
-    for pt in (out[0], out[-1]):
-        on_boundary = min(abs(pt[0] - 0.0), abs(pt[0] - 12.0)) < 0.05
-        assert on_boundary
