@@ -1,11 +1,11 @@
 """形状导数（论文式 25 / 附录式 54–55）的单 z 截面实现。
 
-优化器移动的是 xy 平面内的金属轮廓，因此按二维轮廓定义边界法向与切向。法向
-电场为 E_n，磁场只取 xy 平面内沿轮廓切线的分量 H_tau：
+优化器移动的是 xy 平面内的金属轮廓，因此边界法向位于 xy 平面。对沿 z
+挤出的局部侧壁，法向电场为 E_n，切向磁场包含轮廓切向分量 H_tau 与 H_z：
 
     E_n = n_x E_x + n_y E_y
-    H_tau = -n_y H_x + n_x H_y
-    δp = Re[ phase · (-2jω/P_in) · (ε0 εr E_n E_n^back + µ0 H_tau H_tau^back) ]
+    H_t · H_t^back = H_tau H_tau^back + H_z H_z^back
+    δp = Re[ phase · (-2jω/P_in) · (ε0 εr E_n E_n^back + µ0 H_t·H_t^back) ]
 
 这里按要求只在配置指定的一个 z 截面计算，不对金属厚度方向积分。
 
@@ -49,27 +49,14 @@ def shape_derivative(
     h_fwd = np.asarray(h_fwd)
     e_back = np.asarray(e_back)
     h_back = np.asarray(h_back)
-    if any(a.ndim != 2 or a.shape[1] != 3 for a in
-           (e_fwd, h_fwd, e_back, h_back)):
-        raise ValueError("e_fwd/h_fwd/e_back/h_back 必须为 (N,3) 数组")
-    if any(len(a) != len(e_fwd) for a in (h_fwd, e_back, h_back)):
-        raise ValueError("前向、后向 E/H 场的采样点数量必须一致")
-
-    n = np.asarray(normals, dtype=float)
-    if n.ndim != 2 or n.shape[0] != len(e_fwd) or n.shape[1] not in (2, 3):
-        raise ValueError(f"normals 必须为 ({len(e_fwd)}, 2|3)，收到 {n.shape}")
-    n_xy = n[:, :2]
-    n_norm = np.linalg.norm(n_xy, axis=1)
-    if np.any(~np.isfinite(n_norm)) or np.any(n_norm <= 0.0):
-        raise ValueError("每个边界法向都必须是有限且非零的 xy 向量")
-    n_xy = n_xy / n_norm[:, None]
-    # xy 轮廓的单位切向，只使用 H_xy 在该方向上的投影。
-    t_xy = np.column_stack((-n_xy[:, 1], n_xy[:, 0]))
-
-    e_n_fwd = np.sum(e_fwd[:, :2] * n_xy, axis=1)
-    e_n_back = np.sum(e_back[:, :2] * n_xy, axis=1)
-    h_tau_fwd = np.sum(h_fwd[:, :2] * t_xy, axis=1)
-    h_tau_back = np.sum(h_back[:, :2] * t_xy, axis=1)
-
-    integrand = EPS0 * eps_r * e_n_fwd * e_n_back + MU0 * h_tau_fwd * h_tau_back
-    return np.real(phase * (-2j * omega / pin) * integrand)
+    length = np.linalg.norm(normals, axis=1, keepdims=True)
+    n = normals / np.where(length < 1e-30, 1.0, length)
+    e_n = np.einsum("ij,ij->i", e_fwd, n)
+    e_n_back = np.einsum("ij,ij->i", e_back, n)
+    h_t = h_fwd - np.einsum("ij,ij->i", h_fwd, n)[:, None] * n
+    h_t_back = h_back - np.einsum("ij,ij->i", h_back, n)[:, None] * n
+    h_dot = np.einsum("ij,ij->i", h_t, h_t_back)
+    integrand = EPS0 * eps_r * e_n * e_n_back + MU0 * h_dot
+    delta = np.real(-2j * omega / pin * integrand)
+    # 法向退化（几何角点/域边界处）该点导数置零，避免 0/0
+    return np.where(length[:, 0] < 1e-30, 0.0, delta)
