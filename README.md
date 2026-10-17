@@ -17,8 +17,8 @@
 ```
 正向仿真（input 端口激励）      → E, H, S 参数, P_in
 后向仿真（observation 端口激励）→ E_back, H_back
-形状导数 δp_i = Re[e^{−j·arg S}·(−2jω/P_in)·(ε E_⊥·E_⊥^back + μ0 H_∥·H_∥^back)]
-    E_⊥ = E_z（顶面法向）、H_∥ = (H_x, H_y)（面内切向）        ← 式(54)–(55)
+形状导数 δp_i = Re[(−2jω/P_in)·(ε E_n·E_n^back + μ0 H_τ·H_τ^back)]
+    xy 轮廓：E_n = n_x E_x+n_y E_y；H_τ = −n_y H_x+n_x H_y（单 z 截面）
     相位因子 e^{−j·arg S}：FoM = |S| 的链式法则（式 (5)），缺它 = 在优化 Re[S]
 梯度下降（固定步长 + 符号开关）→ 水准集 HJ 演化 → 最小间距投影 → 重建几何
 ```
@@ -50,7 +50,7 @@ eaopt/
 │   └── extension.py     # 窄带速度延拓：scikit-fmm 优先，缺库回退 PDE
 ├── adjoint/
 │   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + WLS 取场 + 法/切分解
-│   ├── derivative.py    # 形状导数（论文式 54–55：顶面 E_z 与面内 H 配对）
+│   ├── derivative.py    # 形状导数（xy 轮廓 E_n 与面内 H_τ 配对）
 │   └── sampling.py      # 边界点（交点/轮廓）+ 固定金属剔除 + 反距离平方回写
 ├── optimize/
 │   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）

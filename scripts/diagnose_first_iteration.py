@@ -136,6 +136,7 @@ def _offset_replay(cfg, ls, fields, contours, offset_mm: float):
         *sampled, COUPLER.port_power_w,
         2 * np.pi * COUPLER.frequency_ghz * 1e9,
         COUPLER.eps_r,
+        normals,
     )
 
     # boundary_samples has already offset pts toward sample_side. Reverse that

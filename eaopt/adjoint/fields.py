@@ -10,9 +10,9 @@
   取多项式在采样点处的值，比三线性插值更稳（尤其单侧邻域：PEC 两侧的场
   不连续，只用同侧节点拟合才不会被金属体内的 E≈0 拉低）。
 
-形状导数走论文式 (54)（顶面 E_z 与面内 H 配对，见 adjoint/derivative.py），
-不再需要沿面内轮廓法向的分解；``decompose_normal_tangential`` 保留给后续
-可能用到的侧壁/其它配对，当前生产路径不调用。
+形状导数按 xy 轮廓法向投影 E，并取 H_xy 在轮廓切向上的投影（见 adjoint/derivative.py），
+在单个 z 截面形成灵敏度；通用 ``decompose_normal_tangential`` 函数保留给其它
+需要三维向量分解的调用。
 """
 
 from __future__ import annotations

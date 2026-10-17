@@ -210,7 +210,7 @@ class OptimizerPipeline:
             for f in (sol_f.e_field, sol_f.h_field, sol_b.e_field, sol_b.h_field)
         )
         dp = shape_derivative(e_f, h_f, e_b, h_b, sol_f.pin,
-                              self.omega, self.eps_r)
+                              self.omega, self.eps_r, nrm)
         # 速度回填到偏移前的边界点，确保 φ=0 邻域有延拓种子。
         side = 1.0 if s.sample_side == "outside" else -1.0
         bnd = pts - side * s.intersection_offset_mm * nrm

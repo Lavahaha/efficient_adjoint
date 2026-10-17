@@ -1,27 +1,16 @@
-"""形状导数（论文式 25 / 附录式 54–55）。
+"""形状导数（论文式 25 / 附录式 54–55）的单 z 截面实现。
 
-    δp_i = Re[ (−2jω/P_in) · ( ε0 εr E_⊥·E_⊥^back + µ0 H_∥·H_∥^back ) ]
+优化器移动的是 xy 平面内的金属轮廓，因此按二维轮廓定义边界法向与切向。法向
+电场为 E_n，磁场只取 xy 平面内沿轮廓切线的分量 H_tau：
 
-**配对取式 (54) 原文**（"the tangential electric field and normal magnetic
-field are zero" ⇒ E_⊥ 是金属面法向分量、H_∥ 是金属面切向分量）。设计区是
-xy 平面内的金属薄片，面法向为 ẑ，于是
+    E_n = n_x E_x + n_y E_y
+    H_tau = -n_y H_x + n_x H_y
+    δp = Re[ phase · (-2jω/P_in) · (ε0 εr E_n E_n^back + µ0 H_tau H_tau^back) ]
 
-    E_⊥ = E_z，   H_∥ = (H_x, H_y)（完整面内磁场）
+这里按要求只在配置指定的一个 z 截面计算，不对金属厚度方向积分。
 
-注意这与"把边界当竖直侧壁、按面内轮廓法向 n̂ 读值"（ε E_n E_n^b + μ0 H_∥侧壁
-H_∥侧壁^b，侧壁切向 = H_z + H_τ）**不是**同一个配对，后者在顶面/底面（真正
-承载电流的 PEC 面）上取的是切向电场与法向磁场——式 (54) 里恰为零的两项。
-divider iter_000 实测（TL 敏感度目标）：错误配对 r = −0.48，式 (54) 配对
-r = +0.84（2026-10-12）。
-
-**相位因子**：当前优化设置省略 |S| 链式法则中的 e^{−j·arg S}，直接取复数
-S 参数形状导数的实部。因此 FoM 仍为 |S|，但此更新量不再是 |S| 的严格导数。
-
-要点：
-  - 复场点积不取共轭：Re[−2jω X] = 2ω·Im[X]，导数信息全部来自前向场与
-    后向场之间的相位差（全实场导数为零）；
-  - 量纲：逐点值量纲为 1/m（对位移的导数），实际使用中作为水准集法向速度
-    （时间步长 δt 吸收单位），FD 验证确认数值一致性。
+相位因子默认取 1；FoM 为 |S| 时若要严格求其导数，应显式传入
+e^{−j·arg S}。当前优化流程按用户设置不乘这个因子。
 """
 
 from __future__ import annotations
@@ -42,19 +31,45 @@ def shape_derivative(
     pin: float,
     omega: float,
     eps_r: float,
+    normals: np.ndarray,
     *,
     phase: complex = 1.0,
 ) -> np.ndarray:
-    """按式 (54)–(55) 计算各采样点的形状导数。
+    """按面内边界法向，计算单 z 截面上的各采样点形状导数。
 
     e_fwd/h_fwd: 前向场 (N,3) complex（V/m, A/m）；
     e_back/h_back: 后向场 (N,3) complex（激励移到观测端口）；
     pin: 入射功率 (W)；omega: 角频率 (rad/s)；
-    eps_r: 采样面所在介质的相对介电常数（基板内 = 基板 εr）；
+    eps_r: 采样面所在介质的相对介电常数；
+    normals: xy 边界法向 (N,2) 或 (N,3)，按行对应场采样点；
     phase: 可选复数乘子；省略时取 1，不进行 |S| 的相位链式修正。
     返回 (N,) 实数组 δp。
     """
-    e_perp = e_fwd[:, 2] * e_back[:, 2]
-    h_par = h_fwd[:, 0] * h_back[:, 0] + h_fwd[:, 1] * h_back[:, 1]
-    integrand = EPS0 * eps_r * e_perp + MU0 * h_par
-    return np.real((-2j * omega / pin) * integrand)
+    e_fwd = np.asarray(e_fwd)
+    h_fwd = np.asarray(h_fwd)
+    e_back = np.asarray(e_back)
+    h_back = np.asarray(h_back)
+    if any(a.ndim != 2 or a.shape[1] != 3 for a in
+           (e_fwd, h_fwd, e_back, h_back)):
+        raise ValueError("e_fwd/h_fwd/e_back/h_back 必须为 (N,3) 数组")
+    if any(len(a) != len(e_fwd) for a in (h_fwd, e_back, h_back)):
+        raise ValueError("前向、后向 E/H 场的采样点数量必须一致")
+
+    n = np.asarray(normals, dtype=float)
+    if n.ndim != 2 or n.shape[0] != len(e_fwd) or n.shape[1] not in (2, 3):
+        raise ValueError(f"normals 必须为 ({len(e_fwd)}, 2|3)，收到 {n.shape}")
+    n_xy = n[:, :2]
+    n_norm = np.linalg.norm(n_xy, axis=1)
+    if np.any(~np.isfinite(n_norm)) or np.any(n_norm <= 0.0):
+        raise ValueError("每个边界法向都必须是有限且非零的 xy 向量")
+    n_xy = n_xy / n_norm[:, None]
+    # xy 轮廓的单位切向，只使用 H_xy 在该方向上的投影。
+    t_xy = np.column_stack((-n_xy[:, 1], n_xy[:, 0]))
+
+    e_n_fwd = np.sum(e_fwd[:, :2] * n_xy, axis=1)
+    e_n_back = np.sum(e_back[:, :2] * n_xy, axis=1)
+    h_tau_fwd = np.sum(h_fwd[:, :2] * t_xy, axis=1)
+    h_tau_back = np.sum(h_back[:, :2] * t_xy, axis=1)
+
+    integrand = EPS0 * eps_r * e_n_fwd * e_n_back + MU0 * h_tau_fwd * h_tau_back
+    return np.real(phase * (-2j * omega / pin) * integrand)
