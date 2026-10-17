@@ -148,20 +148,13 @@ def scatter_inverse_distance(
     hit_tol_mm: float = 1e-9,
     neighbors: str = "cross",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """边界点上的标量 → (节点值 (nx,ny), counts (nx,ny))。反距离平方回写。
+    """Map boundary velocities to grid seeds without averaging conflicting samples.
 
-    - **命中节点**（``|x_s − x_p| ≤ hit_tol_mm``）：该节点独得全部权重
-      （"边界点正好落在节点上 → 直接赋值"）；
-    - 否则取 {最近节点} ∪ {四个轴邻居}（``neighbors="full"`` 时另有四个对角），
-      保留距离 ≤ ``max_dist_cells``·dx 的，权重 ∝ 1/d²、归一化后累加；
-    - 同一节点被多个边界点覆盖时按权重累积平均。
-
-    交点恒落在网格线上 → "≤1 格"这条距离规则已把对角节点排除（对角距
-    √(1+t²)·dx > dx），"最近节点+四邻居"于是**恰好退化为该边的两个端点**，
-    权重 = (1−t)²/(t²+(1−t)²)（t=0.25 → 0.90；比线性插值的 0.75 略锐，
-    是这类粒子-网格回写的有界偏置）。
-
-    返回的 counts > 0 即"边界已知值节点"，PDE 回退延拓用它当种子。
+    Each sample offers its value to nearby cross-grid nodes within
+    ``max_dist_cells * dx``. A node takes the value from its nearest offering
+    sample; exact distance ties use input order for deterministic behavior.
+    Exact grid hits only seed the hit node. The returned ``counts`` records
+    how many samples offered a value to each node and is used as a seed mask.
     """
     pts = np.asarray(points, dtype=float)[:, :2]
     v = np.asarray(values, dtype=float).ravel()
@@ -187,14 +180,22 @@ def scatter_inverse_distance(
     d = np.hypot(pts[:, 0:1] - ls.xs[ii_c], pts[:, 1:2] - ls.ys[jj_c])
     hit = d <= hit_tol_mm
     # 命中优先：命中点上只保留命中的那个节点（其余清零）
-    w = np.where(hit, 1.0, 1.0 / np.maximum(d, 1e-12) ** 2)
-    w = np.where(d <= max_dist_cells * ls.dx, w, 0.0)
-    w = np.where(ok, w, 0.0)
-    any_hit = hit.any(axis=1)
-    if any_hit.any():
-        w[any_hit] = np.where(hit[any_hit], 1.0, 0.0)
-    total = w.sum(axis=1, keepdims=True)
-    w = np.divide(w, total, out=np.zeros_like(w), where=total > 0)
-    np.add.at(out, (ii_c.ravel(), jj_c.ravel()), (w * v[:, None]).ravel())
-    np.add.at(cnt, (ii_c.ravel(), jj_c.ravel()), w.ravel())
-    return np.divide(out, cnt, out=np.zeros_like(out), where=cnt > 0), cnt
+    candidate = ok & (d <= max_dist_cells * ls.dx)
+    hit_rows = hit.any(axis=1)
+    candidate[hit_rows] = hit[hit_rows]
+
+    src, col = np.nonzero(candidate)
+    if len(src) == 0:
+        return out, cnt
+    flat_node = ii_c[src, col] * ls.ny + jj_c[src, col]
+    dist = d[src, col]
+    # Per grid node, choose the nearest boundary sample; source order breaks exact ties.
+    order = np.lexsort((src, dist, flat_node))
+    sorted_nodes = flat_node[order]
+    first = np.r_[True, sorted_nodes[1:] != sorted_nodes[:-1]]
+    chosen = order[first]
+    nodes = flat_node[chosen]
+    out.ravel()[nodes] = v[src[chosen]]
+    unique_nodes, offer_counts = np.unique(flat_node, return_counts=True)
+    cnt.ravel()[unique_nodes] = offer_counts
+    return out, cnt

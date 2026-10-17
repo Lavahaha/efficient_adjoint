@@ -122,34 +122,26 @@ def test_boundary_samples_follow_the_offset_when_asked(ls, tmp_path):
 
 
 # ---------------------------------------------------------------------- #
-# intersection 方案：速度回写（最近节点 + 四邻居，反距离平方）
+# intersection 方案：速度回写（最近来源采样点覆盖网格节点）
 # ---------------------------------------------------------------------- #
-def test_scatter_inverse_distance_matches_the_analytic_weights(ls):
-    """交点在格线上 → 恰退化为该边两节点，权重 (1−t)²/(t²+(1−t)²)（进 counts）。"""
+def test_scatter_inverse_distance_seeds_local_nodes(ls):
     t = 0.25
     i, j = 10, 13
     p = np.array([[ls.xs[i] + t * ls.dx, ls.ys[j]]])
     v, cnt = scatter_inverse_distance(ls, p, np.array([1.0]))
-    w = (1 - t) ** 2 / (t ** 2 + (1 - t) ** 2)
-    # 单点覆盖时值是"加权平均"，权重只体现在 counts（种子掩膜）上
     assert v[i, j] == pytest.approx(1.0) and v[i + 1, j] == pytest.approx(1.0)
-    assert cnt[i, j] == pytest.approx(w, abs=1e-12)
-    assert cnt[i + 1, j] == pytest.approx(1 - w, abs=1e-12)
-    # 对角邻居距离 √(1+t²)·dx > 1 格、远侧邻居 1+t 格，都被距离规则排除
+    assert cnt[i, j] == pytest.approx(1.0)
+    assert cnt[i + 1, j] == pytest.approx(1.0)
     assert cnt[i + 1, j + 1] == 0.0
     assert cnt[i - 1, j] == 0.0 and cnt[i, j + 1] == 0.0
 
-
 def test_scatter_inverse_distance_lets_the_closer_point_win(ls):
-    """一个节点被两个边界点覆盖：反距离平方 → 近者权重大（1/d² 不是等权平均）。"""
     i, j = 10, 13
     a = np.array([ls.xs[i] + 0.25 * ls.dx, ls.ys[j]])
     b = np.array([ls.xs[i] + 0.75 * ls.dx, ls.ys[j]])
     v, _ = scatter_inverse_distance(ls, np.vstack([a, b]), np.array([1.0, 0.0]))
-    # 两点的权重分布互为镜像（0.9/0.1），节点值 = 加权平均
-    assert v[i, j] == pytest.approx(0.9, abs=1e-12)
-    assert v[i + 1, j] == pytest.approx(0.1, abs=1e-12)
-
+    assert v[i, j] == pytest.approx(1.0, abs=1e-12)
+    assert v[i + 1, j] == pytest.approx(0.0, abs=1e-12)
 
 def test_scatter_inverse_distance_gives_a_hit_node_everything(ls):
     """边界点正好落在节点上 → 直接赋值（不是插值、不摊给邻居）。"""
