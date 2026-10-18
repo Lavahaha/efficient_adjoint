@@ -385,6 +385,7 @@ class OptimizerConfig:
     step_cells: float = 0.8        # max boundary displacement per iteration (cells)
     step_min_cells: float = 0.05
     step_max_cells: float = 1.5
+    cfl: float = 0.4
     smooth_sigma_cells: float = 1.5
     band_cells: float = 4.0
     max_backtracks: int = 5
@@ -430,7 +431,8 @@ class AdjointLevelSetOptimizer:
             accepted = False
             for bt in range(cfg.max_backtracks + 1):
                 trial = ls.copy()
-                trial.phi = advect_levelset(trial.phi, V, step * dx / vmax, dx)
+                trial.phi = advect_levelset(
+                    trial.phi, V, step * dx / vmax, dx, cfl=cfg.cfl)
                 apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
                 fwd_t = self.p.forward(trial)
                 f_t = fom_value_and_weight(fwd_t.s, self.p.fom_kind)[0]

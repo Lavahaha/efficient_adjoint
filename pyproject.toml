@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
+    "scikit-image>=0.22",
     "pyyaml>=6.0",
     "matplotlib>=3.8",
     # 速度窄带延拓的快速行进法（level_set.extension_method=auto/skfmm）。

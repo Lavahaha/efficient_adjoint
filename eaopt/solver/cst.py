@@ -53,7 +53,8 @@ class CstSolver(SolverInterface):
     def __init__(self, cfg: CaseConfig, *, setup: CstSetup | None = None,
                  model=None, auto_init: bool = False,
                  save_fields: bool | None = None,
-                 attach: bool | None = None, quiet: bool | None = None,
+                 attach: bool | None = None, force_new: bool = False,
+                 quiet: bool | None = None,
                  clear_results: bool | None = None, log=print):
         # 算例（CstSetup + 模板模块）成套取自 cfg.name；调用方给了哪一个就
         # 用哪一个（测试要注入改动过的设置时只覆盖 setup，模板仍按算例取）。
@@ -69,6 +70,7 @@ class CstSolver(SolverInterface):
         self.save_fields = (setup.save_fields if save_fields is None
                             else bool(save_fields))
         self.attach = setup.attach_gui if attach is None else bool(attach)
+        self.force_new = bool(force_new)
         self.quiet = setup.quiet_mode if quiet is None else bool(quiet)
         self.clear_results = (setup.clear_results if clear_results is None
                               else bool(clear_results))
@@ -83,7 +85,7 @@ class CstSolver(SolverInterface):
     def _environment(self):
         """惰性连实例：不碰 CST 就不连（装配/导入阶段不碰外部资源）。"""
         if self.de is None:
-            self.de = _connect(self.attach, False, self.log, quiet=self.quiet)
+            self.de = _connect(self.attach, self.force_new, self.log, quiet=self.quiet)
         return self.de
 
     def project_path(self, tag: str) -> Path:

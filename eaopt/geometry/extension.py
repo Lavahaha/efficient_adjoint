@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["extend_velocity", "skfmm_available"]
+__all__ = ["extend_velocity", "skfmm_availa"]
 
 #: 缺库告警只打一次（每轮都打印会把日志淹掉）
 _WARNED = {"skfmm": False}

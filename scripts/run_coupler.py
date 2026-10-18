@@ -40,6 +40,7 @@ def main() -> None:
     solver = CstSolver(cfg, setup=setup, auto_init=True,
                        save_fields=args.save_fields,
                        attach=args.attach or None,
+                       force_new=args.force_new,
                        log=log)
     pipeline = OptimizerPipeline(cfg, solver, ls, setup=setup)
     pipeline.run()
