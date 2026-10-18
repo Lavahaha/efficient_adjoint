@@ -355,4 +355,6 @@ def test_config_design_box_agrees_with_template():
     assert box.y[1] < M.THRU_LO                      # 且不越过直通线
     assert box.y[0] < min(M._arm_design_polygon(), key=lambda p: p[1])[1]
     assert cfg.constraints.allowed_region is None     # 两域合一
-    assert cfg.constraints.taper_edges == "x"         # 只在腿那两条边 taper
+    # 当前配置关闭 x taper（试验：检查它对耦合臂端部速度截断的影响）；
+    # 若按结果恢复 taper，此断言随 YAML 一起改回 "x"。
+    assert cfg.constraints.taper_edges == "none"

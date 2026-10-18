@@ -97,9 +97,17 @@ class SamplingSpec:
 class OptimizerSpec:
     # 每轮迭代的**最大边界位移** = step_cells × 网格步长（论文 Fig.3b ≈ 1 格）。
     # 由 HJ 演化 steps = round(step_cells/cfl) 个子步实现，每子步位移 = cfl·dx。
+    # normalize="none" 时语义变为：|δp| 的 step_ref_quantile 分位点每轮位移
+    # = step_cells 格，其余点按 δp 比例（见 optimize/step.py）。
     step_cells: float = 1.0
     cfl: float = 0.5  # 子步长系数（HJ 一阶 Godunov 的稳定上界约 0.707＝1/√2）
     velocity_sign: float = 1.0  # 形状导数→速度的符号开关（±1），FD 验证定号
+    # 速度归一化模式："max"（旧行为：一点独享 |V|=1，其余按 max|δp| 比例缩）
+    # | "none"（去掉归一化：V = sign·δp，各点按自身 δp 比例移动，尺度由
+    # step_ref_quantile 决定）。缺省 "max" 保持旧算例不变，新算例显式开 "none"。
+    normalize: str = "max"
+    # normalize="none" 的参考分位：|δp| 的该分位点每轮位移 = step_cells 格。
+    step_ref_quantile: float = 0.9
     max_iterations: int = 30
     fom_tolerance: float = 1e-4
     convergence_window: int = 5  # 连续 N 次迭代 FoM 变化小于容差则收敛
@@ -226,6 +234,11 @@ class CaseConfig:
             raise ValueError("optimizer.cfl 需在 (0, 0.5]（HJ 一阶格式稳定域）")
         if self.optimizer.velocity_sign not in (1.0, -1.0):
             raise ValueError("optimizer.velocity_sign 必须为 +1.0 或 -1.0")
+        if self.optimizer.normalize not in ("max", "none"):
+            raise ValueError(f'optimizer.normalize={self.optimizer.normalize!r} 未知：'
+                             '只认 "max" / "none"')
+        if not 0.0 < self.optimizer.step_ref_quantile < 1.0:
+            raise ValueError("optimizer.step_ref_quantile 需在 (0, 1) 内")
         if self.optimizer.max_iterations <= 0:
             raise ValueError("optimizer.max_iterations 必须为正")
         if self.level_set.reinit_every < 1:

@@ -2,8 +2,8 @@
 
 每轮迭代：
   提取轮廓 → 重建几何 → 正向仿真 → FoM 评估/收敛判断
-  → 后向仿真 → 边界采样 + 形状导数（式 54–55）→ 速度装配（固定步长
-  + 符号开关）→ 栅格化 + 速度延拓 → 掩膜 → HJ 演化
+  → 后向仿真 → 边界采样 + 形状导数（式 54–55）→ 速度装配（固定步长：
+  max 归一化 / 无归一化 + 符号开关）→ 栅格化 + 速度延拓 → 掩膜 → HJ 演化
   → 最小间距投影 → 周期性重初始化 → 日志/快照。
 
 输出（cfg.output.dir）：history.jsonl（逐迭代记录）、iter_NNN.png（左 = 形状
@@ -38,7 +38,7 @@ from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
                                         build_velocity_mask, interp_mask_at)
 from eaopt.optimize.objective import make_fom
-from eaopt.optimize.step import fixed_step_velocity
+from eaopt.optimize.step import SUBSTEP_CAP, fixed_step_velocity, plan_substeps
 from eaopt.solver.cst_setup import COUPLER, CstSetup
 
 __all__ = ["make_level_set", "movable_contours", "History", "OptimizerPipeline"]
@@ -142,9 +142,7 @@ class OptimizerPipeline:
 
                 # ---- 形状导数 -> 速度 -> 几何更新 ----
                 sol_b = self.solver.solve_backward()
-                V = self._assemble_velocity(sol_f, sol_b, movable)
-
-                steps = max(1, round(opt.step_cells / opt.cfl))
+                V, steps = self._assemble_velocity(sol_f, sol_b, movable)
                 for _ in range(steps):
                     # 子步前留一份 φ：连通性补不上来时整子步回滚（不能带着
                     # "断成两半"的中间态继续演化）
@@ -182,8 +180,15 @@ class OptimizerPipeline:
         return self.history
 
     # ------------------------------------------------------------------ #
-    def _assemble_velocity(self, sol_f, sol_b, movable) -> np.ndarray:
-        """将一轮的边界形状导数装配为网格速度场 V。"""
+    def _assemble_velocity(self, sol_f, sol_b, movable) -> tuple[np.ndarray, int]:
+        """将一轮的边界形状导数装配为网格速度场 V，返回 (V, HJ 子步数)。
+
+        normalize="max"（旧行为）：V = δp/max|δp|，子步数 = step_cells/cfl，
+        一点独享 |V|=1。normalize="none"：V = δp 原值，子步数由
+        plan_substeps 按参考分位规划——各点按自身 δp 比例移动，参考分位点
+        位移恰为 step_cells·dx，超出者不受限幅（实际还受速度延拓带
+        extension_band_mm 的物理上限约束）。
+        """
         cfg = self.cfg
         s = cfg.sampling
         v_mask_grid = build_velocity_mask(
@@ -191,7 +196,7 @@ class OptimizerPipeline:
 
         pts, nrm = boundary_samples(movable, self.ls, cfg)
         if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新
-            return np.zeros(self.ls.phi.shape)
+            return np.zeros(self.ls.phi.shape), 0
         self._check_field_grids(sol_f, sol_b)
         # 按当前设置直接使用式 (54) 的复数 S 参数导数，不乘 |S| 的相位链式因子。
 
@@ -216,7 +221,15 @@ class OptimizerPipeline:
         bnd = pts - side * s.intersection_offset_mm * nrm
         # 掩膜先于归一化：被禁点不参与 max|δp|，避免拖慢全场。
         active = interp_mask_at(self.ls, bnd, v_mask_grid) > 0.5
-        v = fixed_step_velocity(dp, cfg.optimizer.velocity_sign, active)
+        opt = cfg.optimizer
+        v = fixed_step_velocity(dp, opt.velocity_sign, active,
+                                normalize=opt.normalize)
+        if opt.normalize == "none":
+            steps, info = plan_substeps(
+                dp, active, step_cells=opt.step_cells, cfl=opt.cfl,
+                dx=self.ls.dx, step_ref_quantile=opt.step_ref_quantile)
+        else:
+            steps = max(1, round(opt.step_cells / opt.cfl))
         v_seed, counts = scatter_inverse_distance(
             self.ls, bnd, v, max_dist_cells=s.scatter_max_cells)
         V, method = extend_velocity(
@@ -226,7 +239,14 @@ class OptimizerPipeline:
               f"{s.intersection_offset_mm:g} mm，WLS {s.wls_order} 阶 R="
               f"{s.wls_radius_cells} 格，回退 {st.n_fallback}），种子节点 "
               f"{int((counts > 0).sum())} 个，延拓 {method}")
-        return V * v_mask_grid
+        if opt.normalize == "none":
+            cap = f"，触顶 {SUBSTEP_CAP}" if info["capped"] else ""
+            print(f"[步长] normalize=none：|δp| max/ref(p{opt.step_ref_quantile:.0%})="
+                  f"{info['vmax']:.3g}/{info['ref']:.3g}，子步 {steps}{cap}；"
+                  f"估算位移 p50/p90/max = {info['disp_p50_mm']:.3f}/"
+                  f"{info['disp_p90_mm']:.3f}/{info['disp_max_mm']:.3f} mm"
+                  f"（延拓带 {cfg.level_set.extension_band_mm:g} mm 为物理上限）")
+        return V * v_mask_grid, steps
 
     def _check_field_grids(self, sol_f, sol_b) -> None:
         """四个场必须导出在同一张 (x, y) 网格上（z 由各自的采样面吸附决定）。

@@ -57,8 +57,11 @@ def test_boundary_samples_use_intersections_and_phi_grid_step():
     """
     cfg = CaseConfig.from_yaml(CFG_PATH)
     assert cfg.field_export_step_mm == cfg.design_region.grid_step_mm == 0.1
-    # 优化器步长以格为单位：1 格
-    assert cfg.optimizer.step_cells == 1.0
+    # 优化器步长以格为单位：8 格（2026-10-17 起的 step0.8mm 试验）
+    assert cfg.optimizer.step_cells == 8.0
+    # 2026-10-18：去掉 max 归一化（各点按自身 δp 比例移动，p90 参考分位）
+    assert cfg.optimizer.normalize == "none"
+    assert cfg.optimizer.step_ref_quantile == 0.9
     # 采样沿法向**内移** δz = 0.3 mm（论文 p.501：边缘上取场奇异，要贴着
     # 边缘、在金属内侧采样）；偏移方向由 sample_side 定，数值恒为正
     assert cfg.sampling.intersection_offset_mm == 0.3

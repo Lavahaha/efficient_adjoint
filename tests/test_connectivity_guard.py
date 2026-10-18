@@ -300,8 +300,9 @@ def test_guard_keeps_every_cst_shape_connected_under_a_tearing_velocity(
     def tear(self, sol_f, sol_b, movable):
         V = np.zeros(self.ls.phi.shape)
         V[(self.ls.xs > 20.0) & (self.ls.xs < 21.0), :] = -1.0    # 收缩 → 咬断
+        steps = max(1, round(self.cfg.optimizer.step_cells / self.cfg.optimizer.cfl))
         return V * build_velocity_mask(self.ls, self.cfg,
-                                       frozen=self.guard.frozen)
+                                       frozen=self.guard.frozen), steps
 
     monkeypatch.setattr(OptimizerPipeline, "_assemble_velocity", tear)
     pipe = OptimizerPipeline(c, solver, make_level_set(c))
@@ -325,7 +326,7 @@ def test_pipeline_rolls_back_and_stops_when_repair_keeps_failing(
     solver = _StubSolver(c)
     monkeypatch.setattr(
         OptimizerPipeline, "_assemble_velocity",
-        lambda self, sol_f, sol_b, movable: np.full(self.ls.phi.shape, -0.5))
+        lambda self, sol_f, sol_b, movable: (np.full(self.ls.phi.shape, -0.5), 2))
     monkeypatch.setattr(ConnectivityGuard, "apply",
                         lambda self, ls, log=print: False)
 

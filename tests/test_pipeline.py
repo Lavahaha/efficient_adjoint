@@ -241,6 +241,7 @@ def test_inside_sampling_scatters_to_the_boundary_not_the_sample_points(
     cfg = make_compact_cfg(tmp_path, max_iterations=1)
     cfg.sampling.sample_side = "inside"
     cfg.sampling.intersection_offset_mm = 0.3
+    cfg.sampling.field_z_mm = -0.1      # 避开 z=+0.0015 金属内采样面（同上）
     seen: dict[str, np.ndarray] = {}
 
     def spy_scatter(ls, points, values, **kw):
@@ -297,3 +298,48 @@ def test_intersection_scheme_rejects_a_sample_plane_inside_the_metal(tmp_path):
     with pytest.raises(ValueError, match="落在金属体内"):
         OptimizerPipeline(cfg, solver, make_level_set(cfg)).run()
     assert solver.closed
+
+
+def test_no_normalize_mode_feeds_raw_delta_p_to_the_scatter(tmp_path, monkeypatch):
+    """normalize="none"：散点收到的是 δp 原值（不再一点独享 |V|=1），且形状在动。
+
+    锁的是端到端契约：pipeline 里 fixed_step_velocity 的输出 = sign·δp
+    （active 掩膜后），而不是 max|δp| 归一化的 [−1, 1] 值——后者的 max 恒为 1，
+    两者对同一条 δp 不可能全等（δp 沿 x 有相位梯度、大小不一）。
+    """
+    from eaopt.adjoint.sampling import scatter_inverse_distance as real_scatter
+    from eaopt.optimize.step import fixed_step_velocity as real_fsv
+
+    cfg = make_compact_cfg(tmp_path, max_iterations=2)
+    cfg.sampling.field_z_mm = -0.1          # 避开 z=+0.0015 金属内采样面（同上）
+    cfg.optimizer.normalize = "none"
+    seen: dict[str, np.ndarray] = {}
+
+    def spy_fsv(delta_p, velocity_sign, active=None, normalize="max"):
+        seen["dp"] = np.asarray(delta_p, dtype=float).copy()
+        seen["active"] = np.asarray(active, dtype=bool).copy()
+        return real_fsv(delta_p, velocity_sign, active, normalize=normalize)
+
+    def spy_scatter(ls, points, values, **kw):
+        seen["v"] = np.array(values, dtype=float)
+        return real_scatter(ls, points, values, **kw)
+
+    monkeypatch.setattr("eaopt.pipeline.fixed_step_velocity", spy_fsv)
+    monkeypatch.setattr("eaopt.pipeline.scatter_inverse_distance", spy_scatter)
+
+    ls0 = make_level_set(cfg)
+    phi0 = ls0.phi.copy()
+    solver = OffsetGridStubSolver(cfg, foms=(0.2, 0.3))
+    OptimizerPipeline(cfg, solver, ls0).run()
+
+    # 1) 散点值 = active 掩膜后的原值 δp（乘符号），未被 max 归一化
+    raw = np.where(seen["active"], seen["dp"], 0.0) * cfg.optimizer.velocity_sign
+    assert np.allclose(seen["v"], raw)
+    assert np.abs(seen["v"]).max() > 0.0                       # δp 非零
+    assert not np.allclose(seen["v"], seen["v"] / np.abs(seen["v"]).max())  # 非 max 归一化形态
+
+    # 2) 形状真的在动
+    dphi = np.abs(ls0.phi - phi0)
+    assert dphi.max() > 0.0
+    lines = (tmp_path / "results" / "history.jsonl").read_text().splitlines()
+    assert len(lines) == 2
