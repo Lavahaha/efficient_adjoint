@@ -181,6 +181,24 @@ class CstSolver(SolverInterface):
         """端口 to_port 激励（工程 bwd）= 论文的伴随仿真。"""
         return self._solve("bwd")
 
+    def export_field_for_plot(self, box, *, eval_id: int, tag: str = "fwd"):
+        """Re-export the current field over a wider plot box without another solve."""
+        if self._it != int(eval_id):
+            raise RuntimeError(
+                f"Plot field requested for CST eval {eval_id}, but the active "
+                f"forward project is at eval {self._it}"
+            )
+        prj = self._open(tag)
+        out = Path(self.cfg.output.dir) / "cst_work" / f"plot_{tag}_Efield_{int(eval_id):03d}.txt"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        step_xy, step_z = self.setup.resolve_export_steps(self.cfg.field_export_step_mm)
+        try:
+            return R.export_field_cropped(
+                prj.model3d, "Efield", float(self.setup.frequency_ghz),
+                step_xy, out, box, 0.0, step_z_mm=step_z, log=self.log)
+        finally:
+            out.unlink(missing_ok=True)
+
     def close(self) -> None:
         """存盘收尾（**不关 CST 实例**：常驻会话供下一次运行复用）。
 

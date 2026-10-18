@@ -417,11 +417,15 @@ class AdjointLevelSetOptimizer:
         return V, f, bnd, g
 
     def run(self, ls: LevelSet, n_iter: int = 30,
-            callback: Optional[Callable[[int, LevelSet, dict], None]] = None):
+            callback: Optional[Callable[[int, LevelSet, dict], None]] = None,
+            state_callback: Optional[Callable[[int, LevelSet, ForwardResult], None]] = None):
+        """Run iterations; ``state_callback`` receives state 0 and each accepted update."""
         cfg, dx = self.cfg, ls.grid.dx
         sign = 1.0 if cfg.maximize else -1.0
         fwd = self.p.forward(ls)
         f_cur = fom_value_and_weight(fwd.s, self.p.fom_kind)[0]
+        if state_callback:
+            state_callback(0, ls, fwd)
         step = cfg.step_cells
         for it in range(n_iter):
             V, f, bnd, g = self.velocity(ls, fwd)
@@ -448,6 +452,8 @@ class AdjointLevelSetOptimizer:
             if not accepted:
                 break
             ls, fwd, f_cur = trial, fwd_t, f_t
+            if state_callback:
+                state_callback(it + 1, ls, fwd)
             step = min(step * 1.25, cfg.step_max_cells)
         self.history.append(dict(it=len(self.history), f=f_cur, final=True))
         return ls

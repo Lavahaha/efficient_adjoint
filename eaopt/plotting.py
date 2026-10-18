@@ -43,7 +43,8 @@ __all__ = [
     "REGIONS", "region_outlines", "draw_regions",
     "draw_metal_contour", "field_magnitude", "draw_field_map",
     "load_ls", "snapshot_figure", "sparams_curves", "sparams_figure",
-    "efield_evolution_figure",
+    "efield_evolution_figure", "adjoint_levelset_state_figure",
+    "adjoint_levelset_sparams_figure",
 ]
 
 #: 金属 / 空气 / 基板 / 设计区之外的底色（与 layout_reference.png 同色系）
@@ -296,5 +297,130 @@ def efield_evolution_figure(cfg, outdir, path, *, max_panels: int = 6):
     fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.02, pad=0.02,
                  label=f"|E| (V/m), shared vmax = {vmax:.3g}")
     fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
+                                  iteration: int, z_used: float, path, dpi: int = 140):
+    """Full coupler layout with the updated level set and its forward |E| map."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Polygon as MplPolygon, Rectangle
+    from eaopt.solver import cst_model
+
+    phi = np.asarray(phi, dtype=float)
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    e_x, e_y = np.asarray(e_x, dtype=float), np.asarray(e_y, dtype=float)
+    e_mag = np.asarray(e_magnitude, dtype=float)
+    if e_mag.shape != (e_x.size, e_y.size):
+        raise ValueError(
+            f"|E| shape {e_mag.shape} does not match field axes "
+            f"({e_x.size}, {e_y.size})"
+        )
+    if phi.shape != (x.size, y.size):
+        raise ValueError(f"phi shape {phi.shape} does not match level-set axes ({x.size}, {y.size})")
+
+    layout = cst_model.layout_view()
+    substrate = next(s for s in layout["shapes"] if s[0] == "substrate")
+    substrate_pts = np.asarray(substrate[1], dtype=float)
+    xstep = float(np.median(np.diff(e_x))) if e_x.size > 1 else 0.1
+    ystep = float(np.median(np.diff(e_y))) if e_y.size > 1 else 0.1
+    extent = (e_x[0] - xstep / 2, e_x[-1] + xstep / 2,
+              e_y[0] - ystep / 2, e_y[-1] + ystep / 2)
+
+    finite = e_mag[np.isfinite(e_mag)]
+    vmax = float(np.percentile(finite, 99.5)) if finite.size else 1.0
+    if vmax <= 0.0:
+        vmax = 1.0
+    fig, ax = plt.subplots(figsize=(12, 6.5), constrained_layout=True)
+    ax.set_facecolor(OUTSIDE_COLOR)
+    image = ax.imshow(
+        e_mag.T, origin="lower", extent=extent, cmap="inferno",
+        vmin=0.0, vmax=vmax, interpolation="nearest", aspect="equal", zorder=1,
+    )
+
+    # The fixed feeds are template geometry; the arm inside the design box is
+    # drawn from the current level set below.
+    for kind, points, label in layout["shapes"]:
+        if kind != "metal" or label == "design metal (arm)":
+            continue
+        ax.add_patch(MplPolygon(
+            np.asarray(points, dtype=float), closed=True,
+            facecolor=METAL_COLOR, edgecolor="white", linewidth=0.35,
+            zorder=4, label="fixed feed metal" if label else None,
+        ))
+
+    if np.min(phi) < 0.0:
+        ax.contourf(x, y, phi.T,
+                    levels=[float(np.min(phi) - 1e-9), 0.0],
+                    colors=[METAL_COLOR], zorder=5)
+        if np.min(phi) < 0.0 < np.max(phi):
+            ax.contour(x, y, phi.T, levels=[0.0], colors=["white"],
+                       linewidths=0.65, zorder=6)
+
+    # Mark the substrate edge and the movable design box over the field map.
+    sx0, sx1 = float(substrate_pts[:, 0].min()), float(substrate_pts[:, 0].max())
+    sy0, sy1 = float(substrate_pts[:, 1].min()), float(substrate_pts[:, 1].max())
+    ax.add_patch(Rectangle((sx0, sy0), sx1 - sx0, sy1 - sy0,
+                           fill=False, edgecolor="#555555", linewidth=0.7, zorder=3))
+    box = cfg.design_region.box
+    ax.add_patch(Rectangle((box.x[0], box.y[0]), box.width, box.height,
+                           fill=False, edgecolor="#d62728", linestyle="--",
+                           linewidth=1.2, zorder=7))
+
+    bounds = layout["bounds"]
+    ax.set_xlim(bounds[0], bounds[1])
+    ax.set_ylim(bounds[2], bounds[3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (mm)")
+    ax.set_ylabel("y (mm)")
+    ax.set_title(f"Coupler shape and forward electric field, iteration {iteration} (z={z_used:g} mm)")
+    fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02, label="|E| (V/m), 99.5th percentile scale")
+    handles = [
+        Rectangle((0, 0), 1, 1, facecolor=METAL_COLOR, label="metal"),
+        Line2D([0], [0], color="#d62728", linestyle="--", label="design region"),
+        Line2D([0], [0], color="#555555", linewidth=0.7, label="substrate edge"),
+    ]
+    ax.legend(handles=handles, loc="upper right", fontsize=8, framealpha=0.9)
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def adjoint_levelset_sparams_figure(cfg, history, path, *, dpi: int = 140):
+    """Plot forward |S_i,j| in dB for each accepted optimization state."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    rows = list(history)
+    if not rows:
+        return None
+    iterations = [int(row["iteration"]) for row in rows]
+    keys = sorted({key for row in rows for key in row.get("s_params_db", {})})
+    if not keys:
+        return None
+
+    fom_key = f"S{int(cfg.objective.to_port)}{int(cfg.objective.from_port)}"
+    fig, ax = plt.subplots(figsize=(7.2, 4.6), constrained_layout=True)
+    for key in keys:
+        values = [row.get("s_params_db", {}).get(key) for row in rows]
+        values = [np.nan if value is None else float(value) for value in values]
+        is_fom = key == fom_key
+        ax.plot(iterations, values,
+                marker="o" if is_fom else "s", markersize=4 if is_fom else 3,
+                linewidth=2.2 if is_fom else 1.2,
+                label=(f"FoM: |{key}|" if is_fom else f"|{key}|"))
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("S parameter (dB)")
+    ax.set_title(f"{cfg.name}: S parameters vs iteration")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+    if len(iterations) <= 25:
+        ax.set_xticks(iterations)
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return path

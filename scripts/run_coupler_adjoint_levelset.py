@@ -19,12 +19,14 @@ if str(ROOT) not in sys.path:
 
 import adjoint_levelset as als
 from eaopt.cli import base_parser, banner, make_log, safe_console
-from eaopt.config import CaseConfig
+from eaopt.config import BoxSpec, CaseConfig
 from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import build_velocity_mask
 from eaopt.pipeline import make_level_set
 from eaopt.solver.case import load_case
 from eaopt.solver.cst import CstSolver
+from eaopt.solver import cst_model
+from eaopt import plotting
 
 
 def _select_z_plane(field, requested_z_mm: float, metal_thickness_mm: float) -> tuple[int, float]:
@@ -155,8 +157,18 @@ class CstCouplerProblem:
             s=s,
             fields=fields,
             extra={"eval_id": eval_id, "z_mm": z_used,
-                   "x": fields.x.copy(), "y": fields.y.copy()},
+                   "x": fields.x.copy(), "y": fields.y.copy(),
+                   "s_params": dict(sol.s_params)},
         )
+
+    def e_field_for_plot(self, eval_id: int, box: BoxSpec):
+        grid = self.solver.export_field_for_plot(box, eval_id=eval_id, tag="fwd")
+        iz, z_used = _select_z_plane(
+            grid, self.requested_z_mm, self.setup.metal_thickness_mm)
+        e_plane = np.asarray(grid.plane(iz), dtype=complex)
+        magnitude = np.sqrt(np.sum(np.abs(e_plane) ** 2, axis=-1))
+        axes = grid.axes()
+        return axes[0], axes[1], magnitude, z_used
 
     def adjoint(self, ls: als.LevelSet, fwd: als.ForwardResult) -> als.FieldBundle:
         sol = self.solver.solve_backward()
@@ -318,6 +330,14 @@ def main() -> None:
         optimizer = als.AdjointLevelSetOptimizer(
             problem, design_mask, opt_cfg, force_metal=force_metal,
             force_air=force_air, anchor=anchor)
+        layout = cst_model.layout_view()
+        substrate = next(shape for shape in layout["shapes"] if shape[0] == "substrate")
+        substrate_xy = np.asarray(substrate[1], dtype=float)
+        field_box = BoxSpec(
+            x=(float(substrate_xy[:, 0].min()), float(substrate_xy[:, 0].max())),
+            y=(float(substrate_xy[:, 1].min()), float(substrate_xy[:, 1].max())),
+        )
+        sparams_history = []
 
         if args.gradient_check:
             check = als.gradient_check(problem, ls, design_mask=design_mask)
@@ -345,8 +365,38 @@ def main() -> None:
                     f"step={rec['step']:.4g} cells, backtracks={rec['backtracks']}, "
                     f"accepted={rec['accepted']}")
 
+            def save_state(state_it, state_ls, fwd):
+                eval_id = int(fwd.extra["eval_id"])
+                ex, ey, e_mag, z_used = problem.e_field_for_plot(eval_id, field_box)
+                np.savez_compressed(
+                    output_dir / f"adjoint_levelset_state_{state_it:03d}.npz",
+                    iteration=np.asarray(state_it, dtype=np.int32),
+                    phi=state_ls.phi,
+                    x=state_ls.grid.x,
+                    y=state_ls.grid.y,
+                    e_x=ex,
+                    e_y=ey,
+                    e_mag=e_mag,
+                    z_mm=np.asarray(z_used, dtype=float),
+                )
+                plotting.adjoint_levelset_state_figure(
+                    cfg, state_ls.phi, state_ls.grid.x, state_ls.grid.y,
+                    ex, ey, e_mag, iteration=state_it, z_used=z_used,
+                    path=output_dir / f"fig6b_iter_{state_it:03d}.png",
+                )
+
+                params_db = {}
+                for (response, stimulus), value in sorted(fwd.extra["s_params"].items()):
+                    magnitude = abs(complex(value))
+                    params_db[f"S{response}{stimulus}"] = (
+                        float(20.0 * np.log10(magnitude)) if magnitude > 0.0 else None)
+                sparams_history.append({"iteration": state_it, "s_params_db": params_db})
+                _write_json(output_dir / "sparams_history.json", sparams_history)
+                log(f"[adjoint_levelset] saved full-layout field/shape plot for state "
+                    f"{state_it:03d}: {output_dir / f'fig6b_iter_{state_it:03d}.png'}")
+
             final_ls = optimizer.run(ls, n_iter=cfg.optimizer.max_iterations,
-                                     callback=callback)
+                                     callback=callback, state_callback=save_state)
 
         iteration_records = [r for r in optimizer.history if "accepted" in r]
         if iteration_records and not iteration_records[-1]["accepted"]:
@@ -364,6 +414,8 @@ def main() -> None:
             np.asarray(poly, dtype=float).tolist()
             for poly in als.boundary_polygons(final_ls)
         ])
+        plotting.adjoint_levelset_sparams_figure(
+            cfg, sparams_history, output_dir / "fig7_sparams_vs_iteration.png")
         _write_json(output_dir / "adjoint_levelset_summary.json", {
             "case": cfg.name,
             "objective": f"maximize |S{cfg.objective.to_port}{cfg.objective.from_port}|",
@@ -375,6 +427,8 @@ def main() -> None:
             "requested_field_z_mm": cfg.sampling.field_z_mm,
             "prefactor_scale": prefactor_scale,
             "output_dir": str(output_dir),
+            "state_plots": len(sparams_history),
+            "sparams_plot": str(output_dir / "fig7_sparams_vs_iteration.png"),
         })
         log(f"[adjoint_levelset] complete: final |S{cfg.objective.to_port}"
             f"{cfg.objective.from_port}|={final_fom:.8g}; outputs in {output_dir}")
