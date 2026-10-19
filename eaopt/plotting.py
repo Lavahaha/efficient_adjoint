@@ -355,13 +355,13 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     for points in fixed_metal_polygons:
         ax.add_patch(MplPolygon(
             np.asarray(points, dtype=float), closed=True,
-            fill=False, edgecolor="#777777", linewidth=0.8,
+            fill=False, edgecolor="#777777", linewidth=1.5,
             zorder=4,
         ))
 
     if np.min(phi) < 0.0 < np.max(phi):
         ax.contour(x, y, phi.T, levels=[0.0], colors=["#777777"],
-                   linewidths=0.8, zorder=6)
+                   linewidths=1.5, zorder=6)
     elif np.min(phi) < 0.0 and np.max(phi) <= 0.0:
         # With no air nodes the metal fills the design box, so its boundary is
         # the box edge rather than an interior zero contour.
@@ -370,7 +370,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
              (cfg.design_region.box.x[1], cfg.design_region.box.y[0]),
              (cfg.design_region.box.x[1], cfg.design_region.box.y[1]),
              (cfg.design_region.box.x[0], cfg.design_region.box.y[1])],
-            closed=True, fill=False, edgecolor="#777777", linewidth=0.8,
+            closed=True, fill=False, edgecolor="#777777", linewidth=1.5,
             zorder=6,
         ))
 
@@ -378,7 +378,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     sx0, sx1 = float(substrate_pts[:, 0].min()), float(substrate_pts[:, 0].max())
     sy0, sy1 = float(substrate_pts[:, 1].min()), float(substrate_pts[:, 1].max())
     ax.add_patch(Rectangle((sx0, sy0), sx1 - sx0, sy1 - sy0,
-                           fill=False, edgecolor="#555555", linewidth=0.7, zorder=3))
+                           fill=False, edgecolor="#555555", linewidth=1.0, zorder=3))
     box = cfg.design_region.box
     ax.add_patch(Rectangle((box.x[0], box.y[0]), box.width, box.height,
                            fill=False, edgecolor="#d62728", linestyle="--",
@@ -388,16 +388,21 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     ax.set_xlim(bounds[0], bounds[1])
     ax.set_ylim(bounds[2], bounds[3])
     ax.set_aspect("equal")
-    ax.set_xlabel("x (mm)")
-    ax.set_ylabel("y (mm)")
-    ax.set_title(f"{cfg.name}: shape and forward electric field, iteration {iteration} (z={z_used:g} mm)")
-    fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02, label="|E| (V/m), 99.5th percentile scale")
+    ax.set_xlabel("x (mm)", fontsize=14)
+    ax.set_ylabel("y (mm)", fontsize=14)
+    ax.tick_params(axis="both", labelsize=12)
+    ax.set_title(
+        f"{cfg.name}: shape and forward electric field, iteration {iteration} "
+        f"(z={z_used:g} mm)", fontsize=16, pad=12)
+    colorbar = fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02)
+    colorbar.set_label("|E| (V/m), 99.5th percentile scale", fontsize=12)
+    colorbar.ax.tick_params(labelsize=10)
     handles = [
-        Line2D([0], [0], color="#777777", linewidth=0.8, label="metal outline"),
+        Line2D([0], [0], color="#777777", linewidth=1.5, label="metal outline"),
         Line2D([0], [0], color="#d62728", linestyle="--", label="design region"),
-        Line2D([0], [0], color="#555555", linewidth=0.7, label="substrate edge"),
+        Line2D([0], [0], color="#555555", linewidth=1.0, label="substrate edge"),
     ]
-    ax.legend(handles=handles, loc="upper right", fontsize=8, framealpha=0.9)
+    ax.legend(handles=handles, loc="upper right", fontsize=10, framealpha=0.9)
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return path
@@ -427,11 +432,12 @@ def adjoint_levelset_sparams_figure(cfg, history, path, *, dpi: int = 140):
                 marker="o" if is_fom else "s", markersize=4 if is_fom else 3,
                 linewidth=2.2 if is_fom else 1.2,
                 label=(f"FoM: |{key}|" if is_fom else f"|{key}|"))
-    ax.set_xlabel("Iteration")
-    ax.set_ylabel("S parameter (dB)")
-    ax.set_title(f"{cfg.name}: S parameters vs iteration")
+    ax.set_xlabel("Iteration", fontsize=14)
+    ax.set_ylabel("S parameter (dB)", fontsize=14)
+    ax.tick_params(axis="both", labelsize=12)
+    ax.set_title(f"{cfg.name}: S parameters vs iteration", fontsize=16, pad=12)
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=10)
     if len(iterations) <= 25:
         ax.set_xticks(iterations)
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
