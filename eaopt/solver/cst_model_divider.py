@@ -12,18 +12,14 @@ YAML 的 ``name`` 选模块。
     设计区（红框）= 可动金属的活动范围，x∈[6.0,33.7] y∈[−9.0,9.0]；
       框内初始金属 = λg/2 长输入段 + 两根 λg/4 长分路臂（Y 形，线宽 w=2），
       臂以 θ=27.9° 张开，臂端中心线正好落在框右界上
-    固定金属：输入馈线（端口 1 → 框左界）、两根输出线（框右界 → 水平段 →
-      R=2.5 圆角拐弯 → 竖直段 → 板上下边缘 = 端口 2/3）
+    固定金属：输入馈线（端口 1 → 框左界）、两根水平输出线（框右界 → 板右边缘）
     基板 Rogers3003 30mil；接地 PEC；空气盒把计算域撑到端口面所需高度
-    端口：1 在 xmin 面（输入馈线左端），2/3 在 ymax/ymin 面（竖直走线顶端）
+    端口：1 在 xmin 面（输入馈线左端），2/3 在 xmax 面（水平输出线末端）
     监视器：5 GHz E/H（Volume）；时域求解；边界 x/y/zmin 磁、zmax 电
 
-论文唯一的几何约束——"to ensure the in-phase output of the two output ports,
-constraints on the structure description are added so that the microstrip lines
-are always connected"（两根输出线必须始终连着输入）——由三件事兑现：固定馈线
-**伸进设计区** ``FEED_OVERLAP``（与可动金属形成**有面积**的重叠，不是只贴着
-框边界的一条线）、可动金属在设计区左右界处必然穿出（taper 让那里的速度趋零），
-以及优化配置把三条馈线列进 ``fixed_region``（邻域冻结速度）。
+论文要求两根输出线始终与输入连通。这里固定馈线与可动金属在设计区边界共边
+连接；优化配置将馈线列进 ``fixed_region``，并冻结连接邻域的速度。设计区轮廓
+闭合时不外扩，因此活动金属不会与固定金属产生面积重叠。
 
 与论文的两处**已知偏差**（常量都起了名字，随时可切回图上方案）：
   * 臂长取文字的 λg/4 = 9.61（图上量得 14.2，与 λ/4 标注自相矛盾）；
@@ -36,7 +32,7 @@ from __future__ import annotations
 import math
 
 from eaopt.solver.cst_model import (
-    DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, arc_points, block_header,
+    DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header,
     brick, design_region_update, field_monitor, frequency_range,
     material_normal, polygon_extrude, set_boundaries, time_domain_solver_setup,
     waveguide_port,
@@ -57,8 +53,8 @@ __all__ = [
     # 布局常量
     "W", "EPS_EFF", "LAMBDA_G", "L_IN", "L_ARM", "ARM_DX", "ARM_DY",
     "THETA_DEG", "FORK", "ARM_END", "BOX_X0", "BOX_X1", "BOX_Y0", "BOX_Y1",
-    "BOARD_X", "BOARD_Y", "OUT_X0", "OUT_X1", "R_BEND", "BEND_CY", "V_X",
-    "PORT_MARGIN", "SUBSTRATE", "ARC_SEGS", "FEED_OVERLAP",
+    "BOARD_X", "BOARD_Y", "PORT_MARGIN", "SUBSTRATE",
+    "DESIGN_BOUNDARY_PAD_MM",
     "SUB_H", "EPS_R", "TAND", "METAL_T", "AIR_H", "FREQ", "FMIN", "FMAX",
 ]
 
@@ -94,28 +90,13 @@ BOX_Y1 = 9.0                            # 盒高 2× 输出线偏移（图上比
 ARM_END = (BOX_X1, ARM_DY)              # 臂端中心 (33.7, 4.5)
 
 # ---- 板 / 计算域（几何包围盒就是计算域，端口面落在它的边界面上）----
-BOARD_X = (0.0, 50.0)       # 左端 = 端口 1 面；右侧留 5 mm 余量
-BOARD_Y = (-11.0, 11.0)     # 上下边缘 = 端口 2/3 面（竖直走线走到这里）
+BOARD_X = (0.0, 50.0)       # 左右端分别是输入端口面和两个输出端口面
+BOARD_Y = (-11.0, 11.0)     # 基板上下边缘
 AIR_H = 4.0                 # 空气盒顶 = 计算域 zmax（端口高 ≈ h + 5h，同耦合器）
 PORT_MARGIN = 1.6           # 端口面横向半宽 = w/2 + 1.6（同耦合器）
 
-# ---- 固定馈线与可动金属的重叠 ----
-# 固定馈线**伸进设计区**这么深（输入馈线越过 x=6.0、输出线越过 x=33.7）。
-# **不能为 0**：只贴框边界的话，两块金属只在一条线上相触（接触面积 = 0），
-# CST 里是两个各自独立的实体——3D 视图上就是"初始建模就断裂"，且连通性
-# 依赖网格恰好把共面的两个实体合上，脆。0.5 = 5 个 φ 网格、约 λg/77，
-# 保证至少跨过 CST 一两个网格；再大就开始吃掉设计自由度（掩膜会连
-# 0.2 mm 余量一起冻住，见 optimize/constraints.build_velocity_mask）。
-FEED_OVERLAP = 0.5
-
-# ---- 输出线（固定）：框内 FEED_OVERLAP 处起 → 水平段 → 圆角 → 竖直段 → 板边缘 ----
-OUT_X0 = BOX_X1             # 33.7：框右界（臂端在这里；输出线从这里**往框内**再多走
-                            # FEED_OVERLAP 才开始，见 output_trace_polygon）
-OUT_X1 = 41.5               # 水平段末端 = 拐弯起点
-R_BEND = 2.5                # 拐弯中心线半径（外缘 3.5 / 内缘 1.5，同心）
-BEND_CY = ARM_DY + R_BEND   # 7.0：拐弯中心 y（上侧；下侧取负）
-V_X = OUT_X1 + R_BEND       # 44.0：竖直段中心线 x → 端口面中心
-ARC_SEGS = 6                # 每段四分之一圆的折线段数（弦高误差 ~0.02 mm）
+# 开放轮廓沿设计区边缘闭合，不向固定馈线方向外扩。
+DESIGN_BOUNDARY_PAD_MM = 0.0
 
 
 # =========================================================================== #
@@ -125,8 +106,8 @@ def _clip_x_max(poly, xmax: float) -> list[tuple[float, float]]:
     """把多边形按 ``x <= xmax`` 半平面裁断（Sutherland–Hodgman 单边裁剪）。
 
     分路臂的臂端中心线正好落在设计区右界上（``ARM_END[0] == BOX_X1``），
-    不裁的话有半个臂端头伸到框外，扎进固定的输出线实体里（重叠）。
-    设计区是"可动金属的活动范围"，框外那部分既不被 φ 描述、又是多余几何。
+    不裁的话有半个臂端头伸到框外，与固定输出线产生面积重叠。
+    设计区是可动金属的活动范围，框外那部分既不被 φ 描述、又是多余几何。
     裁剪结果里同时去掉重复点（点在裁剪线上时会重复发一次）。
     """
     out: list[tuple[float, float]] = []
@@ -154,10 +135,7 @@ def arm_polygon(sign: float) -> list[tuple[float, float]]:
     """分路臂（**可动**）：``sign=+1`` 上臂 / ``-1`` 下臂，从分叉点到臂端。
 
     臂 = 分叉点 F 与臂端 E 之间、宽 w 的等宽条带（E 在框右界上），按框右界
-    裁断：臂端因此是一条斜切口（(33.7, 4.5) 到 (33.7, 3.37)），它**整段落在
-    固定输出线的 y 区间 [3.5, 5.5] 里**——固定输出线从 x=33.7 起**往框内**再多走
-    ``FEED_OVERLAP``，两者因此重叠成一块（φ 侧则由 close_open_contours 把轮廓
-    外扩 0.05 mm 压实）。
+    裁断：臂端形成斜切口，与设计区外的水平输出线在框边界共边相接。
     """
     s = 1.0 if sign > 0 else -1.0
     fx, fy = FORK
@@ -173,42 +151,19 @@ def arm_polygon(sign: float) -> list[tuple[float, float]]:
 
 
 def input_feed_polygon() -> list[tuple[float, float]]:
-    """输入馈线（**固定**）：端口 1（板左边缘）**穿过框左界伸进设计区**
-    ``FEED_OVERLAP``，宽 w——与可动输入段重叠出 0.5×2 mm² 的实心连接。"""
+    """输入馈线（固定）：端口 1（板左边缘）到设计区左界，宽 w。"""
     h = W / 2.0
-    x_in = BOX_X0 + FEED_OVERLAP
-    return [(BOARD_X[0], -h), (x_in, -h), (x_in, h), (BOARD_X[0], h)]
+    return [(BOARD_X[0], -h), (BOX_X0, -h), (BOX_X0, h), (BOARD_X[0], h)]
 
 
 def output_trace_polygon(sign: float) -> list[tuple[float, float]]:
-    """输出线（**固定**）：``sign=+1`` 上输出 / ``-1`` 下输出。
-
-    从**框内** ``OUT_X0 - FEED_OVERLAP`` 处起（y 中心 ±ARM_DY 与臂端对齐）
-    水平走到 OUT_X1，经 R=R_BEND 的同心圆弧拐弯（外缘 R+w/2、内缘 R−w/2），
-    再沿竖直段走到板边缘（端口面）。起点伸进框内是为了与臂端重叠出**有面积**
-    的连接（只贴框边界的话两者只在一条线上相触，见 FEED_OVERLAP）。
-    折线点序：外缘 → 拐弯 → 竖直段 → 拐弯 → 内缘返回，闭合边落在框内那条竖边上。
-    """
+    """输出线（固定）：从设计区右界水平延伸到板右边缘的直线微带。"""
     s = 1.0 if sign > 0 else -1.0
     h = W / 2.0
-    x0 = OUT_X0 - FEED_OVERLAP              # 起点（框内）
-    cy = s * BEND_CY                        # 拐弯中心 (41.5, ±7.0)
-    y_out = cy - s * (R_BEND + h)           # 水平段外缘 y（远离拐弯中心）
-    y_in = cy - s * (R_BEND - h)            # 水平段内缘 y
-    x_out = OUT_X1 + R_BEND + h             # 竖直段外缘 x（45）
-    x_in = OUT_X1 + R_BEND - h              # 竖直段内缘 x（43）
-    y_edge = s * BOARD_Y[1]                 # 竖直段末端 = 板边缘（端口面）
-    a_out = (-90.0 * s, 0.0)                # 外缘弧角：s=+1 (−90°→0°)，镜像取正
-    a_in = (0.0, -90.0 * s)
+    y0, y1 = sorted((s * ARM_DY - h, s * ARM_DY + h))
     return [
-        (x0, y_out),                        # 起点（框内，外缘）
-        (OUT_X1, y_out),                    # 水平段 → 拐弯起点
-        *arc_points(OUT_X1, cy, R_BEND + h, *a_out),    # 外圆角 → (x_out, cy)
-        (x_out, y_edge),                    # 竖直段外缘 → 板边缘
-        (x_in, y_edge),                     # 板边缘 → 竖直段内缘
-        (x_in, cy),                         # 竖直段内缘 → 内圆角起点
-        *arc_points(OUT_X1, cy, R_BEND - h, *a_in),     # 内圆角 → (OUT_X1, y_in)
-        (x0, y_in),                         # 水平段内缘 → 回起点
+        (BOX_X1, y0), (BOARD_X[1], y0),
+        (BOARD_X[1], y1), (BOX_X1, y1),
     ]
 
 
@@ -247,15 +202,12 @@ def _substrate_parts() -> list[str]:
 
 
 def _fixed_metal_parts() -> list[str]:
-    """固定金属：输入馈线（长方体）+ 两根输出线（带圆角的挤出多边形）。
-
-    输出线用挤出而不是长方体，是因为拐弯处是圆弧（与耦合器同款做法）。
-    """
-    x0, x1 = BOARD_X
+    """固定金属：输入馈线（长方体）+ 两根直线输出微带。"""
+    x0, _ = BOARD_X
     h = W / 2.0
     return [
-        # 右端 = BOX_X0 + FEED_OVERLAP：伸进设计区与可动输入段重叠（见 FEED_OVERLAP）
-        brick("in_feed", "feed", "PEC", x0, BOX_X0 + FEED_OVERLAP, -h, h,
+        # 输入固定馈线在设计区边界结束，两者沿 x=BOX_X0 共边连接。
+        brick("in_feed", "feed", "PEC", x0, BOX_X0, -h, h,
               0.0, METAL_T),
         polygon_extrude("out_top", "feed", "PEC",
                         output_trace_polygon(+1.0), METAL_T),
@@ -273,21 +225,21 @@ def _design_parts() -> list[str]:
 
 
 def _ports() -> list[str]:
-    """3 个波导端口：1 在 xmin 面，2/3 在 ymax/ymin 面（按优化目标激励 1/2）。
+    """3 个波导端口：1 在 xmin 面，2/3 在 xmax 面（按优化目标激励 1/2）。
 
     端口面 = 接地板底面（域 zmin）到空气盒顶（域 zmax）的矩形——下缘必须
     贴合接地参考面（CST 微带端口要求），横向半宽 = w/2 + 1.6（同耦合器）。
-    face 用 CST 的边界面名（xmin/ymax/ymin）——``.Orientation`` 只认这组。
+    face 用 CST 的边界面名 xmin/xmax。
     """
     pz0, pz1 = -SUB_H - METAL_T, AIR_H
     m = PORT_MARGIN
     h = W / 2.0
     return [
         waveguide_port(1, "p1", "xmin", BOARD_X[0], -h - m, h + m, pz0, pz1),
-        waveguide_port(2, "p2", "ymax", BOARD_Y[1],
-                       V_X - h - m, V_X + h + m, pz0, pz1),
-        waveguide_port(3, "p3", "ymin", BOARD_Y[0],
-                       V_X - h - m, V_X + h + m, pz0, pz1),
+        waveguide_port(2, "p2", "xmax", BOARD_X[1],
+                       ARM_DY - h - m, ARM_DY + h + m, pz0, pz1),
+        waveguide_port(3, "p3", "xmax", BOARD_X[1],
+                       -ARM_DY - h - m, -ARM_DY + h + m, pz0, pz1),
     ]
 
 
@@ -358,7 +310,7 @@ def layout_view() -> dict:
         ],
         "ports": [
             (1, x0, 0.0, 1, 0),                 # 输入：板左边缘
-            (2, V_X, y1, 0, -1),                # 上输出：板上下边缘
-            (3, V_X, y0, 0, 1),
+            (2, x1, ARM_DY, -1, 0),             # 上输出：板右边缘
+            (3, x1, -ARM_DY, -1, 0),
         ],
     }

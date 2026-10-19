@@ -41,6 +41,7 @@ from scipy import ndimage
 from scipy.interpolate import RegularGridInterpolator
 from scipy.spatial import cKDTree
 from skimage import measure
+from eaopt.geometry.contour import dedupe_vertices
 
 MU0 = 4e-7 * np.pi
 EPS0 = 8.8541878128e-12
@@ -175,8 +176,14 @@ def boundary_polygons(ls: LevelSet, tol: Optional[float] = None) -> List[np.ndar
     g = ls.grid
     tol = 0.2 * g.dx if tol is None else tol
     out = []
-    for c in measure.find_contours(ls.phi, 0.0):
+    for i, c in enumerate(measure.find_contours(ls.phi, 0.0)):
+        c = dedupe_vertices(np.asarray(c, dtype=float))
         c = measure.approximate_polygon(c, tolerance=tol / g.dx)
+        c = dedupe_vertices(np.asarray(c, dtype=float))
+        if len(c) < 2:
+            raise ValueError(
+                f"第 {i} 条水平集轮廓去重后不足两个点，无法转换为 CST 几何。"
+            )
         out.append(np.column_stack([g.x0 + c[:, 0] * g.dx, g.y0 + c[:, 1] * g.dx]))
     return out
 

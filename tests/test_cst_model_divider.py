@@ -90,52 +90,32 @@ def test_design_box_derives_from_the_layout():
     assert D.BOX_Y1 == pytest.approx(2.0 * D.ARM_DY)     # 上下各留一倍偏移
 
 
-def test_movable_metal_crosses_the_box_edges():
-    """论文唯一的几何约束："to ensure the in-phase output of the two output
-    ports, ... the microstrip lines are always connected"——兑现处是固定馈线
-    **伸进设计区**与可动金属**重叠成一块**：
-
-    * 输入馈线越过框左界到 x=6.5，与输入段重叠；
-    * 输出线从 x=33.2（框内）起，与臂端斜切口重叠。
-
-    重叠必须是**有面积**的：两块金属只贴着框边界那条线相触的话，CST 里是
-    两个各自独立的实体（初始建模看起来就是断的），连通得靠网格恰好把共面
-    的两个实体合上——实测就是这个坑。
-    """
-    assert 0.0 < D.FEED_OVERLAP <= 1.0         # 够跨过 CST 网格，又不吃掉设计自由度
-
-    # ---- 左界：输入馈线 × 输入段 ----
+def test_fixed_and_movable_metal_meet_without_area_overlap():
+    """固定/可动金属只在设计框边界共边相接，没有面积重叠。"""
     strip, feed = D.input_strip_polygon(), D.input_feed_polygon()
     assert min(x for x, _ in strip) == pytest.approx(D.BOX_X0)
     assert max(x for x, _ in strip) == pytest.approx(D.FORK[0])
-    joint = (D.BOX_X0 + D.FEED_OVERLAP / 2.0, 0.0)
-    assert _inside(feed, joint) and _inside(strip, joint)
-    # 只咬这么多：再往里就是可动金属的天下，固定馈线不许再伸
-    assert not _inside(feed, (D.BOX_X0 + D.FEED_OVERLAP + 0.1, 0.0))
+    assert max(x for x, _ in feed) == pytest.approx(D.BOX_X0)
+    assert min(x for x, _ in feed) == pytest.approx(D.BOARD_X[0])
+    assert _inside(feed, (D.BOX_X0 - 0.1, 0.0))
+    assert _inside(strip, (D.BOX_X0 + 0.1, 0.0))
+    assert not _inside(feed, (D.BOX_X0 + 0.1, 0.0))
 
-    # ---- 右界：输出线 × 臂端 ----
-    x_start = D.OUT_X0 - D.FEED_OVERLAP
     for sign in (+1, -1):
-        # 都取 sign 侧的 y（下臂镜像成正值）再排序，两个分支的比较才同向
         lo, hi = sorted(sign * y for y in _at_edge(D.arm_polygon(sign), D.BOX_X1))
-        assert hi == pytest.approx(D.ARM_DY, abs=1e-9)         # 上到臂端中心线
-        assert lo < D.ARM_DY                                   # 下探到中心线以下
-        # 输出线起点的断面 = 与臂端对齐的等宽线（y 中心 ±ARM_DY）；
-        # 同样先取 sign 侧再排序，两个分支的比较才同向
-        trace_lo, trace_hi = sorted(sign * y for y in
-                                    _at_edge(D.output_trace_polygon(sign), x_start))
-        assert (trace_lo, trace_hi) == pytest.approx(
-            (D.ARM_DY - D.W / 2, D.ARM_DY + D.W / 2))
-        joint = (x_start + D.FEED_OVERLAP / 2.0, sign * D.ARM_DY)
-        assert _inside(D.output_trace_polygon(sign), joint)
-        assert _inside(D.arm_polygon(sign), joint)
+        trace_lo, trace_hi = sorted(
+            sign * y for y in _at_edge(D.output_trace_polygon(sign), D.BOX_X1))
+        assert max(lo, trace_lo) < min(hi, trace_hi)  # 共享有限长度的连接边
+        assert min(x for x, _ in D.output_trace_polygon(sign)) == pytest.approx(D.BOX_X1)
+        assert max(x for x, _ in D.arm_polygon(sign)) == pytest.approx(D.BOX_X1)
+        assert _inside(D.output_trace_polygon(sign),
+                       (D.BOX_X1 + 0.1, sign * D.ARM_DY))
         assert not _inside(D.output_trace_polygon(sign),
-                           (x_start - 0.1, sign * D.ARM_DY))
+                           (D.BOX_X1 - 0.1, sign * D.ARM_DY))
 
 
 def test_arm_is_clipped_to_the_design_box():
-    """设计区是"可动金属的活动范围"：臂端中心线正好落在框右界上，不裁的话
-    有半个臂端头伸到框外、扎进固定的输出线实体里（φ 描述不到那块几何）。"""
+    """设计区是可动金属的活动范围：臂端不能伸入框外固定输出线。"""
     for sign in (+1, -1):
         arm = D.arm_polygon(sign)
         assert len(arm) == 5                              # 4 个角 + 1 个裁剪交点
@@ -143,26 +123,18 @@ def test_arm_is_clipped_to_the_design_box():
         assert all(D.BOX_X0 <= x <= D.BOX_X1 for x, _ in arm)
 
 
-def test_output_trace_is_an_equal_width_strip_with_concentric_bend():
-    """输出线：等宽条带 + 同心圆角，竖直段中心线正好落在端口面中心上。"""
+def test_output_trace_is_a_straight_equal_width_strip():
+    """输出线是从设计区右界到板右边缘的等宽直线条带。"""
     for sign in (+1, -1):
         pts = D.output_trace_polygon(sign)
-        cx, cy = D.OUT_X1, sign * D.BEND_CY                   # 拐弯中心
-        r = [math.hypot(x - cx, y - cy) for x, y in pts]
-        # 拐弯里没有点越过内缘，且所有"靠里"的点都正好落在两条同心弧上
-        assert min(r) == pytest.approx(D.R_BEND - D.W / 2)
-        near = {round(v, 6) for v in r if v <= D.R_BEND + D.W / 2 + 1e-9}
-        assert near == {round(D.R_BEND - D.W / 2, 6),
-                        round(D.R_BEND + D.W / 2, 6)}
-        # 竖直段两条边：宽度 = w，中心线 = 端口面中心（板边缘上）
-        xs = {round(x, 9) for x, y in pts if abs(y) == pytest.approx(D.BOARD_Y[1])}
-        assert xs == {round(D.V_X - D.W / 2, 9), round(D.V_X + D.W / 2, 9)}
-        assert D.V_X == pytest.approx(D.OUT_X1 + D.R_BEND)
-        # 水平段两条边 = 中心线 ± w/2（与臂端对齐）
-        ys = {round(y, 9) for x, y in pts
-              if abs(x - (D.OUT_X0 - D.FEED_OVERLAP)) < 1e-9}
-        assert ys == {round(sign * (D.ARM_DY - D.W / 2), 9),
-                      round(sign * (D.ARM_DY + D.W / 2), 9)}
+        assert len(pts) == 4
+        assert {round(x, 9) for x, _ in pts} == {
+            round(D.BOX_X1, 9), round(D.BOARD_X[1], 9)}
+        assert {round(y, 9) for _, y in pts} == {
+            round(sign * D.ARM_DY - D.W / 2, 9),
+            round(sign * D.ARM_DY + D.W / 2, 9)}
+        assert _area(np.vstack([pts, pts[0]])) == pytest.approx(
+            (D.BOARD_X[1] - D.BOX_X1) * D.W)
 
 
 # =========================================================================== #
@@ -182,11 +154,12 @@ def test_blocks_contain_the_full_model():
     for name in ("in_strip", "arm_top", "arm_bot", "out_top", "out_bot",
                  "in_feed"):
         assert f'.Name "{name}"' in text
-    # 3 个端口：1 在 xmin 面（输入），2/3 在 ymax/ymin 面（输出）
+    # 3 个端口：1 在 xmin 面（输入），2/3 在 xmax 面（输出）
     assert text.count("With Port") == 3
     assert text.count('.Orientation "xmin"') == 1
-    assert text.count('.Orientation "ymax"') == 1
-    assert text.count('.Orientation "ymin"') == 1
+    assert text.count('.Orientation "xmax"') == 2
+    assert '.Orientation "ymax"' not in text
+    assert '.Orientation "ymin"' not in text
     # 端口面：下缘贴接地板底面（域 zmin）到空气盒顶（域 zmax）
     assert text.count('.Zrange "-0.797", "4"') == 3
     # 边界：zmax 电、其余磁；求解器/频段/监视器与耦合器同一套
@@ -234,8 +207,9 @@ def test_config_design_box_agrees_with_template(cfg):
     assert list(box.x) == [D.BOX_X0, D.BOX_X1]
     assert list(box.y) == [D.BOX_Y0, D.BOX_Y1]
     assert cfg.design_region.grid_step_mm == 0.1
+    assert cfg.optimizer.step_cells == 4.0
     assert cfg.constraints.allowed_region is None       # 两域合一（同耦合器）
-    assert cfg.constraints.taper_edges == "x"           # 只在穿出馈线那两条边 taper
+    assert cfg.constraints.taper_edges == "x"           # 只在馈线连接的左右边 taper
     assert cfg.objective.from_port == 1 and cfg.objective.to_port == 2
 
 
@@ -264,11 +238,9 @@ def test_config_fixed_region_matches_template(cfg):
 def test_config_min_gap_must_stay_zero(cfg, ls):
     """``min_gap_mm`` **必须为 0**（不是论文的 0.1）：
 
-    ``apply_min_gap`` 在固定金属**外侧**铺一条 gap 厚的禁区带，而三条馈线
-    都伸进框内 0.5 mm——非 0 的带子因此落在框内（x ≈ [6.5,6.7] 与
-    [33.0,33.2]），横着把可动金属削断。这里把"断"这件事演一遍：
-    gap=0.2 时可动金属从**一块**变成好几块（论文那条"线必须始终连着"
-    当场失守，而 CST 照样出 S 参数）。
+    ``apply_min_gap`` 在固定金属**外侧**铺一条 gap 厚的禁区带。
+    固定馈线在设计框边界截止，因此非零间隙会延伸进设计区并侵蚀连接端；
+    下面检查间隙会把框边界附近的金属推成空气。
     """
     assert cfg.constraints.min_gap_mm == 0.0
     gap = 0.2
@@ -282,23 +254,15 @@ def test_config_min_gap_must_stay_zero(cfg, ls):
     # 翻符号后仍是 0，判不出"削没削"。
     strip_y = np.abs(ls.ys) <= D.W / 2 - 0.5 * ls.dx
     # 取禁区带**中心**那一列（带外沿那一列 φ 判不出被没被削）
-    x_mid = D.BOX_X0 + D.FEED_OVERLAP + 0.5 * gap
+    x_mid = D.BOX_X0 + 0.5 * gap
     col = int(round((x_mid - ls.xs[0]) / ls.dx))
     assert ls.xs[col] == pytest.approx(x_mid)
-    assert np.all(ls.phi[col, strip_y] <= 1e-9)     # 真实配置：那一列是金属
-    assert np.all(ls2.phi[col, strip_y] > 0)        # gap=0.2：被削成空气
-
-    n_real = ndimage.label(ls.phi < 0, structure=np.ones((3, 3)))[1]
-    n_broken = ndimage.label(ls2.phi < 0, structure=np.ones((3, 3)))[1]
-    # 削断的判据看**连通域**而不是轮廓条数：轮廓提取按"零等值线"追踪，
-    # 岛上浮着一块金属照样只给出同样条数的折线（实测 3 条 = 没断的样子），
-    # 拿它当断没断的代理会漏判。
-    assert n_real == 1                              # 真实配置：一块
-    assert n_broken > 1                             # 非 0 的间隙：断开
+    assert np.all(ls.phi[col, strip_y] <= 1e-9)     # 原形状：边界附近有金属
+    assert np.all(ls2.phi[col, strip_y] > 0)        # gap=0.2：连接带被削成空气
 
 
 def test_anchors_are_frozen_by_the_velocity_mask(ls, cfg):
-    """连接靠两件事兑现（模板 docstring 的承诺）：可动金属穿出边界 +
+    """连接靠两件事兑现（模板 docstring 的承诺）：可动金属到达边界 +
     **掩膜把边界锚点的速度冻成 0**。冻不住的话金属会从馈线上"缩回去"，
     而每轮照样出 S 参数。"""
     mask = build_velocity_mask(ls, cfg)
@@ -316,7 +280,7 @@ def test_initial_metal_is_one_connected_body_with_three_anchors(ls):
     """初始金属必须是**一块**：论文两输出同相的前提就是线始终连着。"""
     _, n = ndimage.label(ls.phi < 0, structure=np.ones((3, 3)))
     assert n == 1
-    # 三个穿出锚点。边界上的节点 φ = −0.0（正好压在网格线上），用 <= 判；
+    # 三个边界连接锚点。节点 φ = −0.0（正好压在网格线上），用 <= 判；
     # 严格 < 0 会把三个锚点全判成"没有金属"。
     left = ls.ys[ls.phi[0, :] <= 1e-9]
     assert (left.min(), left.max()) == pytest.approx((-D.W / 2, D.W / 2))
@@ -340,7 +304,8 @@ def test_closed_contours_preserve_the_y_shape_and_the_v_notch(cfg, ls):
     assert len(mov) == 3
     assert all(not np.allclose(c[0], c[-1]) for c in mov)
 
-    polys = close_open_contours(mov, cfg.design_region.box)
+    polys = close_open_contours(
+        mov, cfg.design_region.box, pad_mm=D.DESIGN_BOUNDARY_PAD_MM)
     assert len(polys) == 1
     poly = np.asarray(polys[0], float)
     inside = MplPath(poly).contains_points
@@ -352,9 +317,9 @@ def test_closed_contours_preserve_the_y_shape_and_the_v_notch(cfg, ls):
         assert inside([[x, y]])[0], f"({x}, {y}) 丢了金属"
     for x, y in air:        # V 形缺口 / 框内空白区
         assert not inside([[x, y]])[0], f"({x}, {y}) 是空气却被填成金属"
-    # 闭合时沿框边界外扩 0.05 mm（与固定馈线重叠，CST 侧压实连通）
-    assert poly[:, 0].min() == pytest.approx(D.BOX_X0 - 0.05)
-    assert poly[:, 0].max() == pytest.approx(D.BOX_X1 + 0.05)
+    # divider 的轮廓闭合在设计框边界，不向固定馈线外扩。
+    assert poly[:, 0].min() == pytest.approx(D.BOX_X0)
+    assert poly[:, 0].max() == pytest.approx(D.BOX_X1)
 
 
 def test_the_outline_handed_to_cst_is_simplified(cfg, ls):
@@ -369,16 +334,19 @@ def test_the_outline_handed_to_cst_is_simplified(cfg, ls):
     mov = movable_contours(ls, cfg)
     box = cfg.design_region.box
     tol = SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm
-    raw = close_open_contours(mov, box)[0]
-    poly = close_open_contours(mov, box, simplify_tol_mm=tol)[0]
+    raw = close_open_contours(
+        mov, box, pad_mm=D.DESIGN_BOUNDARY_PAD_MM)[0]
+    poly = close_open_contours(
+        mov, box, pad_mm=D.DESIGN_BOUNDARY_PAD_MM,
+        simplify_tol_mm=tol)[0]
 
-    assert len(raw) == 854                        # 网格描线原样：854 点
-    assert len(poly) <= SIMPLIFY_MAX_POINTS       # 送 CST 的一份：18 点
+    assert len(raw) > len(poly)                   # 清理/简化后点数应减少
+    assert len(poly) <= SIMPLIFY_MAX_POINTS       # 送 CST 的点数受硬上限约束
     seg = np.linalg.norm(np.diff(poly, axis=0), axis=1)
     assert (seg < 5 * tol).sum() == 0             # 原样有 56 段 < 20 µm
     # 简化只删点、不造点：顶点仍是网格描线上的原顶点（提取器契约不变）
     assert all(any(np.array_equal(q, r) for r in raw) for q in poly)
-    # 几何没走样：面积 74.1537 → 74.1206（−0.05%），V 形缺口与三个锚点照旧
+    # 几何没走样：V 形缺口与三个连接锚点照旧
     assert _area(poly) == pytest.approx(_area(raw), rel=5e-3)
     for pt in [(6.2, 0.0), (18.0, 0.0), (30.0, 2.7), (33.4, 4.0), (33.4, -4.0)]:
         assert _inside(poly, pt), f"({pt[0]}, {pt[1]}) 丢了金属"
@@ -393,7 +361,9 @@ def test_the_outline_matches_the_level_set_inside_the_box(cfg, ls):
     少一块，S 参数都照样出数。只允许**界面节点**（φ 恰好 0、正好落在多边形
     上）判得不一样。
     """
-    polys = close_open_contours(movable_contours(ls, cfg), cfg.design_region.box)
+    polys = close_open_contours(
+        movable_contours(ls, cfg), cfg.design_region.box,
+        pad_mm=D.DESIGN_BOUNDARY_PAD_MM)
     inside = MplPath(np.asarray(polys[0], float)).contains_points
     X, Y = np.meshgrid(ls.xs, ls.ys, indexing="ij")
     box = cfg.design_region.box

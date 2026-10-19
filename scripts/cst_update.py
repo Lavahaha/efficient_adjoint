@@ -67,7 +67,7 @@ def main(argv=None) -> int:
     banner(log, "更新形状", cfg, setup)
 
     try:
-        polys = _resolve_shape(cfg, args, log=log)
+        polys = _resolve_shape(cfg, args, model=M, log=log)
         log(f"[ .. ] 新形状：{len(polys)} 个多边形 / "
             f"{sum(len(p) for p in polys)} 个点")
         n = _next_iteration(cfg, args.iteration)
@@ -341,7 +341,7 @@ def _next_iteration(cfg: CaseConfig, iteration) -> int:
     return 0 if last is None else last + 1
 
 
-def _resolve_shape(cfg: CaseConfig, args, *, log=print):
+def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
     """``--shape`` 与 ``--from-ls`` 必须且只能给一个。
 
     返回**可直接施加**的多边形：开放路径（金属穿出设计区两端）先按设计区
@@ -367,6 +367,7 @@ def _resolve_shape(cfg: CaseConfig, args, *, log=print):
     # Extrude 的点表容量（2026-10-09 功分器实测），容差 = 0.2 格。
     return close_open_contours(
         polys, cfg.design_region.box,
+        pad_mm=float(getattr(model, "DESIGN_BOUNDARY_PAD_MM", 0.05)),
         simplify_tol_mm=SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm,
     )
 

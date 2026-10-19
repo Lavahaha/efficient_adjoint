@@ -135,8 +135,8 @@ def simplify_polygon(points, tol_mm, max_points=SIMPLIFY_MAX_POINTS):
     tol_mm：必给（没有"自动"档，理由见 :data:`SIMPLIFY_TOL_CELLS`）。取
     :data:`SIMPLIFY_TOL_CELLS` × 网格步长，即 0.2 格；≤0 = 原样返回
     （调试/回归对比用）。
-    max_points：简化后仍超预算（形状过碎）就把容差翻倍重试，最多 8 轮——
-    宁可多丢一点远小于一格的细节，也不让 CST 跑到一半才炸。
+    max_points：简化后仍超预算（形状过碎）就把容差翻倍重试，最多 8 轮；
+    仍超限时抛出 ValueError，避免把超过 CST 点表上限的轮廓送入求解器。
     None = 不设上限。
 
     闭合折线（首末点相同）与开放折线同一条路径；首末点必留，故输入闭合
@@ -155,6 +155,11 @@ def simplify_polygon(points, tol_mm, max_points=SIMPLIFY_MAX_POINTS):
                 break
             tol *= 2.0
             keep = _rdp_keep(pts, tol)
+        if int(keep.sum()) > max_points:
+            raise ValueError(
+                f"简化后的轮廓仍有 {int(keep.sum())} 个点，超过 CST 点数上限 "
+                f"{max_points}；请检查轮廓碎片/细节，或调整简化策略。"
+            )
     return pts[keep]
 
 
@@ -183,8 +188,9 @@ def close_open_contours(
         自配成一段封口；
       - 两条互不相关的轮廓被错配 → 封口段共线重叠，由下面的自交检查拦下。
 
-    闭合轮廓原样保留。pad_mm：端点沿所在边界的外法向向外延伸的余量
-    （与设计区外的固定馈线重叠，同材料在求解器中自动合并）。
+    闭合轮廓原样保留。pad_mm：端点沿所在边界的外法向向外延伸的余量；
+    默认值适用于需要与框外固定金属相交的布局。若希望固定/可动金属只共边
+    相接，调用方可设为 0。
 
     simplify_tol_mm：返回前按 :func:`simplify_polygon` 简化用的容差。
     **默认 0 = 不简化**（本函数只管"闭合"这一件事，闭合的正确性与点的疏密
@@ -198,8 +204,19 @@ def close_open_contours(
     在这里拦下能给出可定位的诊断。简化前后各查一次——简化若把两条只差
     不到两倍容差的边并到一起，会单独报"简化后自交"。
     """
-    opens = [c for c in contours if not np.allclose(c[0], c[-1])]
-    closed = [c for c in contours if np.allclose(c[0], c[-1])]
+    cleaned = []
+    for k, contour in enumerate(contours):
+        raw_pts = np.asarray(contour, dtype=float)
+        if not np.all(np.isfinite(raw_pts)):
+            raise ValueError(f"第 {k} 条轮廓含 NaN/Inf 坐标。")
+        pts = dedupe_vertices(raw_pts)
+        if len(pts) < 2:
+            raise ValueError(
+                f"第 {k} 条轮廓去除重复顶点后只剩 {len(pts)} 个点，无法闭合。"
+            )
+        cleaned.append(pts)
+    opens = [c for c in cleaned if not np.allclose(c[0], c[-1])]
+    closed = [c for c in cleaned if np.allclose(c[0], c[-1])]
     out = list(closed)
     if opens:
         corners = _padded_corners(box, pad_mm)
@@ -215,6 +232,19 @@ def close_open_contours(
             if i0 not in done:
                 out.append(_chain_contour(opens, i0, partner, corners, done))
     for k, poly in enumerate(out):
+        if not np.all(np.isfinite(poly)):
+            raise ValueError(f"闭合后的第 {k} 个多边形含 NaN/Inf 坐标。")
+        body = poly[:-1] if np.allclose(poly[0], poly[-1]) else poly
+        if len(body) < 3:
+            raise ValueError(
+                f"闭合后的第 {k} 个多边形只有 {len(body)} 个不同顶点，至少需要 3 个。"
+            )
+        area2 = float(np.sum(
+            body[:, 0] * np.roll(body[:, 1], -1)
+            - np.roll(body[:, 0], -1) * body[:, 1]
+        ))
+        if abs(area2) <= 1e-12:
+            raise ValueError(f"闭合后的第 {k} 个多边形面积接近 0，无法生成 CST 实体。")
         bad = self_intersections(poly)
         if bad:
             i, j = bad[0]

@@ -171,7 +171,8 @@ S 参数曲线；旧轮次没有 `efield_fwd.npz` 时电场演化图会跳过并
    采样点上会让界面节点收不到值，skfmm 延拓（边界值从跨 φ=0 的节点对插值）
    就恒为 0——形状一动不动且不报错。这条有测试锁着。
 
-一轮最大位移 = `optimizer.step_cells` 格（1 格 = 0.1 mm）。每轮会打印一行
+一轮最大位移 = `optimizer.step_cells` 格（1 格 = 0.1 mm；divider 当前为 4 格，
+即 0.4 mm）。每轮会打印一行
 诊断：`[采样] 交点 N 个（inside δz=0.3 mm，WLS 1 阶 R=2.0 格，回退 K），种子
 节点 M 个，延拓 skfmm|pde，相位 ±P°`——**K 应该为 0**（有回退 = 邻域太稀，
 把 `wls_radius_cells` 调大）；**延拓应为 skfmm**（服务器装得上；打印 pde =
@@ -209,35 +210,28 @@ O(网格) 级误差，WLS 单侧拟合会把它带进 δp）。δp 若沿边界�
 这个文件名只对耦合器贴切，它本身能跑任意算例（改名留作后续）：
 
 ```bash
-python scripts/cst_init_fwd.py configs/divider.yaml    # 端口 1 激励（输入）
-python scripts/cst_init_bwd.py configs/divider.yaml    # 端口 2 激励（上输出）
-python scripts/run_coupler.py  configs/divider.yaml    # 主循环（工程已存在就直接跑）
-python scripts/plot_layout.py  configs/divider.yaml    # 重画布局图（本地，不连 CST）
+python scripts/run_divider_adjoint_levelset.py --iterations 50
+python scripts/plot_layout.py configs/divider.yaml    # 重画布局图（本地，不连 CST）
 ```
 
-产物与第 3 节完全一致，只是目录变成 `results/divider/`。几何核对用
-`docs/layout_reference_divider.png`（与论文 Fig. 9 逐项对照：Y 形设计区、
-框、三条馈线、三个端口面）。
+默认产物写入 `results/divider/adjoint_levelset/`。布局代码变更后用
+`python scripts/plot_layout.py configs/divider.yaml` 重画
+`docs/layout_reference_divider.png`，再对照论文 Fig. 9 核对设计区、馈线和端口。
 
-> **模板几何只在建工程时写一次。** `run_coupler.py` 发现工程不存在会自动
-> 初始化（`_ensure_projects`），而每轮 `build_model` **只重建设计区**，固定
-> 馈线永远保持建工程时的样子。所以模板几何改过之后（例如修复"初始建模就
-> 断裂"时把馈线伸进设计区 0.5 mm），**必须先删掉旧工程**再按上面两条
-> `cst_init` 重建——否则跑的还是旧几何，而且不报错。
-> 上一次失败的那次运行已经走到 `build_model`，说明工程当时就已经建出来了
-> （旧几何），删掉重来。
+> **模板几何只在建工程时写一次。** 新输出目录下运行器会自动创建 fwd/bwd 工程；
+> 已存在的 CST 工程不会自动更新模板里的固定馈线和端口。若复用旧的
+> `results/divider/adjoint_levelset/` 工程，先改用一个新的 `--output-dir`，
+> 或备份后移走旧的 fwd/bwd 工程文件，再运行。
 
 **先核对这三条**（数值对不上时按此顺序查）：
 
-1. **端口**：1 在板左边缘（xmin 面，输入）、2/3 在板上下边缘（ymax/ymin 面，
+1. **端口**：1 在板左边缘（xmin 面，输入）、2/3 在板右边缘（xmax 面，
    上/下输出）——都是微带端口，面下缘贴合接地板底面；
 2. **材料**：Rogers3003、30 mil（0.762 mm）、εr = 3.0、tanδ = 0.001、35 µm
    金属（论文 III-B；与耦合器的 Rogers4350B 不同，别拿旧工程对照）；
 3. **设计区**：`[6.0, 33.7] × [−9, 9]` mm，0.1 mm 网格（277×180）；框内那条
-   Y 形（λg/2 输入段 + 两根 λg/4 分路臂）整体可动。三条固定馈线**伸进框内
-   0.5 mm**（`cst_model_divider.FEED_OVERLAP`）——与 Y 形重叠成一块，看图时
-   金属应当是**连续**的：只贴着框边界相触的话 CST 里是两个独立实体，
-   就是"初始建模就断裂"那个样子。
+   Y 形（λg/2 输入段 + 两根 λg/4 分路臂）整体可动。输出馈线为直线，端点在
+   设计区右边界；固定与可动金属共边接触，设计区轮廓闭合不外扩、不产生面积重叠。
 
 **Stage 1 判据（几何/端口/材料的判定关口）**：`iter_000/` 里 5 GHz 处
 **|S21| ≈ |S31| ≈ −3.5 ± 1 dB**（论文初始 −3.49/−3.49）、|S11| ≤ −10 dB。
@@ -245,10 +239,8 @@ python scripts/plot_layout.py  configs/divider.yaml    # 重画布局图（本�
 XY=0.2 / Z=0.1，在 `cst_setup.DIVIDER` 的 `export_step_mm` /
 `export_step_z_mm`，每轮 4 份 ≈ 210 MB，`cst_work/` 每轮覆写不累积）。
 
-**第一轮日志的第一行**（改形状那一步）应当是
-`[ .. ] 更新 fwd 工程设计区：1 个多边形 / 18 个点`——**18 是简化后的点数**
-（网格描线原样是 854 点，见"常见问题"里 `Profile is self-intersecting` 的
-第 2 条成因）。几百点说明简化没生效，接下来多半就是 CST 那句自交诊断。
+几何创建前会去重轮廓顶点、闭合并简化轮廓；若候选仍无效，会保存在
+`geometry_failures/geometry_failure_eval_NNN.npz`，同名 JSON 记录错误和轮廓摘要。
 
 **Stage 2（先跑 5–8 轮）**：与耦合器同样的两件事——盯 `history.jsonl` 里
 `fom` 的走向（这就是第 4 节 `velocity_sign` 的裁决机会），以及看
@@ -264,7 +256,7 @@ XY=0.2 / Z=0.1，在 `cst_setup.DIVIDER` 的 `export_step_mm` /
 论文对 III-B 只加了一条几何约束：**"the microstrip lines are always
 connected"**（两输出必须同相）。`configs/divider.yaml` 里
 `constraints.require_connected: true` 把它变成硬保证：每个 HJ 子步后检查
-可动金属是否仍是**一块**、且贴着初始那三个"穿出设计区"的锚点（左界输入段
+可动金属是否仍是**一块**、且贴着初始那三个设计区边界锚点（左界输入段
 + 右界两个臂端，从初始 φ 自动推导，不在 YAML 里写）；被掐断就按最短路径
 桥接，**桥接节点永久冻结**（速度置 0），补不上则整子步回滚。
 
@@ -280,12 +272,11 @@ connected"**（两输出必须同相）。`configs/divider.yaml` 里
   抹掉"会这样），直接停了。这是保护：断掉的中间态继续演化等于在优化另一个
   器件。
 
-**`constraints.min_gap_mm` 必须保持 0**：三条馈线都伸进框内 0.5 mm，非零
-min_gap 会在框内（x ≈ [6.5, 6.7] 与 [33.0, 33.2]）铺一条禁区带，横着把可动
-金属削断（CST 照样出 S 参数，结果是另一个器件的）——
+**`constraints.min_gap_mm` 必须保持 0**：馈线在设计框边界共边连接，非零
+min_gap 会向设计区内铺禁区带并侵蚀连接端（CST 照样出 S 参数，结果是另一个器件的）——
 `tests/test_cst_model_divider.py::test_config_min_gap_must_stay_zero` 把这个
 后果锁成了测试。同理 `taper_edges: x` 只 taper 左右两条边（可动金属在那里
-穿出去接馈线）；上下边是臂自己的生长边界，taper 不得开。
+到达边界并接触馈线）；上下边是臂自己的生长边界，taper 不得开。
 
 ## 4. 一等 TODO：`velocity_sign` 尚未裁决
 

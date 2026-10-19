@@ -158,10 +158,18 @@ class CstSolver(SolverInterface):
         # 送 CST 前必须简化：网格描线（尤其斜边界）点数可达 800+，超过 CST
         # ``Extrude .Create`` 的点表容量后它只回一句 "Profile is
         # self-intersecting"（2026-10-09 功分器 Stage 1 实测）。容差 = 0.2 格。
+        self.last_prepared_polys = None
+        boundary_pad = float(getattr(self.M, "DESIGN_BOUNDARY_PAD_MM", 0.05))
         polys = close_open_contours(
             movable, self.cfg.design_region.box,
+            pad_mm=boundary_pad,
             simplify_tol_mm=SIMPLIFY_TOL_CELLS * self.cfg.design_region.grid_step_mm,
         )
+        if not polys:
+            raise ValueError(
+                "水平集没有可用的零等值线，不能创建空的设计区金属。"
+            )
+        self.last_prepared_polys = [poly.copy() for poly in polys]
         self._ensure_projects()
         for tag in artifacts.TAGS:
             prj = self._open(tag)

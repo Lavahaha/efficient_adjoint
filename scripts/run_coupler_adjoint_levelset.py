@@ -118,19 +118,75 @@ class CstAdjointLevelSetProblem:
         with self.eval_log.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    def _save_geometry_failure(self, eval_id: int, ls: als.LevelSet,
+                               error: Exception, contours=None,
+                               prepared_contours=None) -> None:
+        """Persist the exact candidate that failed validation or CST model creation."""
+        out = self.output_dir / "geometry_failures"
+        out.mkdir(parents=True, exist_ok=True)
+        stem = f"geometry_failure_eval_{eval_id:03d}"
+        npz_path = out / f"{stem}.npz"
+        json_path = out / f"{stem}.json"
+        payload = {
+            "phi": np.asarray(ls.phi),
+            "x": np.asarray(ls.grid.x),
+            "y": np.asarray(ls.grid.y),
+        }
+        contour_info = []
+        for stage, group in (("input", contours), ("prepared", prepared_contours)):
+            for i, contour in enumerate(group or []):
+                pts = np.asarray(contour, dtype=float)
+                payload[f"{stage}_contour_{i}"] = pts
+                finite = pts[np.all(np.isfinite(pts), axis=1)]
+                lengths = (np.linalg.norm(np.diff(finite, axis=0), axis=1)
+                           if len(finite) > 1 else [])
+                contour_info.append({
+                    "stage": stage,
+                    "index": i,
+                    "vertices": int(len(pts)),
+                    "finite_vertices": int(len(finite)),
+                    "bbox_mm": ([finite.min(axis=0).tolist(), finite.max(axis=0).tolist()]
+                                if len(finite) else None),
+                    "minimum_segment_mm": (
+                        float(np.min(lengths)) if len(lengths) else None),
+                })
+        np.savez_compressed(npz_path, **payload)
+        json_path.write_text(json.dumps({
+            "eval_id": eval_id,
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "grid_step_mm": float(ls.grid.dx),
+            "contours": contour_info,
+            "snapshot_npz": npz_path.name,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.log(f"[geometry failure] eval={eval_id:03d} candidate saved: {npz_path}")
+
     def forward(self, ls: als.LevelSet) -> als.ForwardResult:
-        metal = ls.phi < 0.0
-        enclosed_air = ndimage.binary_fill_holes(metal) & ~metal
-        if enclosed_air.any():
-            raise ValueError(
-                "The current level set contains an enclosed air hole. The existing "
-                "CST geometry builder extrudes every contour as solid metal and "
-                "cannot represent hole subtraction; the solve was stopped to avoid "
-                "evaluating a different geometry."
-            )
         eval_id = self._next_id()
-        self.solver.begin_iteration(eval_id)
-        self.solver.build_model(als.boundary_polygons(ls), None)
+        contours = None
+        try:
+            metal = ls.phi < 0.0
+            enclosed_air = ndimage.binary_fill_holes(metal) & ~metal
+            if enclosed_air.any():
+                raise ValueError(
+                    "The current level set contains an enclosed air hole. The existing "
+                    "CST geometry builder extrudes every contour as solid metal and "
+                    "cannot represent hole subtraction; the solve was stopped to avoid "
+                    "evaluating a different geometry."
+                )
+            contours = als.boundary_polygons(ls)
+            if hasattr(self.solver, "last_prepared_polys"):
+                self.solver.last_prepared_polys = None
+            self.solver.begin_iteration(eval_id)
+            self.solver.build_model(contours, None)
+        except Exception as exc:
+            try:
+                self._save_geometry_failure(
+                    eval_id, ls, exc, contours,
+                    getattr(self.solver, "last_prepared_polys", None))
+            except Exception as save_exc:
+                self.log(f"[geometry failure] snapshot save failed: {save_exc}")
+            raise
         sol = self.solver.solve_forward()
         if self.s_key not in sol.s_params:
             raise KeyError(f"CST forward result is missing S{self.s_key[0]},{self.s_key[1]}")
