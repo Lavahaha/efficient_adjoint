@@ -135,8 +135,12 @@ sampling:
   sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
 
 optimizer:
-  step_cells: 1.0      # 每轮最大法向位移 = 1 个网格 = 0.1 mm（论文 Fig.3b）
-  cfl: 0.5             # 子步长系数 → steps=2，位移正好 1 格
+  step_cells: 8.0      # 初始每轮最大法向位移 = 8 个网格 = 0.8 mm
+  step_min_cells: 1.0
+  step_decay_factor: 0.5
+  step_plateau_patience: 2
+  step_relative_threshold: 1.0e-3
+  cfl: 0.5             # HJ 子步每次最多移动 0.5 格；8 格总位移约需 16 个子步
   velocity_sign: 1.0   # 形状导数→速度的符号开关（±1）；mock 世界已确认 +1，
                        # **CST 端尚未做过 FD 裁决**（耦合器同样没裁决过）：
                        # 头 5~8 轮盯 FoM 单调性，符号错会让优化反向跑且不报错

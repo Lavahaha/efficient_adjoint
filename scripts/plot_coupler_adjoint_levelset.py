@@ -1,4 +1,4 @@
-"""Render the full-layout field snapshots and S-parameter history of a coupler run.
+"""Render full-layout field snapshots and S-parameter history from an adjoint run.
 
 The optimizer writes compact ``adjoint_levelset_state_NNN.npz`` snapshots and
 ``sparams_history.json`` as it runs. This script can recreate their PNGs later
@@ -22,6 +22,7 @@ matplotlib.use("Agg")
 
 from eaopt import plotting
 from eaopt.config import CaseConfig
+from eaopt.solver.case import load_case
 
 
 def main() -> None:
@@ -46,6 +47,9 @@ def main() -> None:
     history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.is_file() else None
 
     if args.only in ("all", "states"):
+        _, model = load_case(cfg)
+        layout = model.layout_view()
+        fixed_metal_polygons = model.fixed_metal_polygons()
         snapshots = sorted(outdir.glob("adjoint_levelset_state_*.npz"))
         current_states = ({int(row["iteration"]) for row in history}
                           if history is not None else None)
@@ -60,6 +64,7 @@ def main() -> None:
                     data["phi"], data["x"], data["y"],
                     data["e_x"], data["e_y"], data["e_mag"],
                     iteration=iteration, z_used=float(data["z_mm"]),
+                    layout=layout, fixed_metal_polygons=fixed_metal_polygons,
                     path=outdir / f"fig6b_iter_{iteration:03d}.png",
                 )
                 rendered += 1

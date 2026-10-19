@@ -58,7 +58,7 @@ __all__ = [
     "ASCII_EXPORT_MODE", "ASCII_EXPORT_EXECUTE", "ascii_export_params",
     # 模板
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
-    "UNITS_BLOCK", "arc_points", "layout_view",
+    "UNITS_BLOCK", "arc_points", "layout_view", "fixed_metal_polygons",
     # 布局常量
     "SUB_H", "EPS_R", "TAND", "METAL_T", "W", "G", "D",
     "LEG_L_IN", "LEG_R_IN", "LEG_L_OUT", "LEG_R_OUT",
@@ -639,17 +639,16 @@ def layout_view() -> dict:
     ``{"substrate", "metal"}``，配色由 ``eaopt.plotting`` 定。两个算例的
     模板模块都实现它，画图脚本因此与算例无关（几何只有模板这一份来源）。
     """
+    fixed = fixed_metal_polygons()
     return {
         "bounds": (THRU_X0 - 1.5, THRU_X1 + 1.5, LEG_BOT - 1.0, SUB_TOP + 1.0),
         "shapes": [
             ("substrate", [(THRU_X0, LEG_BOT), (THRU_X1, LEG_BOT),
                            (THRU_X1, SUB_TOP), (THRU_X0, SUB_TOP)],
              "substrate"),
-            ("metal", [(THRU_X0, THRU_LO), (THRU_X1, THRU_LO),
-                       (THRU_X1, THRU_HI), (THRU_X0, THRU_HI)],
-             "through line (p1-p2)"),
-            ("metal", _left_leg_polygon(), "legs (p3-p4)"),
-            ("metal", _right_leg_polygon(), None),
+            ("metal", fixed[0], "through line (p1-p2)"),
+            ("metal", fixed[1], "legs (p3-p4)"),
+            ("metal", fixed[2], None),
             ("metal", _arm_design_polygon(), "design metal (arm)"),
         ],
         "ports": [
@@ -659,3 +658,13 @@ def layout_view() -> dict:
             (4, (LEG_R_OUT + LEG_R_IN) / 2, LEG_BOT, 0, 1),
         ],
     }
+
+
+def fixed_metal_polygons() -> list[list[tuple[float, float]]]:
+    """Return the fixed through line and legs, matching ``layout_view`` labels."""
+    return [
+        [(THRU_X0, THRU_LO), (THRU_X1, THRU_LO),
+         (THRU_X1, THRU_HI), (THRU_X0, THRU_HI)],
+        _left_leg_polygon(),
+        _right_leg_polygon(),
+    ]

@@ -89,6 +89,10 @@ sampling:
   sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
 optimizer:
   step_cells: 8.0      # 每轮最大法向位移 = 8 个网格 = 0.8 mm
+  step_min_cells: 1.0
+  step_decay_factor: 0.5
+  step_plateau_patience: 2
+  step_relative_threshold: 1.0e-3
                        # normalize=none 时语义变为：|δp| 的 step_ref_quantile
                        # 分位点每轮位移 = 0.8 mm，其余点按自身 δp 比例
   cfl: 0.5             # 保持稳定子步长；每步最多 0.05 mm（子步数由规划器定）

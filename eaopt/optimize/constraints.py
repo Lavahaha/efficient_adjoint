@@ -53,10 +53,8 @@ def build_velocity_mask(
     X, Y = np.meshgrid(ls.xs, ls.ys, indexing="ij")
     pts = np.stack([X.ravel(), Y.ravel()], axis=1)
 
-    # fixed_region 内及邻域（margin）禁止：只用 contains_points 会漏掉
-    # 边界外侧节点，导致固定金属的 φ 边界被泄漏速度推动（实测显著改变
-    # 求解结果）。margin 取 max(min_gap, 2dx)，与最小间距
-    # 约束语义一致（可动金属本就不该进入该邻域）。
+    # 固定金属内部及配置的最小间距带禁止运动。SDF 同时覆盖边界外侧
+    # 节点；不额外加隐式网格缓冲，使速度掩膜与硬投影使用同一个间距。
     for poly in cfg.fixed_region:
         p = np.asarray(poly.vertices, dtype=float)
         mask *= ~Path(p).contains_points(pts).reshape(ls.phi.shape)
@@ -65,7 +63,7 @@ def build_velocity_mask(
         tmp.init_from_polygons(
             [np.asarray(p.vertices, dtype=float) for p in cfg.fixed_region]
         )
-        margin = max(cfg.constraints.min_gap_mm, 2.0 * ls.dx)
+        margin = max(float(cfg.constraints.min_gap_mm), 0.0)
         mask *= tmp.phi > margin  # 固定金属外距离 > margin 才允许运动
 
     # allowed_region 外禁止

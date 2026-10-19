@@ -28,7 +28,8 @@ __all__ = ["load_case", "known_cases", "CASE_INTERFACE"]
 #: ``build_model`` 才在 cst.py 里 AttributeError——中间隔着一次完整的 CST
 #: 建模 + 存盘（`tests/test_case_contract.py` 在本地把它挡掉）。
 CASE_INTERFACE = ("template_blocks", "model_blocks", "setting_blocks",
-                  "DESIGN_COMPONENT", "design_region_update", "layout_view")
+                  "DESIGN_COMPONENT", "design_region_update", "layout_view",
+                  "fixed_metal_polygons")
 
 
 def known_cases() -> tuple[str, ...]:

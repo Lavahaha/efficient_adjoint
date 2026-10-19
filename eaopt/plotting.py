@@ -302,14 +302,15 @@ def efield_evolution_figure(cfg, outdir, path, *, max_panels: int = 6):
 
 
 def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
-                                  iteration: int, z_used: float, path, dpi: int = 140):
-    """Full coupler layout with the updated level set and its forward |E| map."""
+                                  iteration: int, z_used: float, path, layout=None,
+                                  fixed_metal_polygons=None, dpi: int = 140):
+    """Full case layout with the updated level set and its forward |E| map."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
     from matplotlib.patches import Polygon as MplPolygon, Rectangle
-    from eaopt.solver import cst_model
+    from eaopt.solver.case import load_case
 
     phi = np.asarray(phi, dtype=float)
     x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
@@ -323,7 +324,13 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     if phi.shape != (x.size, y.size):
         raise ValueError(f"phi shape {phi.shape} does not match level-set axes ({x.size}, {y.size})")
 
-    layout = cst_model.layout_view()
+    model = None
+    if layout is None or fixed_metal_polygons is None:
+        _, model = load_case(cfg)
+    if layout is None:
+        layout = model.layout_view()
+    if fixed_metal_polygons is None:
+        fixed_metal_polygons = model.fixed_metal_polygons()
     substrate = next(s for s in layout["shapes"] if s[0] == "substrate")
     substrate_pts = np.asarray(substrate[1], dtype=float)
     xstep = float(np.median(np.diff(e_x))) if e_x.size > 1 else 0.1
@@ -338,28 +345,34 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     fig, ax = plt.subplots(figsize=(12, 6.5), constrained_layout=True)
     ax.set_facecolor(OUTSIDE_COLOR)
     image = ax.imshow(
-        e_mag.T, origin="lower", extent=extent, cmap="inferno",
+        e_mag.T, origin="lower", extent=extent, cmap="winter",
         vmin=0.0, vmax=vmax, interpolation="nearest", aspect="equal", zorder=1,
     )
 
-    # The fixed feeds are template geometry; the arm inside the design box is
-    # drawn from the current level set below.
-    for kind, points, label in layout["shapes"]:
-        if kind != "metal" or label == "design metal (arm)":
-            continue
+    # Leave all metal interiors transparent so the |E| map remains visible on
+    # PEC (where CST typically exports values close to zero). Only draw gray
+    # outlines for fixed metal; the movable metal outline comes from phi.
+    for points in fixed_metal_polygons:
         ax.add_patch(MplPolygon(
             np.asarray(points, dtype=float), closed=True,
-            facecolor=METAL_COLOR, edgecolor="white", linewidth=0.35,
-            zorder=4, label="fixed feed metal" if label else None,
+            fill=False, edgecolor="#777777", linewidth=0.8,
+            zorder=4,
         ))
 
-    if np.min(phi) < 0.0:
-        ax.contourf(x, y, phi.T,
-                    levels=[float(np.min(phi) - 1e-9), 0.0],
-                    colors=[METAL_COLOR], zorder=5)
-        if np.min(phi) < 0.0 < np.max(phi):
-            ax.contour(x, y, phi.T, levels=[0.0], colors=["white"],
-                       linewidths=0.65, zorder=6)
+    if np.min(phi) < 0.0 < np.max(phi):
+        ax.contour(x, y, phi.T, levels=[0.0], colors=["#777777"],
+                   linewidths=0.8, zorder=6)
+    elif np.min(phi) < 0.0 and np.max(phi) <= 0.0:
+        # With no air nodes the metal fills the design box, so its boundary is
+        # the box edge rather than an interior zero contour.
+        ax.add_patch(MplPolygon(
+            [(cfg.design_region.box.x[0], cfg.design_region.box.y[0]),
+             (cfg.design_region.box.x[1], cfg.design_region.box.y[0]),
+             (cfg.design_region.box.x[1], cfg.design_region.box.y[1]),
+             (cfg.design_region.box.x[0], cfg.design_region.box.y[1])],
+            closed=True, fill=False, edgecolor="#777777", linewidth=0.8,
+            zorder=6,
+        ))
 
     # Mark the substrate edge and the movable design box over the field map.
     sx0, sx1 = float(substrate_pts[:, 0].min()), float(substrate_pts[:, 0].max())
@@ -377,10 +390,10 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     ax.set_aspect("equal")
     ax.set_xlabel("x (mm)")
     ax.set_ylabel("y (mm)")
-    ax.set_title(f"Coupler shape and forward electric field, iteration {iteration} (z={z_used:g} mm)")
+    ax.set_title(f"{cfg.name}: shape and forward electric field, iteration {iteration} (z={z_used:g} mm)")
     fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02, label="|E| (V/m), 99.5th percentile scale")
     handles = [
-        Rectangle((0, 0), 1, 1, facecolor=METAL_COLOR, label="metal"),
+        Line2D([0], [0], color="#777777", linewidth=0.8, label="metal outline"),
         Line2D([0], [0], color="#d62728", linestyle="--", label="design region"),
         Line2D([0], [0], color="#555555", linewidth=0.7, label="substrate edge"),
     ]
@@ -391,7 +404,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
 
 
 def adjoint_levelset_sparams_figure(cfg, history, path, *, dpi: int = 140):
-    """Plot forward |S_i,j| in dB for each accepted optimization state."""
+    """Plot forward |S_i,j| in dB at every requested iteration state."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt

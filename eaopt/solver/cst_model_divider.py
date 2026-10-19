@@ -343,14 +343,15 @@ def layout_view() -> dict:
     """
     x0, x1 = BOARD_X
     y0, y1 = BOARD_Y
+    fixed = fixed_metal_polygons()
     return {
         "bounds": (x0 - 1.0, x1 + 1.0, y0 - 1.0, y1 + 1.0),
         "shapes": [
             ("substrate", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
              "substrate"),
-            ("metal", input_feed_polygon(), "input feed (p1)"),
-            ("metal", output_trace_polygon(+1.0), "output traces (p2/p3)"),
-            ("metal", output_trace_polygon(-1.0), None),
+            ("metal", fixed[0], "input feed (p1)"),
+            ("metal", fixed[1], "output traces (p2/p3)"),
+            ("metal", fixed[2], None),
             ("metal", input_strip_polygon(), "design metal (Y)"),
             ("metal", arm_polygon(+1.0), None),
             ("metal", arm_polygon(-1.0), None),

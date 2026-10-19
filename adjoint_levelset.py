@@ -15,7 +15,7 @@ What this module does (paper section in brackets)
 4. Level-set evolution  phi_t + V|grad phi| = 0 (upwind HJ, RK2)    [II-C, Eq. 26-31]
 5. Signed-distance reinitialisation, design-region / keep-metal /
    keep-air masks, connectivity constraint                         [III-A/B constraints]
-6. The outer loop of Fig. 4 with an accept/reject step-size control [Fig. 4]
+6. The outer loop with a plateau-based step-size schedule
 
 What it does NOT do: run the Maxwell solver. You plug that in through the small
 `Problem` interface (forward(), adjoint()). See demo_fdfd_check.py for a runnable
@@ -382,22 +382,25 @@ class Problem(Protocol):
 @dataclass
 class OptimizerConfig:
     maximize: bool = True
-    step_cells: float = 0.8        # max boundary displacement per iteration (cells)
-    step_min_cells: float = 0.05
+    step_cells: float = 1.0        # max boundary displacement per iteration (cells)
+    step_min_cells: float = 1.0
     step_max_cells: float = 1.5
+    step_decay_factor: float = 0.5
+    plateau_patience: int = 2
+    plateau_relative_threshold: float = 1e-3
     cfl: float = 0.4
     smooth_sigma_cells: float = 1.5
     band_cells: float = 4.0
-    max_backtracks: int = 5
-    reinit_every: int = 1
 
 
 class AdjointLevelSetOptimizer:
     def __init__(self, problem: Problem, design_mask: np.ndarray,
                  cfg: OptimizerConfig = OptimizerConfig(),
-                 force_metal=None, force_air=None, anchor=None):
+                 force_metal=None, force_air=None, anchor=None,
+                 geometry_projector: Optional[Callable[[LevelSet], None]] = None):
         self.p, self.design_mask, self.cfg = problem, design_mask, cfg
         self.force_metal, self.force_air, self.anchor = force_metal, force_air, anchor
+        self.geometry_projector = geometry_projector
         self.history: List[dict] = []
 
     # one boundary velocity from one forward + one adjoint solve
@@ -417,45 +420,108 @@ class AdjointLevelSetOptimizer:
         return V, f, bnd, g
 
     def run(self, ls: LevelSet, n_iter: int = 30,
-            callback: Optional[Callable[[int, LevelSet, dict], None]] = None,
+            callback: Optional[Callable[[int, LevelSet, LevelSet, dict], None]] = None,
             state_callback: Optional[Callable[[int, LevelSet, ForwardResult], None]] = None):
-        """Run iterations; ``state_callback`` receives state 0 and each accepted update."""
+        """Commit one geometry update per iteration; FoM only controls step decay.
+
+        A small relative FoM gain for ``plateau_patience`` consecutive iterations
+        halves the *next* step, down to ``step_min_cells``. No candidate is
+        selected or rolled back based on its FoM. ``state_callback`` receives
+        state 0 and every committed state.
+        """
         cfg, dx = self.cfg, ls.grid.dx
-        sign = 1.0 if cfg.maximize else -1.0
+        if cfg.step_cells <= 0 or cfg.step_min_cells <= 0:
+            raise ValueError("step_cells and step_min_cells must be positive")
+        if cfg.step_min_cells > cfg.step_cells:
+            raise ValueError("step_min_cells cannot exceed the initial step_cells")
+        if cfg.step_max_cells < cfg.step_min_cells:
+            raise ValueError("step_max_cells cannot be below step_min_cells")
+        if not 0.0 < cfg.step_decay_factor < 1.0:
+            raise ValueError("step_decay_factor must be between 0 and 1")
+        if cfg.plateau_patience < 1 or cfg.plateau_relative_threshold < 0.0:
+            raise ValueError("plateau patience must be positive and threshold nonnegative")
         fwd = self.p.forward(ls)
         f_cur = fom_value_and_weight(fwd.s, self.p.fom_kind)[0]
         if state_callback:
             state_callback(0, ls, fwd)
-        step = cfg.step_cells
+        step_floor = cfg.step_min_cells
+        step = min(cfg.step_cells, cfg.step_max_cells)
+        plateau_count = 0
         for it in range(n_iter):
             V, f, bnd, g = self.velocity(ls, fwd)
             vmax = np.abs(V).max()
             if vmax == 0:
-                break
-            accepted = False
-            for bt in range(cfg.max_backtracks + 1):
-                trial = ls.copy()
-                trial.phi = advect_levelset(
-                    trial.phi, V, step * dx / vmax, dx, cfl=cfg.cfl)
-                apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
-                fwd_t = self.p.forward(trial)
-                f_t = fom_value_and_weight(fwd_t.s, self.p.fom_kind)[0]
-                if sign * (f_t - f_cur) > 0:
-                    accepted = True
-                    break
-                step = max(step * 0.5, cfg.step_min_cells)
-            rec = dict(it=it, f=f_cur, f_trial=f_t, step=step, accepted=accepted,
-                       area=ls.area(), vmax=vmax, backtracks=bt)
+                rec = dict(it=it, f_before=f_cur, f_after=f_cur, delta_f=0.0,
+                           relative_gain=0.0, step_used=step, step_next=step,
+                           updated=False, area=ls.area(), vmax=0.0,
+                           plateau_count=plateau_count, step_reduced=False,
+                           reason="zero_velocity",
+                           eval_id_before=fwd.extra.get("eval_id") if isinstance(fwd.extra, dict) else None,
+                           eval_id_after=fwd.extra.get("eval_id") if isinstance(fwd.extra, dict) else None)
+                self.history.append(rec)
+                if callback:
+                    callback(it, ls, ls, rec)
+                raise RuntimeError(
+                    f"Iteration {it} cannot update geometry: velocity is zero; "
+                    "stopping instead of recording a no-op iteration."
+                )
+
+            if not np.isfinite(vmax):
+                raise RuntimeError(f"Iteration {it} produced a non-finite velocity")
+
+            ls_before, fwd_before, f_before = ls, fwd, f_cur
+            eval_id_before = (fwd_before.extra.get("eval_id")
+                              if isinstance(fwd_before.extra, dict) else None)
+            trial = ls.copy()
+            trial.phi = advect_levelset(
+                trial.phi, V, step * dx / vmax, dx, cfl=cfg.cfl)
+            apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
+            if self.geometry_projector is not None:
+                self.geometry_projector(trial)
+            if np.max(np.abs(trial.phi - ls.phi)) <= 1e-12 * max(dx, 1.0):
+                raise RuntimeError(
+                    f"Iteration {it} produced no level-set change after constraints; "
+                    "cannot count it as a geometry update."
+                )
+
+            # forward() rebuilds both CST projects before solving the new
+            # geometry, so the next adjoint solve uses this same committed state.
+            fwd = self.p.forward(trial)
+            f_cur = fom_value_and_weight(fwd.s, self.p.fom_kind)[0]
+            delta_f = f_cur - f_before
+            objective_gain = delta_f if cfg.maximize else -delta_f
+            relative_gain = objective_gain / max(abs(f_before), 1e-12)
+            if relative_gain <= cfg.plateau_relative_threshold:
+                plateau_count += 1
+            else:
+                plateau_count = 0
+
+            step_next = step
+            step_reduced = False
+            if plateau_count >= cfg.plateau_patience:
+                if step > step_floor:
+                    step_next = max(step * cfg.step_decay_factor, step_floor)
+                    step_reduced = step_next < step
+                plateau_count = 0
+
+            eval_id_after = (fwd.extra.get("eval_id")
+                             if isinstance(fwd.extra, dict) else None)
+            rec = dict(
+                it=it, f_before=f_before, f_after=f_cur, delta_f=delta_f,
+                objective_gain=objective_gain,
+                relative_gain=relative_gain, step_used=step, step_next=step_next,
+                updated=True, area=trial.area(), vmax=float(vmax),
+                plateau_count=plateau_count, step_reduced=step_reduced,
+                eval_id_before=eval_id_before, eval_id_after=eval_id_after,
+                reason="committed",
+            )
             self.history.append(rec)
             if callback:
-                callback(it, ls, rec)
-            if not accepted:
-                break
-            ls, fwd, f_cur = trial, fwd_t, f_t
+                callback(it, ls_before, trial, rec)
+            ls = trial
             if state_callback:
                 state_callback(it + 1, ls, fwd)
-            step = min(step * 1.25, cfg.step_max_cells)
-        self.history.append(dict(it=len(self.history), f=f_cur, final=True))
+            step = step_next
         return ls
 
 

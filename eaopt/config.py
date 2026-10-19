@@ -108,6 +108,11 @@ class OptimizerSpec:
     normalize: str = "max"
     # normalize="none" 的参考分位：|δp| 的该分位点每轮位移 = step_cells 格。
     step_ref_quantile: float = 0.9
+    # Standalone adjoint-level-set runner: decay the next step after a plateau.
+    step_min_cells: float = 1.0
+    step_decay_factor: float = 0.5
+    step_plateau_patience: int = 2
+    step_relative_threshold: float = 1e-3
     max_iterations: int = 30
     fom_tolerance: float = 1e-4
     convergence_window: int = 5  # 连续 N 次迭代 FoM 变化小于容差则收敛
@@ -230,6 +235,14 @@ class CaseConfig:
             raise ValueError("sampling.scatter_max_cells 必须为正")
         if self.optimizer.step_cells <= 0:
             raise ValueError("optimizer.step_cells 必须为正")
+        if self.optimizer.step_min_cells <= 0 or self.optimizer.step_min_cells > self.optimizer.step_cells:
+            raise ValueError("optimizer.step_min_cells 必须为正且不大于 step_cells")
+        if not 0.0 < self.optimizer.step_decay_factor < 1.0:
+            raise ValueError("optimizer.step_decay_factor 必须在 (0, 1) 内")
+        if self.optimizer.step_plateau_patience < 1:
+            raise ValueError("optimizer.step_plateau_patience 必须至少为 1")
+        if self.optimizer.step_relative_threshold < 0:
+            raise ValueError("optimizer.step_relative_threshold 不能为负")
         if not 0.0 < self.optimizer.cfl <= 0.5:
             raise ValueError("optimizer.cfl 需在 (0, 0.5]（HJ 一阶格式稳定域）")
         if self.optimizer.velocity_sign not in (1.0, -1.0):

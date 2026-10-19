@@ -21,11 +21,11 @@ import adjoint_levelset as als
 from eaopt.cli import base_parser, banner, make_log, safe_console
 from eaopt.config import BoxSpec, CaseConfig
 from eaopt.geometry.levelset import LevelSet2D
-from eaopt.optimize.constraints import build_velocity_mask
+from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
+                                        build_velocity_mask)
 from eaopt.pipeline import make_level_set
 from eaopt.solver.case import load_case
 from eaopt.solver.cst import CstSolver
-from eaopt.solver import cst_model
 from eaopt import plotting
 
 
@@ -82,7 +82,7 @@ def _field_bundle(solution, requested_z_mm: float, metal_thickness_mm: float):
     return als.FieldBundle(x=axes_e[0], y=axes_e[1], E=e, H=h), z_e
 
 
-class CstCouplerProblem:
+class CstAdjointLevelSetProblem:
     """Adapter from the standalone Problem protocol to the existing CstSolver."""
 
     fom_kind = "abs"
@@ -104,6 +104,7 @@ class CstCouplerProblem:
         self.output_dir = output_dir
         self.log = log
         self.next_eval_id = 0
+        self._plot_field_cache = {}
         self.eval_log = output_dir / "cst_evaluations.jsonl"
         self.eval_log.write_text("", encoding="utf-8")
         self.s_key = (int(cfg.objective.to_port), int(cfg.objective.from_port))
@@ -135,8 +136,8 @@ class CstCouplerProblem:
             raise KeyError(f"CST forward result is missing S{self.s_key[0]},{self.s_key[1]}")
         fields, z_used = _field_bundle(
             sol, self.requested_z_mm, self.setup.metal_thickness_mm)
-        # z=0 is the substrate interface used by the existing coupler pipeline;
-        # planes above the conductor are in the CST vacuum region.
+        # Negative z samples the substrate side of the metal interface; planes
+        # above the conductor are in the CST vacuum region.
         self.eps = als.EPS0 * (
             float(self.setup.eps_r) if z_used <= 1e-6 else 1.0)
         s = complex(sol.s_params[self.s_key])
@@ -162,13 +163,22 @@ class CstCouplerProblem:
         )
 
     def e_field_for_plot(self, eval_id: int, box: BoxSpec):
+        cache_key = (int(eval_id), tuple(map(float, box.x)), tuple(map(float, box.y)))
+        if cache_key in self._plot_field_cache:
+            cached = self._plot_field_cache[cache_key]
+            return tuple(value.copy() if isinstance(value, np.ndarray) else value
+                         for value in cached)
         grid = self.solver.export_field_for_plot(box, eval_id=eval_id, tag="fwd")
         iz, z_used = _select_z_plane(
             grid, self.requested_z_mm, self.setup.metal_thickness_mm)
         e_plane = np.asarray(grid.plane(iz), dtype=complex)
         magnitude = np.sqrt(np.sum(np.abs(e_plane) ** 2, axis=-1))
         axes = grid.axes()
-        return axes[0], axes[1], magnitude, z_used
+        result = (np.asarray(axes[0]).copy(), np.asarray(axes[1]).copy(),
+                  magnitude, z_used)
+        self._plot_field_cache[cache_key] = result
+        return tuple(value.copy() if isinstance(value, np.ndarray) else value
+                     for value in result)
 
     def adjoint(self, ls: als.LevelSet, fwd: als.ForwardResult) -> als.FieldBundle:
         sol = self.solver.solve_backward()
@@ -190,28 +200,15 @@ class CstCouplerProblem:
         })
         return fields
 
-    def restore_geometry(self, ls: als.LevelSet) -> int:
-        """Restore the last accepted geometry after all backtracking trials fail."""
-        eval_id = self._next_id()
-        self.solver.begin_iteration(eval_id)
-        self.solver.build_model(als.boundary_polygons(ls), None)
-        self.log(f"[adjoint_levelset] restored accepted geometry as CST eval={eval_id:03d}")
-        return eval_id
-
-
 def _movement_constraints(ls_old: LevelSet2D, cfg: CaseConfig):
     # This is the same fixed-region / allowed-region mask used by the legacy
     # pipeline. Fractional edge tapers remain fractional in the velocity field.
     velocity_mask = build_velocity_mask(ls_old, cfg, taper_mm=1.0)
 
+    # Fixed-metal spacing is projected through the shared apply_min_gap()
+    # helper. Keeping this runner free of a second SDF implementation avoids
+    # diverging behavior when min_gap_mm is zero.
     force_air = np.zeros_like(ls_old.phi, dtype=bool)
-    if cfg.fixed_region:
-        fixed = LevelSet2D(ls_old.box, ls_old.dx)
-        fixed.init_from_polygons([
-            np.asarray(poly.vertices, dtype=float) for poly in cfg.fixed_region
-        ])
-        keepout_mm = max(float(cfg.constraints.min_gap_mm), 2.0 * ls_old.dx)
-        force_air |= fixed.phi < keepout_mm
 
     if cfg.constraints.allowed_region is not None:
         b = cfg.constraints.allowed_region
@@ -221,7 +218,9 @@ def _movement_constraints(ls_old: LevelSet2D, cfg: CaseConfig):
     anchor = None
     force_metal = None
     if cfg.constraints.require_connected:
-        metal = ls_old.phi < 0.0
+        # Include nodes exactly on the polygon boundary; these commonly carry
+        # phi == -0.0 and are valid connectivity anchors.
+        metal = ls_old.phi <= 0.0
         anchor = np.zeros_like(metal, dtype=bool)
         anchor[0, :] = metal[0, :]
         anchor[-1, :] = metal[-1, :]
@@ -240,11 +239,12 @@ def _write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def main() -> None:
+def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
+         expected_case: str = "coupler") -> None:
     safe_console()
     parser = base_parser(
-        "Run the adjoint_levelset optimizer on the CST coupler",
-        config_default="configs/coupler.yaml",
+        f"Run the adjoint_levelset optimizer on the CST {expected_case}",
+        config_default=config_default,
     )
     parser.add_argument("--output-dir", help="output root (default: <configured output>/adjoint_levelset)")
     parser.add_argument("--iterations", type=int, help="override optimizer.max_iterations")
@@ -258,8 +258,9 @@ def main() -> None:
     log = make_log(args.log)
 
     cfg = CaseConfig.from_yaml(args.config)
-    if cfg.name != "coupler":
-        raise ValueError(f"This runner is for the coupler case; config name is {cfg.name!r}")
+    if cfg.name != expected_case:
+        raise ValueError(
+            f"This runner expects case {expected_case!r}; config name is {cfg.name!r}")
     output_dir = (Path(args.output_dir).expanduser() if args.output_dir else
                   Path(cfg.output.dir).expanduser() / "adjoint_levelset")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -269,9 +270,9 @@ def main() -> None:
             raise ValueError("--iterations must be positive")
         cfg.optimizer.max_iterations = args.iterations
 
-    setup, _ = load_case(cfg)
+    setup, model = load_case(cfg)
     log(cfg.summary())
-    banner(log, "Run adjoint_levelset", cfg, setup)
+    banner(log, f"Run adjoint_levelset: {cfg.name}", cfg, setup)
 
     ls_old = make_level_set(cfg)
     dx = float(cfg.design_region.grid_step_mm)
@@ -281,6 +282,29 @@ def main() -> None:
                       x0=float(ls_old.xs[0]), y0=float(ls_old.ys[0]))
     ls = als.LevelSet(grid, ls_old.phi)
     design_mask, force_metal, force_air, anchor = _movement_constraints(ls_old, cfg)
+    topology_guard = (ConnectivityGuard(ls_old, cfg, log=log)
+                     if cfg.constraints.require_connected else None)
+    if topology_guard is not None:
+        initial_violation = topology_guard.violations(ls_old)
+        if initial_violation:
+            raise ValueError(f"Initial design violates require_connected: {initial_violation}")
+    topology_candidate = LevelSet2D(ls_old.box, ls_old.dx)
+
+    def project_geometry(trial):
+        """Apply shared geometric projections and repair connectivity in place."""
+        topology_candidate.phi = np.asarray(trial.phi, dtype=float).copy()
+        apply_min_gap(topology_candidate, cfg)
+        if topology_guard is not None and not topology_guard.apply(topology_candidate, log=log):
+            raise RuntimeError(
+                "Connectivity repair failed for the updated geometry; refusing to "
+                "run CST on a topology that violates require_connected."
+            )
+        trial.phi = topology_candidate.phi.copy()
+        trial.reinit()
+        if topology_guard is not None:
+            design_mask[:] = build_velocity_mask(
+                topology_candidate, cfg, taper_mm=1.0,
+                frozen=topology_guard.frozen)
 
     field_step_xy_mm = setup.resolve_export_steps(cfg.field_export_step_mm)[0]
     if args.sample_offset_mm is not None:
@@ -299,9 +323,13 @@ def main() -> None:
         f"requested z={cfg.sampling.field_z_mm:g} mm; eps_r={setup.eps_r:g}")
     log(f"[adjoint_levelset] step={cfg.optimizer.step_cells:g} cells "
         f"({cfg.optimizer.step_cells * dx:g} mm max), CFL={cfg.optimizer.cfl:g}; "
-        f"extension band={cfg.level_set.extension_band_mm:g} mm")
-    log("[adjoint_levelset] velocity extension/smoothing and line search come from "
-        "adjoint_levelset.py; legacy normalize, WLS, scatter and convergence settings are unused")
+        f"extension band={cfg.level_set.extension_band_mm:g} mm; minimum="
+        f"{cfg.optimizer.step_min_cells:g} cell")
+    log("[adjoint_levelset] FoM plateau scheduler halves the next step after "
+        f"{cfg.optimizer.step_plateau_patience} low-gain iterations; geometry is "
+        "committed each iteration")
+    log("[adjoint_levelset] signed-distance reinitialization runs on every update; "
+        "level_set.reinit_every applies to the legacy pipeline only")
     log("[adjoint_levelset] prefactor is (-2j*omega/Pin) times "
         f"scale={prefactor_scale:g}; validate it with --gradient-check")
 
@@ -310,27 +338,33 @@ def main() -> None:
         solver = CstSolver(
             cfg,
             setup=setup,
+            model=model,
             auto_init=True,
             save_fields=args.save_fields,
             attach=args.attach or None,
             force_new=args.force_new,
             log=log,
         )
-        problem = CstCouplerProblem(
+        problem = CstAdjointLevelSetProblem(
             cfg, setup, solver, sample_offset, prefactor_scale, output_dir, log=log)
         opt_cfg = als.OptimizerConfig(
             maximize=True,
             step_cells=float(cfg.optimizer.step_cells),
+            step_min_cells=float(cfg.optimizer.step_min_cells),
             step_max_cells=float(cfg.optimizer.step_cells),
+            step_decay_factor=float(cfg.optimizer.step_decay_factor),
+            plateau_patience=int(cfg.optimizer.step_plateau_patience),
+            plateau_relative_threshold=float(cfg.optimizer.step_relative_threshold),
             cfl=float(cfg.optimizer.cfl),
             smooth_sigma_cells=1.5,
             band_cells=float(cfg.level_set.extension_band_mm) / dx,
-            reinit_every=int(cfg.level_set.reinit_every),
         )
         optimizer = als.AdjointLevelSetOptimizer(
             problem, design_mask, opt_cfg, force_metal=force_metal,
-            force_air=force_air, anchor=anchor)
-        layout = cst_model.layout_view()
+            force_air=force_air, anchor=anchor,
+            geometry_projector=project_geometry)
+        layout = model.layout_view()
+        fixed_metal_polygons = model.fixed_metal_polygons()
         substrate = next(shape for shape in layout["shapes"] if shape[0] == "substrate")
         substrate_xy = np.asarray(substrate[1], dtype=float)
         field_box = BoxSpec(
@@ -349,21 +383,30 @@ def main() -> None:
 
         history_path = output_dir / "adjoint_levelset_history.jsonl"
         with history_path.open("w", encoding="utf-8") as history_file:
-            def callback(it, current_ls, rec):
+            def callback(it, ls_before, ls_after, rec):
                 row = dict(rec)
-                row["cst_eval_id"] = problem.next_eval_id - 1
+                row["cst_eval_id"] = rec["eval_id_after"]
                 history_file.write(json.dumps(row, ensure_ascii=False) + "\n")
                 history_file.flush()
                 np.savez_compressed(
                     output_dir / f"phi_before_iter_{it:03d}.npz",
-                    phi=current_ls.phi,
-                    x=current_ls.grid.x,
-                    y=current_ls.grid.y,
+                    phi=ls_before.phi,
+                    x=ls_before.grid.x,
+                    y=ls_before.grid.y,
+                    cst_eval_id=np.asarray(rec["eval_id_before"], dtype=np.int64),
+                )
+                np.savez_compressed(
+                    output_dir / f"phi_after_iter_{it:03d}.npz",
+                    phi=ls_after.phi,
+                    x=ls_after.grid.x,
+                    y=ls_after.grid.y,
+                    cst_eval_id=np.asarray(rec["eval_id_after"], dtype=np.int64),
                 )
                 log(f"[adjoint_levelset] iter={it:03d}: "
-                    f"FoM {rec['f']:.8g} -> {rec['f_trial']:.8g}, "
-                    f"step={rec['step']:.4g} cells, backtracks={rec['backtracks']}, "
-                    f"accepted={rec['accepted']}")
+                    f"FoM {rec['f_before']:.8g} -> {rec['f_after']:.8g} "
+                    f"(Δ={rec['delta_f']:+.4g}), step={rec['step_used']:.4g} -> "
+                    f"{rec['step_next']:.4g} cells, updated={rec['updated']}, "
+                    f"reason={rec['reason']}")
 
             def save_state(state_it, state_ls, fwd):
                 eval_id = int(fwd.extra["eval_id"])
@@ -371,6 +414,7 @@ def main() -> None:
                 np.savez_compressed(
                     output_dir / f"adjoint_levelset_state_{state_it:03d}.npz",
                     iteration=np.asarray(state_it, dtype=np.int32),
+                    cst_eval_id=np.asarray(eval_id, dtype=np.int64),
                     phi=state_ls.phi,
                     x=state_ls.grid.x,
                     y=state_ls.grid.y,
@@ -382,6 +426,7 @@ def main() -> None:
                 plotting.adjoint_levelset_state_figure(
                     cfg, state_ls.phi, state_ls.grid.x, state_ls.grid.y,
                     ex, ey, e_mag, iteration=state_it, z_used=z_used,
+                    layout=layout, fixed_metal_polygons=fixed_metal_polygons,
                     path=output_dir / f"fig6b_iter_{state_it:03d}.png",
                 )
 
@@ -390,7 +435,11 @@ def main() -> None:
                     magnitude = abs(complex(value))
                     params_db[f"S{response}{stimulus}"] = (
                         float(20.0 * np.log10(magnitude)) if magnitude > 0.0 else None)
-                sparams_history.append({"iteration": state_it, "s_params_db": params_db})
+                sparams_history.append({
+                    "iteration": state_it,
+                    "cst_eval_id": eval_id,
+                    "s_params_db": params_db,
+                })
                 _write_json(output_dir / "sparams_history.json", sparams_history)
                 log(f"[adjoint_levelset] saved full-layout field/shape plot for state "
                     f"{state_it:03d}: {output_dir / f'fig6b_iter_{state_it:03d}.png'}")
@@ -398,9 +447,7 @@ def main() -> None:
             final_ls = optimizer.run(ls, n_iter=cfg.optimizer.max_iterations,
                                      callback=callback, state_callback=save_state)
 
-        iteration_records = [r for r in optimizer.history if "accepted" in r]
-        if iteration_records and not iteration_records[-1]["accepted"]:
-            problem.restore_geometry(final_ls)
+        iteration_records = [r for r in optimizer.history if r.get("updated")]
 
         np.savez_compressed(
             output_dir / "phi_final.npz",
@@ -408,7 +455,7 @@ def main() -> None:
             x=final_ls.grid.x,
             y=final_ls.grid.y,
         )
-        final_fom = (optimizer.history[-1]["f"] if optimizer.history
+        final_fom = (optimizer.history[-1]["f_after"] if optimizer.history
                      else float("nan"))
         _write_json(output_dir / "final_shape.json", [
             np.asarray(poly, dtype=float).tolist()
