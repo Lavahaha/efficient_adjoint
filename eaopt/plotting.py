@@ -355,13 +355,13 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     for points in fixed_metal_polygons:
         ax.add_patch(MplPolygon(
             np.asarray(points, dtype=float), closed=True,
-            fill=False, edgecolor="#777777", linewidth=1.5,
+            fill=False, edgecolor="#777777", linewidth=15.0,
             zorder=4,
         ))
 
     if np.min(phi) < 0.0 < np.max(phi):
         ax.contour(x, y, phi.T, levels=[0.0], colors=["#777777"],
-                   linewidths=1.5, zorder=6)
+                   linewidths=15.0, zorder=6)
     elif np.min(phi) < 0.0 and np.max(phi) <= 0.0:
         # With no air nodes the metal fills the design box, so its boundary is
         # the box edge rather than an interior zero contour.
@@ -370,7 +370,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
              (cfg.design_region.box.x[1], cfg.design_region.box.y[0]),
              (cfg.design_region.box.x[1], cfg.design_region.box.y[1]),
              (cfg.design_region.box.x[0], cfg.design_region.box.y[1])],
-            closed=True, fill=False, edgecolor="#777777", linewidth=1.5,
+            closed=True, fill=False, edgecolor="#777777", linewidth=15.0,
             zorder=6,
         ))
 
@@ -382,7 +382,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     box = cfg.design_region.box
     ax.add_patch(Rectangle((box.x[0], box.y[0]), box.width, box.height,
                            fill=False, edgecolor="#d62728", linestyle="--",
-                           linewidth=1.2, zorder=7))
+                           linewidth=15.0, zorder=7))
 
     bounds = layout["bounds"]
     ax.set_xlim(bounds[0], bounds[1])
@@ -398,8 +398,9 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     colorbar.set_label("|E| (V/m), 99.5th percentile scale", fontsize=12)
     colorbar.ax.tick_params(labelsize=10)
     handles = [
-        Line2D([0], [0], color="#777777", linewidth=1.5, label="metal outline"),
-        Line2D([0], [0], color="#d62728", linestyle="--", label="design region"),
+        Line2D([0], [0], color="#777777", linewidth=15.0, label="metal outline"),
+        Line2D([0], [0], color="#d62728", linestyle="--", linewidth=15.0,
+               label="design region"),
         Line2D([0], [0], color="#555555", linewidth=1.0, label="substrate edge"),
     ]
     ax.legend(handles=handles, loc="upper right", fontsize=10, framealpha=0.9)
