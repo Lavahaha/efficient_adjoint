@@ -102,10 +102,10 @@ def test_fixed_and_movable_metal_meet_without_area_overlap():
     assert not _inside(feed, (D.BOX_X0 + 0.1, 0.0))
 
     for sign in (+1, -1):
-        lo, hi = sorted(sign * y for y in _at_edge(D.arm_polygon(sign), D.BOX_X1))
-        trace_lo, trace_hi = sorted(
-            sign * y for y in _at_edge(D.output_trace_polygon(sign), D.BOX_X1))
-        assert max(lo, trace_lo) < min(hi, trace_hi)  # 共享有限长度的连接边
+        arm_edge = sorted(_at_edge(D.arm_polygon(sign), D.BOX_X1))
+        trace_edge = sorted(_at_edge(D.output_trace_polygon(sign), D.BOX_X1))
+        assert len(arm_edge) == len(trace_edge) == 2
+        assert np.allclose(arm_edge, trace_edge, rtol=0.0, atol=1e-9)
         assert min(x for x, _ in D.output_trace_polygon(sign)) == pytest.approx(D.BOX_X1)
         assert max(x for x, _ in D.arm_polygon(sign)) == pytest.approx(D.BOX_X1)
         assert _inside(D.output_trace_polygon(sign),
@@ -114,13 +114,18 @@ def test_fixed_and_movable_metal_meet_without_area_overlap():
                            (D.BOX_X1 - 0.1, sign * D.ARM_DY))
 
 
-def test_arm_is_clipped_to_the_design_box():
-    """设计区是可动金属的活动范围：臂端不能伸入框外固定输出线。"""
+def test_arm_stays_inside_box_and_has_junction_transition():
+    """分叉臂留在设计区内，末端 1 mm 梯形过渡连接到馈线全宽。"""
     for sign in (+1, -1):
         arm = D.arm_polygon(sign)
-        assert len(arm) == 5                              # 4 个角 + 1 个裁剪交点
+        assert len(arm) == 6                              # 两侧各 1 个过渡起点
         assert max(x for x, _ in arm) == pytest.approx(D.BOX_X1)
         assert all(D.BOX_X0 <= x <= D.BOX_X1 for x, _ in arm)
+        transition_x = D.BOX_X1 - D.ARM_JUNCTION_TRANSITION_MM
+        assert len(_at_edge(arm, transition_x)) == 2
+        assert sorted(_at_edge(arm, D.BOX_X1)) == pytest.approx(
+            sorted((sign * D.ARM_DY - D.W / 2,
+                    sign * D.ARM_DY + D.W / 2)))
 
 
 def test_output_trace_is_a_straight_equal_width_strip():

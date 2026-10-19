@@ -54,6 +54,7 @@ __all__ = [
     "W", "EPS_EFF", "LAMBDA_G", "L_IN", "L_ARM", "ARM_DX", "ARM_DY",
     "THETA_DEG", "FORK", "ARM_END", "BOX_X0", "BOX_X1", "BOX_Y0", "BOX_Y1",
     "BOARD_X", "BOARD_Y", "PORT_MARGIN", "SUBSTRATE",
+    "ARM_JUNCTION_TRANSITION_MM",
     "DESIGN_BOUNDARY_PAD_MM",
     "SUB_H", "EPS_R", "TAND", "METAL_T", "AIR_H", "FREQ", "FMIN", "FMAX",
 ]
@@ -82,6 +83,7 @@ L_IN = 19.2                 # 输入段长 = λg/2 = 19.22（取到 0.1 网格�
 ARM_DX, ARM_DY = 8.5, 4.5   # 分路臂的水平投影 / 竖向抬升（图上量得的张角）
 L_ARM = math.hypot(ARM_DX, ARM_DY)                  # 臂长 9.618 ≈ λg/4 = 9.61
 THETA_DEG = math.degrees(math.atan2(ARM_DY, ARM_DX))    # 27.90°（图上 27.6°）
+ARM_JUNCTION_TRANSITION_MM = 1.0  # 末端梯形过渡长度，使臂端顶点对齐固定馈线
 
 BOX_X0, BOX_Y0 = 6.0, -9.0
 FORK = (BOX_X0 + L_IN, 0.0)             # 分叉点 (25.2, 0)
@@ -102,29 +104,6 @@ DESIGN_BOUNDARY_PAD_MM = 0.0
 # =========================================================================== #
 # 二、几何（模板与 YAML 的共同来源）
 # =========================================================================== #
-def _clip_x_max(poly, xmax: float) -> list[tuple[float, float]]:
-    """把多边形按 ``x <= xmax`` 半平面裁断（Sutherland–Hodgman 单边裁剪）。
-
-    分路臂的臂端中心线正好落在设计区右界上（``ARM_END[0] == BOX_X1``），
-    不裁的话有半个臂端头伸到框外，与固定输出线产生面积重叠。
-    设计区是可动金属的活动范围，框外那部分既不被 φ 描述、又是多余几何。
-    裁剪结果里同时去掉重复点（点在裁剪线上时会重复发一次）。
-    """
-    out: list[tuple[float, float]] = []
-    n = len(poly)
-    for i in range(n):
-        a, b = poly[i], poly[(i + 1) % n]
-        a_in, b_in = a[0] <= xmax, b[0] <= xmax
-        if a_in:
-            out.append((float(a[0]), float(a[1])))
-        if a_in != b_in:
-            t = (xmax - a[0]) / (b[0] - a[0])
-            out.append((xmax, float(a[1] + t * (b[1] - a[1]))))
-    return [p for i, p in enumerate(out)
-            if i == 0 or abs(p[0] - out[i - 1][0]) > 1e-9
-            or abs(p[1] - out[i - 1][1]) > 1e-9]
-
-
 def input_strip_polygon() -> list[tuple[float, float]]:
     """设计区内的输入段（**可动**）：从框左界直行到分叉点，宽 w。"""
     h = W / 2.0
@@ -134,8 +113,10 @@ def input_strip_polygon() -> list[tuple[float, float]]:
 def arm_polygon(sign: float) -> list[tuple[float, float]]:
     """分路臂（**可动**）：``sign=+1`` 上臂 / ``-1`` 下臂，从分叉点到臂端。
 
-    臂 = 分叉点 F 与臂端 E 之间、宽 w 的等宽条带（E 在框右界上），按框右界
-    裁断：臂端形成斜切口，与设计区外的水平输出线在框边界共边相接。
+    分叉主体沿中心线方向保持宽 ``W``；右端最后
+    ``ARM_JUNCTION_TRANSITION_MM`` 做梯形过渡，使边界 ``x=BOX_X1`` 上的两个
+    臂端顶点与对应固定输出线的两个顶点完全重合。这样连接处没有三角缺口，
+    同时活动区不越过设计区边界。
     """
     s = 1.0 if sign > 0 else -1.0
     fx, fy = FORK
@@ -145,9 +126,27 @@ def arm_polygon(sign: float) -> list[tuple[float, float]]:
     ux, uy = dx / length, dy / length
     nx, ny = -uy, ux                        # 单位法向（指向 s 一侧）
     h = W / 2.0
-    quad = [(fx + h * nx, fy + h * ny), (ex + h * nx, ey + h * ny),
-            (ex - h * nx, ey - h * ny), (fx - h * nx, fy - h * ny)]
-    return _clip_x_max(quad, BOX_X1)
+    plus_start = (fx + h * nx, fy + h * ny)
+    plus_end = (ex + h * nx, ey + h * ny)
+    minus_end = (ex - h * nx, ey - h * ny)
+    minus_start = (fx - h * nx, fy - h * ny)
+    x_transition = BOX_X1 - ARM_JUNCTION_TRANSITION_MM
+
+    def side_at_transition(start, end):
+        if not min(start[0], end[0]) <= x_transition <= max(start[0], end[0]):
+            raise ValueError(
+                "ARM_JUNCTION_TRANSITION_MM must place the transition inside "
+                "both slanted arm edges"
+            )
+        t = (x_transition - start[0]) / (end[0] - start[0])
+        return (x_transition, start[1] + t * (end[1] - start[1]))
+
+    plus_transition = side_at_transition(plus_start, plus_end)
+    minus_transition = side_at_transition(minus_start, minus_end)
+    junction_upper = (BOX_X1, s * ARM_DY + h)
+    junction_lower = (BOX_X1, s * ARM_DY - h)
+    return [plus_start, plus_transition, junction_upper, junction_lower,
+            minus_transition, minus_start]
 
 
 def input_feed_polygon() -> list[tuple[float, float]]:
