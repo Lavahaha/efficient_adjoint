@@ -14,12 +14,20 @@ __all__ = [
     "UNITS_BLOCK", "DESIGN_COMPONENT", "design_region_update", "layout_view",
     "fixed_metal_polygons", "BOARD", "PATCH", "FEED_X", "FEED_Y",
     "SUB_H", "METAL_T", "FREQ", "FMIN", "FMAX", "AIR_H",
+    "PIN_DIAMETER", "GROUND_CLEARANCE_DIAMETER",
     "SUPPORTS_NESTED_CONTOURS", "DESIGN_BOUNDARY_PAD_MM",
 ]
 
 BOARD = (-30.0, 30.0)
-PATCH = (-20.0, 20.0)
 FEED_X, FEED_Y = -15.0, 0.0
+PATCH_LENGTH = 20.0       # l_p1 / 2 from Table I
+PATCH_WIDTH = 20.0        # l_w1 / 2 from Table I
+FEED_EDGE_OFFSET = 5.0    # l_1 from Table I; feed is measured from patch's left edge
+PATCH = (FEED_X - FEED_EDGE_OFFSET,
+         FEED_X - FEED_EDGE_OFFSET + PATCH_LENGTH)
+PATCH_Y = (-PATCH_WIDTH / 2.0, PATCH_WIDTH / 2.0)
+PIN_DIAMETER = 1.27       # d_1 from Table I
+GROUND_CLEARANCE_DIAMETER = 4.10  # d_2 from Table I
 SUB_H = ANTENNA.substrate_h_mm
 METAL_T = ANTENNA.metal_thickness_mm
 FREQ = ANTENNA.frequency_ghz
@@ -60,6 +68,11 @@ def design_region_update(regions, height_mm: float,
 
 
 def _discrete_port() -> str:
+    # Excite radially across the annular clearance at the ground/substrate
+    # interface: both endpoints sit on conductor edges, with the port line
+    # spanning only the air gap between the probe and the ground plane.
+    probe_edge_x = FEED_X + PIN_DIAMETER / 2.0
+    ground_edge_x = FEED_X + GROUND_CLEARANCE_DIAMETER / 2.0
     return (
         "With DiscretePort\n"
         "    .Reset\n"
@@ -68,31 +81,72 @@ def _discrete_port() -> str:
         '    .Impedance "50"\n'
         '    .Monitor "True"\n'
         '    .Radius "0.0"\n'
-        f'    .SetP1 "False", "{FEED_X:g}", "{FEED_Y:g}", "{-SUB_H:g}"\n'
-        f'    .SetP2 "False", "{FEED_X:g}", "{FEED_Y:g}", "{METAL_T:g}"\n'
+        f'    .SetP1 "False", "{probe_edge_x:g}", "{FEED_Y:g}", "{-SUB_H:g}"\n'
+        f'    .SetP2 "False", "{ground_edge_x:g}", "{FEED_Y:g}", "{-SUB_H:g}"\n'
         "    .Create\n"
         "End With\n"
     )
 
 
 def model_blocks() -> list[str]:
-    """Build the dielectric, full ground, initial patch, and fixed feed port."""
+    """Build the substrate, slotted ground, patch, probe pin, and feed port."""
     x0, x1 = BOARD
     y0, y1 = BOARD
     px0, px1 = PATCH
+    py0, py1 = PATCH_Y
+    clearance_radius = GROUND_CLEARANCE_DIAMETER / 2.0
+    ground_cut_overrun = 0.01
+    substrate_cut_overrun = 0.01
     return [
         material_normal(SUBSTRATE, ANTENNA.eps_r, 1.0, ANTENNA.loss_tangent),
         brick("substrate", "component1", SUBSTRATE,
               x0, x1, y0, y1, -SUB_H, 0.0),
+        _cylinder("substrate_probe_bore", "component1", "Vacuum",
+                  FEED_X, FEED_Y, PIN_DIAMETER / 2.0,
+                  -SUB_H - substrate_cut_overrun,
+                  substrate_cut_overrun),
+        'Solid.Subtract "component1:substrate", '
+        '"component1:substrate_probe_bore"\n',
         brick("ground", "component1", "PEC",
               x0, x1, y0, y1, GROUND_Z, -SUB_H),
+        _cylinder("ground_feed_clearance", "component1", "Vacuum",
+                  FEED_X, FEED_Y, clearance_radius,
+                  GROUND_Z - ground_cut_overrun,
+                  -SUB_H + ground_cut_overrun),
+        'Solid.Subtract "component1:ground", '
+        '"component1:ground_feed_clearance"\n',
         brick("air", "component1", "Vacuum",
               x0, x1, y0, y1, METAL_T, AIR_H),
         polygon_extrude(
             "patch_initial", DESIGN_COMPONENT, "PEC",
-            [(px0, px0), (px1, px0), (px1, px1), (px0, px1)], METAL_T),
+            [(px0, py0), (px1, py0), (px1, py1), (px0, py1)], METAL_T),
+        _cylinder("feed_probe", "component1", "Copper (annealed)",
+                  FEED_X, FEED_Y, PIN_DIAMETER / 2.0,
+                  -SUB_H, METAL_T),
         _discrete_port(),
     ]
+
+
+def _cylinder(name: str, component: str, material: str,
+              x: float, y: float, radius: float,
+              z0: float, z1: float) -> str:
+    """CST z-axis cylinder; coordinates and radii are in millimetres."""
+    return (
+        "With Cylinder\n"
+        "    .Reset\n"
+        f'    .Name "{name}"\n'
+        f'    .Component "{component}"\n'
+        f'    .Material "{material}"\n'
+        '    .Axis "z"\n'
+        f'    .Xradius "{radius:.6g}"\n'
+        f'    .Yradius "{radius:.6g}"\n'
+        f'    .Xcenter "{x:.6g}"\n'
+        f'    .Ycenter "{y:.6g}"\n'
+        f'    .Zrange "{z0:.6g}", "{z1:.6g}"\n'
+        '    .Segments "0"\n'
+        "    .Create\n"
+        "End With\n"
+    )
 
 
 def setting_blocks(portnum: int) -> list[tuple[str, str]]:
@@ -120,7 +174,8 @@ def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
 
 def initial_patch_polygon():
     px0, px1 = PATCH
-    return [(px0, px0), (px1, px0), (px1, px1), (px0, px1)]
+    py0, py1 = PATCH_Y
+    return [(px0, py0), (px1, py0), (px1, py1), (px0, py1)]
 
 
 def fixed_metal_polygons() -> list[list[tuple[float, float]]]:
@@ -130,13 +185,12 @@ def fixed_metal_polygons() -> list[list[tuple[float, float]]]:
 def layout_view() -> dict:
     x0, x1 = BOARD
     y0, y1 = BOARD
-    px0, px1 = PATCH
     return {
         "bounds": (x0 - 10.0, x1 + 10.0, y0 - 10.0, y1 + 10.0),
         "shapes": [
             ("substrate", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
              "Rogers 4003C"),
-            ("metal", initial_patch_polygon(), "continuous design patch"),
+            ("metal", initial_patch_polygon(), "20 × 20 mm initial design patch"),
         ],
         "ports": [(1, FEED_X, FEED_Y, 0, 1)],
     }

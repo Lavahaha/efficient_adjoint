@@ -92,7 +92,8 @@ class CstSetup:
         if tag not in self.project_names:
             raise ValueError(f"tag 只能是 {self.project_names}，收到 {tag!r}")
         base = Path(self.project_dir) if self.project_dir else Path(outdir) / "cst"
-        return base / f"{name}_{tag}.cst"
+        # CST requires absolute paths for project open/save operations.
+        return (base / f"{name}_{tag}.cst").expanduser().resolve()
 
     def stimulus(self, tag: str, objective) -> int:
         """该工程只激励哪个端口：fwd = objective.from_port，bwd = to_port。

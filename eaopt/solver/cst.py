@@ -366,7 +366,7 @@ def _clear_results(m3d, *, what: str, log) -> bool:
 
 def _open_or_reuse(de, path, log):
     """打开工程；**已经开着就复用**（同一个 .cst 不能打开两次）。"""
-    path = Path(path)
+    path = Path(path).expanduser().resolve()
     want = _norm(path)
     for prj in de.get_open_projects():
         got = prj.filename()
@@ -387,7 +387,7 @@ def _norm(p) -> str:
 
 def _save(prj, path, log, what: str = "保存工程") -> None:
     """保存工程（``allow_overwrite`` 两段式，见 scripts/cst_init_fwd.py）。"""
-    path = Path(path)
+    path = Path(path).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         prj.save(str(path), allow_overwrite=True)
