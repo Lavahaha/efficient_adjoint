@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 import cst.results as cstr
@@ -299,6 +301,12 @@ def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
     返回的 FieldGrid 含精确 z=0 数据；随后调用方可用 :func:`crop_grid` 裁到设计区。
     ASCIIExport 没有区域属性，文件本身体积无法通过这里缩小。
     """
+    # CST's COM server may have a different working directory from Python.
+    # Pass an absolute destination to ASCIIExport and use that exact path for
+    # parsing, rather than relying on either process to resolve a relative path.
+    out_path = Path(out_path).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
     item = resolve_field_item(model3d, field_type, freq_ghz, log=log)
     _select_item(model3d, item)
 
@@ -407,6 +415,7 @@ def _configure_and_run(exporter, out_path, step_mm: float,
     except Exception as e:
         raise RuntimeError(
             f"{field_type} 场导出 Execute 失败：{e}\n"
+            f"  导出目标：{out_path}\n"
             f"  已选中的条目：{item}（在结果树上已确认存在）\n"
             "  CST 报 'not available for the current view' 表示当前视图不是"
             "可导出的场结果，按可能性排查：\n"
