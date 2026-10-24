@@ -8,19 +8,24 @@ objective:
   from_port: 1
   to_port: 1
 
+# Paper l_w1=l_p1=40 mm; centered at the origin. The fixed 5x5 mm feed pad
+# sits just outside the left edge and touches the initial 20x20 mm patch.
 design_region:
   box:
-    x: [-22.0, 22.0]
-    y: [-22.0, 22.0]
+    x: [-20.0, 20.0]
+    y: [-20.0, 20.0]
   grid_step_mm: 0.2
   field_margin_mm: 2.0
 
 initial_metal:
+  # l_w1/2 by l_p1/2, aligned to the design-region left edge and y center.
   - vertices: [[-20.0, -10.0], [0.0, -10.0], [0.0, 10.0], [-20.0, 10.0]]
 
 constraints:
   min_gap_mm: 0.0
   min_feature_mm: 0.6
+  fixed_region:
+    - vertices: [[-25.0, -2.5], [-20.0, -2.5], [-20.0, 2.5], [-25.0, 2.5]]
   allowed_region:
     x: [-20.0, 20.0]
     y: [-20.0, 20.0]

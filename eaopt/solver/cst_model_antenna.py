@@ -13,19 +13,26 @@ __all__ = [
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
     "UNITS_BLOCK", "DESIGN_COMPONENT", "design_region_update", "layout_view",
     "fixed_metal_polygons", "BOARD", "PATCH", "FEED_X", "FEED_Y",
+    "FEED_PAD",
     "SUB_H", "METAL_T", "FREQ", "FMIN", "FMAX", "AIR_H",
     "PIN_DIAMETER", "GROUND_CLEARANCE_DIAMETER",
     "SUPPORTS_NESTED_CONTOURS", "DESIGN_BOUNDARY_PAD_MM",
 ]
 
 BOARD = (-30.0, 30.0)
-FEED_X, FEED_Y = -15.0, 0.0
+DESIGN_X0 = -20.0
 PATCH_LENGTH = 20.0       # l_p1 / 2 from Table I
 PATCH_WIDTH = 20.0        # l_w1 / 2 from Table I
-FEED_EDGE_OFFSET = 5.0    # l_1 from Table I; feed is measured from patch's left edge
-PATCH = (FEED_X - FEED_EDGE_OFFSET,
-         FEED_X - FEED_EDGE_OFFSET + PATCH_LENGTH)
+FEED_PAD_SIZE = 5.0       # l_1 from Table I; fixed square outside the design region
+PATCH = (DESIGN_X0, DESIGN_X0 + PATCH_LENGTH)
 PATCH_Y = (-PATCH_WIDTH / 2.0, PATCH_WIDTH / 2.0)
+FEED_X, FEED_Y = DESIGN_X0 - FEED_PAD_SIZE / 2.0, 0.0
+FEED_PAD = [
+    (DESIGN_X0 - FEED_PAD_SIZE, -FEED_PAD_SIZE / 2.0),
+    (DESIGN_X0, -FEED_PAD_SIZE / 2.0),
+    (DESIGN_X0, FEED_PAD_SIZE / 2.0),
+    (DESIGN_X0 - FEED_PAD_SIZE, FEED_PAD_SIZE / 2.0),
+]
 PIN_DIAMETER = 1.27       # d_1 from Table I
 GROUND_CLEARANCE_DIAMETER = 4.10  # d_2 from Table I
 SUB_H = ANTENNA.substrate_h_mm
@@ -118,11 +125,13 @@ def model_blocks() -> list[str]:
         brick("air", "component1", "Vacuum",
               x0, x1, y0, y1, METAL_T, AIR_H),
         polygon_extrude(
+            "feed_pad_fixed", "component1", "PEC", FEED_PAD, METAL_T),
+        polygon_extrude(
             "patch_initial", DESIGN_COMPONENT, "PEC",
             [(px0, py0), (px1, py0), (px1, py1), (px0, py1)], METAL_T),
         _cylinder("feed_probe", "component1", "Copper (annealed)",
                   FEED_X, FEED_Y, PIN_DIAMETER / 2.0,
-                  -SUB_H, METAL_T),
+                  -SUB_H, 0.0),
         _discrete_port(),
     ]
 
@@ -179,7 +188,7 @@ def initial_patch_polygon():
 
 
 def fixed_metal_polygons() -> list[list[tuple[float, float]]]:
-    return []
+    return [FEED_PAD]
 
 
 def layout_view() -> dict:
@@ -190,6 +199,7 @@ def layout_view() -> dict:
         "shapes": [
             ("substrate", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
              "Rogers 4003C"),
+            ("metal", FEED_PAD, "5 mm fixed feed pad"),
             ("metal", initial_patch_polygon(), "20 × 20 mm initial design patch"),
         ],
         "ports": [(1, FEED_X, FEED_Y, 0, 1)],
