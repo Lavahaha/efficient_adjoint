@@ -21,11 +21,13 @@ initial_metal:
   # l_w1/2 by l_p1/2, aligned to the design-region left edge and y center.
   - vertices: [[-20.0, -10.0], [0.0, -10.0], [0.0, 10.0], [-20.0, 10.0]]
 
+# Fixed feed pad outside the level-set design region.
+fixed_region:
+  - vertices: [[-25.0, -2.5], [-20.0, -2.5], [-20.0, 2.5], [-25.0, 2.5]]
+
 constraints:
   min_gap_mm: 0.0
   min_feature_mm: 0.6
-  fixed_region:
-    - vertices: [[-25.0, -2.5], [-20.0, -2.5], [-20.0, 2.5], [-25.0, 2.5]]
   allowed_region:
     x: [-20.0, 20.0]
     y: [-20.0, 20.0]
