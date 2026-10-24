@@ -43,7 +43,8 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.cli import base_parser, banner, make_log, report_solution, safe_console
-from eaopt.geometry.contour import SIMPLIFY_TOL_CELLS, close_open_contours
+from eaopt.geometry.contour import (SIMPLIFY_TOL_CELLS, classify_metal_regions,
+                                    close_open_contours)
 from eaopt.config import CaseConfig
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution
@@ -68,8 +69,11 @@ def main(argv=None) -> int:
 
     try:
         polys = _resolve_shape(cfg, args, model=M, log=log)
-        log(f"[ .. ] 新形状：{len(polys)} 个多边形 / "
-            f"{sum(len(p) for p in polys)} 个点")
+        point_count = (sum(len(region.outer) + sum(len(hole) for hole in region.holes)
+                           for region in polys)
+                       if polys and hasattr(polys[0], "outer")
+                       else sum(len(poly) for poly in polys))
+        log(f"[ .. ] 新形状：{len(polys)} 个几何区域 / {point_count} 个点")
         n = _next_iteration(cfg, args.iteration)
         de = _connect(args.attach, args.force_new, log,
                       quiet=setup.quiet_mode)
@@ -83,8 +87,19 @@ def main(argv=None) -> int:
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=log)
             _update_design_region(prj.model3d, polys, setup, M,
                                   what=f"更新 {tag} 工程设计区", log=log)
-        shape_path = artifacts.save_shape(cfg.output.dir, n, polys)
-        log(f"[OK] 形状落盘：{shape_path}（{len(polys)} 个多边形）")
+        if polys and hasattr(polys[0], "outer"):
+            flat = [region.outer for region in polys]
+            flat += [hole for region in polys for hole in region.holes]
+            extra = {"regions": [
+                {"outer": region.outer.tolist(),
+                 "holes": [hole.tolist() for hole in region.holes],
+                 "depth": region.depth}
+                for region in polys
+            ]}
+        else:
+            flat, extra = polys, None
+        shape_path = artifacts.save_shape(cfg.output.dir, n, flat, extra=extra)
+        log(f"[OK] 形状落盘：{shape_path}（{len(flat)} 个轮廓环）")
 
         sols = {tag: _solve_and_record(
             cfg, setup, prj, setup.project_path(tag, cfg.output.dir, cfg.name),
@@ -254,8 +269,11 @@ def _update_design_region(m3d, polys, setup, model, *, what: str, log) -> None:
     cmd = model.design_region_update(polys, setup.metal_thickness_mm,
                                      component=model.DESIGN_COMPONENT,
                                      material=setup.metal_material.upper())
-    n_pts = sum(len(p) for p in polys)
-    log(f"[ .. ] {what}：{len(polys)} 个多边形 / {n_pts} 个点，"
+    n_pts = (sum(len(region.outer) + sum(len(hole) for hole in region.holes)
+                 for region in polys)
+             if polys and hasattr(polys[0], "outer")
+             else sum(len(poly) for poly in polys))
+    log(f"[ .. ] {what}：{len(polys)} 个几何区域 / {n_pts} 个点，"
         f"历史记录 {len(cmd)} 字符")
     _apply_blocks(m3d, [("design region", cmd)], what, log)
 
@@ -365,11 +383,15 @@ def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
         polys = _contours_from_phi(cfg, artifacts.load_ls_phi(npz), log=log)
     # 与 CstSolver.build_model 同一套参数：网格描线不简化就送 CST 会撞上
     # Extrude 的点表容量（2026-10-09 功分器实测），容差 = 0.2 格。
-    return close_open_contours(
+    closed = close_open_contours(
         polys, cfg.design_region.box,
         pad_mm=float(getattr(model, "DESIGN_BOUNDARY_PAD_MM", 0.05)),
         simplify_tol_mm=SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm,
+        allow_nested=bool(getattr(model, "SUPPORTS_NESTED_CONTOURS", False)),
     )
+    if getattr(model, "SUPPORTS_NESTED_CONTOURS", False):
+        return classify_metal_regions(closed)
+    return closed
 
 
 def _contours_from_phi(cfg: CaseConfig, snap: dict, *, log=print):

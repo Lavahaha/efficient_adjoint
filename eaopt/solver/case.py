@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from eaopt.config import CaseConfig
-from eaopt.solver.cst_setup import COUPLER, CstSetup
+from eaopt.solver.cst_setup import ANTENNA, COUPLER, CstSetup
 
 __all__ = ["load_case", "known_cases", "CASE_INTERFACE"]
 
@@ -34,7 +34,7 @@ CASE_INTERFACE = ("template_blocks", "model_blocks", "setting_blocks",
 
 def known_cases() -> tuple[str, ...]:
     """有 ``CstSetup`` + 模板模块的算例名（= 合法的 YAML ``name``）。"""
-    return ("coupler", "divider")
+    return ("coupler", "divider", "antenna")
 
 
 def _check_interface(model, name: str) -> None:
@@ -63,6 +63,10 @@ def load_case(cfg: CaseConfig) -> tuple[CstSetup, object]:
         from eaopt.solver.cst_setup import DIVIDER
         _check_interface(model, cfg.name)
         return DIVIDER, model
+    if cfg.name == "antenna":
+        from eaopt.solver import cst_model_antenna as model
+        _check_interface(model, cfg.name)
+        return ANTENNA, model
     raise ValueError(
         f"未知算例 name={cfg.name!r}：已知 {known_cases()}。"
         "算例 = cst_setup.py 里的 CstSetup + cst_model*.py 模板模块 + 这里"

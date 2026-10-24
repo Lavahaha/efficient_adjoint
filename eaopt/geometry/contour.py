@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 __all__ = [
@@ -14,7 +16,125 @@ __all__ = [
     "close_open_contours",
     "simplify_polygon",
     "self_intersections",
+    "MetalRegion",
+    "classify_metal_regions",
 ]
+
+
+@dataclass(frozen=True)
+class MetalRegion:
+    """One connected metal profile: an outer ring with directly enclosed holes."""
+
+    outer: np.ndarray
+    holes: tuple[np.ndarray, ...] = ()
+    depth: int = 0
+
+
+def classify_metal_regions(polygons: list[np.ndarray]) -> list[MetalRegion]:
+    """Group nested closed contours into metal regions using even/odd nesting.
+
+    The level-set convention is air outside metal. Root rings therefore enclose
+    metal; their children are holes, grandchildren are metal islands, and so on.
+    Rings must be simple, closed, and non-touching.
+    """
+    from matplotlib.path import Path
+
+    rings = [dedupe_vertices(np.asarray(poly, dtype=float)) for poly in polygons]
+    areas = []
+    for index, ring in enumerate(rings):
+        if len(ring) < 4 or not np.allclose(ring[0], ring[-1]):
+            raise ValueError(f"轮廓环 {index} 必须是至少三顶点的闭合多边形")
+        if self_intersections(ring):
+            raise ValueError(f"轮廓环 {index} 存在自交，无法建立孔洞层级")
+        body = ring[:-1]
+        area = abs(float(np.sum(
+            body[:, 0] * np.roll(body[:, 1], -1)
+            - np.roll(body[:, 0], -1) * body[:, 1]
+        ))) / 2.0
+        if area <= 1e-12:
+            raise ValueError(f"轮廓环 {index} 面积过小，无法建立孔洞层级")
+        areas.append(area)
+
+    for first in range(len(rings)):
+        for second in range(first + 1, len(rings)):
+            if _rings_touch_or_cross(rings[first], rings[second]):
+                raise ValueError(
+                    f"轮廓环 {first} 与 {second} 相交或相切，无法可靠分类孔洞")
+
+    parents: list[int | None] = [None] * len(rings)
+    for inner_index, inner in enumerate(rings):
+        candidates = []
+        for outer_index, outer in enumerate(rings):
+            if areas[outer_index] <= areas[inner_index]:
+                continue
+            if np.all(Path(outer).contains_points(inner[:-1])):
+                candidates.append(outer_index)
+        if candidates:
+            parents[inner_index] = min(candidates, key=lambda item: areas[item])
+
+    depths: list[int | None] = [None] * len(rings)
+
+    def depth_of(index: int, visiting: set[int] | None = None) -> int:
+        if depths[index] is not None:
+            return int(depths[index])
+        chain = set() if visiting is None else visiting
+        if index in chain:
+            raise ValueError("轮廓嵌套关系形成环，输入轮廓无效")
+        chain.add(index)
+        parent = parents[index]
+        value = 0 if parent is None else depth_of(parent, chain) + 1
+        chain.remove(index)
+        depths[index] = value
+        return value
+
+    for index in range(len(rings)):
+        depth_of(index)
+
+    regions = []
+    for index, ring in enumerate(rings):
+        depth = int(depths[index])
+        if depth % 2:
+            continue
+        holes = tuple(
+            rings[child] for child, parent in enumerate(parents)
+            if parent == index and int(depths[child]) == depth + 1
+        )
+        regions.append(MetalRegion(ring, holes, depth))
+    return regions
+
+
+def _rings_touch_or_cross(first: np.ndarray, second: np.ndarray,
+                          tol: float = 1e-9) -> bool:
+    """Return whether two closed rings intersect or touch."""
+    first_edges = list(zip(first[:-1], first[1:]))
+    second_edges = list(zip(second[:-1], second[1:]))
+    for a, b in first_edges:
+        amin, amax = np.minimum(a, b) - tol, np.maximum(a, b) + tol
+        for c, d in second_edges:
+            if np.any(np.maximum(c, d) < amin) or np.any(np.minimum(c, d) > amax):
+                continue
+            if _segments_touch(a, b, c, d, tol):
+                return True
+    return False
+
+
+def _segments_touch(a, b, c, d, tol: float) -> bool:
+    def cross(p, q, r):
+        return float((q[0] - p[0]) * (r[1] - p[1])
+                     - (q[1] - p[1]) * (r[0] - p[0]))
+
+    def on_segment(p, q, r):
+        return (min(p[0], q[0]) - tol <= r[0] <= max(p[0], q[0]) + tol
+                and min(p[1], q[1]) - tol <= r[1] <= max(p[1], q[1]) + tol
+                and abs(cross(p, q, r)) <= tol)
+
+    ab_c, ab_d = cross(a, b, c), cross(a, b, d)
+    cd_a, cd_b = cross(c, d, a), cross(c, d, b)
+    if ((ab_c > tol and ab_d < -tol or ab_c < -tol and ab_d > tol)
+            and (cd_a > tol and cd_b < -tol or cd_a < -tol and cd_b > tol)):
+        return True
+    return (on_segment(a, b, c) or on_segment(a, b, d)
+            or on_segment(c, d, a) or on_segment(c, d, b))
 
 
 def extract_contours(
@@ -173,6 +293,7 @@ def close_open_contours(
     contours: list[np.ndarray], box, pad_mm: float = 0.05,
     simplify_tol_mm: float = 0.0,
     max_points: int | None = SIMPLIFY_MAX_POINTS,
+    allow_nested: bool = False,
 ) -> list[np.ndarray]:
     """把穿出设计区边界的开放轮廓闭合为多边形（供求解器几何重建）。
 
@@ -254,7 +375,8 @@ def close_open_contours(
                 f"（共 {len(bad)} 处）。检查零等值面轮廓的端点是否两两成对"
                 "（每条开放轮廓的两个端点都该落在设计区边界上）。"
             )
-    _check_no_nested(out)
+    if not allow_nested:
+        _check_no_nested(out)
     if simplify_tol_mm <= 0.0:
         return out
     simple = [simplify_polygon(p, simplify_tol_mm, max_points) for p in out]

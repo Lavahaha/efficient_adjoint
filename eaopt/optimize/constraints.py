@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import numpy as np
+from scipy import ndimage
 from matplotlib.path import Path
 
 from eaopt.config import CaseConfig
@@ -103,6 +104,42 @@ def apply_min_gap(ls: LevelSet2D, cfg: CaseConfig) -> None:
     dist = np.abs(tmp.phi)
     prohibited = (tmp.phi > 0) & (dist < gap)  # 固定金属外的禁区外壳
     ls.phi[prohibited] = np.abs(ls.phi[prohibited])
+
+
+def apply_min_feature(ls: LevelSet2D, min_feature_mm: float, *,
+                      force_air: np.ndarray | None = None,
+                      force_metal: np.ndarray | None = None) -> None:
+    """Filter metal necks and air gaps below the configured feature scale.
+
+    Opening removes narrow metal features; closing fills narrow air gaps and
+    holes. The operation is quantized to the level-set grid and followed by an
+    exact signed-distance reconstruction.
+    """
+    feature = float(min_feature_mm)
+    if feature <= 0.0:
+        return
+    radius_cells = feature / (2.0 * ls.dx)
+    extent = int(np.ceil(radius_cells))
+    offsets = np.arange(-extent, extent + 1, dtype=float)
+    xx, yy = np.meshgrid(offsets, offsets, indexing="ij")
+    footprint = xx**2 + yy**2 <= radius_cells**2 + 1e-12
+    if not footprint.any():
+        footprint[extent, extent] = True
+    metal = ls.phi < 0.0
+    filtered = ndimage.binary_closing(
+        ndimage.binary_opening(metal, structure=footprint), structure=footprint)
+    if force_air is not None:
+        filtered[np.asarray(force_air, dtype=bool)] = False
+    if force_metal is not None:
+        filtered[np.asarray(force_metal, dtype=bool)] = True
+    if not filtered.any():
+        raise ValueError(
+            "最小特征过滤移除了全部金属；请减小 min_feature_mm 或检查初始形状")
+    padded = np.pad(filtered, 1, mode="constant", constant_values=False)
+    inside_distance = ndimage.distance_transform_edt(padded)
+    outside_distance = ndimage.distance_transform_edt(~padded)
+    signed = (outside_distance - inside_distance)[1:-1, 1:-1] * ls.dx
+    ls.phi = signed
 
 
 # ---------------------------------------------------------------------- #

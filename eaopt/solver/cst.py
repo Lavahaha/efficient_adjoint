@@ -38,7 +38,8 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.config import CaseConfig
-from eaopt.geometry.contour import SIMPLIFY_TOL_CELLS, close_open_contours
+from eaopt.geometry.contour import (SIMPLIFY_TOL_CELLS, classify_metal_regions,
+                                    close_open_contours)
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution, SolverInterface
 from eaopt.solver.case import load_case
@@ -160,26 +161,46 @@ class CstSolver(SolverInterface):
         # self-intersecting"（2026-10-09 功分器 Stage 1 实测）。容差 = 0.2 格。
         self.last_prepared_polys = None
         boundary_pad = float(getattr(self.M, "DESIGN_BOUNDARY_PAD_MM", 0.05))
+        supports_nested = bool(getattr(self.M, "SUPPORTS_NESTED_CONTOURS", False))
         polys = close_open_contours(
             movable, self.cfg.design_region.box,
             pad_mm=boundary_pad,
             simplify_tol_mm=SIMPLIFY_TOL_CELLS * self.cfg.design_region.grid_step_mm,
+            allow_nested=supports_nested,
         )
         if not polys:
             raise ValueError(
                 "水平集没有可用的零等值线，不能创建空的设计区金属。"
             )
-        self.last_prepared_polys = [poly.copy() for poly in polys]
+        if supports_nested:
+            regions = classify_metal_regions(polys)
+            geometry = regions
+            self.last_prepared_polys = [region.outer.copy() for region in regions]
+            self.last_prepared_polys += [
+                hole.copy() for region in regions for hole in region.holes]
+        else:
+            regions = None
+            geometry = polys
+            self.last_prepared_polys = [poly.copy() for poly in polys]
         self._ensure_projects()
         for tag in artifacts.TAGS:
             prj = self._open(tag)
             if self.clear_results:
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=self.log)
-            _update_design_region(prj.model3d, polys, self.setup, self.M,
+            _update_design_region(prj.model3d, geometry, self.setup, self.M,
                                   what=f"更新 {tag} 工程设计区", log=self.log)
         if self._it is not None:
-            path = artifacts.save_shape(self.cfg.output.dir, self._it, polys)
-            self.log(f"[OK] 形状落盘：{path}（{len(polys)} 个多边形）")
+            extra = None
+            if regions is not None:
+                extra = {"regions": [
+                    {"outer": region.outer.tolist(),
+                     "holes": [hole.tolist() for hole in region.holes],
+                     "depth": region.depth}
+                    for region in regions
+                ]}
+            path = artifacts.save_shape(self.cfg.output.dir, self._it,
+                                        self.last_prepared_polys, extra=extra)
+            self.log(f"[OK] 形状落盘：{path}（{len(self.last_prepared_polys)} 个轮廓环）")
 
     def solve_forward(self) -> Solution:
         """端口 from_port 激励（工程 fwd，模板里激励已写死）。"""
@@ -399,11 +420,15 @@ def _update_design_region(m3d, polys, setup, model, *, what: str, log) -> None:
 
     ``model`` = 该算例的模板模块（组件名与 Extrude 命令由它给，见 case.py）。
     """
-    polys = list(polys)
-    cmd = model.design_region_update(polys, setup.metal_thickness_mm,
+    geometry = list(polys)
+    cmd = model.design_region_update(geometry, setup.metal_thickness_mm,
                                      component=model.DESIGN_COMPONENT,
                                      material=setup.metal_material.upper())
-    log(f"[ .. ] {what}：{len(polys)} 个多边形 / {sum(len(p) for p in polys)} 个点")
+    point_count = (sum(len(region.outer) + sum(len(hole) for hole in region.holes)
+                       for region in geometry)
+                   if geometry and hasattr(geometry[0], "outer")
+                   else sum(len(poly) for poly in geometry))
+    log(f"[ .. ] {what}：{len(geometry)} 个几何区域 / {point_count} 个点")
     _apply_blocks(m3d, [("design region", cmd)], what, log)
 
 

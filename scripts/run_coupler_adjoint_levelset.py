@@ -21,12 +21,14 @@ import adjoint_levelset as als
 from eaopt.cli import base_parser, banner, make_log, safe_console
 from eaopt.config import BoxSpec, CaseConfig
 from eaopt.geometry.levelset import LevelSet2D
-from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
+from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_feature,
+                                        apply_min_gap,
                                         build_velocity_mask)
 from eaopt.pipeline import make_level_set
 from eaopt.solver.case import load_case
 from eaopt.solver.cst import CstSolver
 from eaopt import plotting
+from eaopt.geometry.contour import classify_metal_regions
 
 
 def _select_z_plane(field, requested_z_mm: float, metal_thickness_mm: float) -> tuple[int, float]:
@@ -167,7 +169,8 @@ class CstAdjointLevelSetProblem:
         try:
             metal = ls.phi < 0.0
             enclosed_air = ndimage.binary_fill_holes(metal) & ~metal
-            if enclosed_air.any():
+            if (enclosed_air.any() and
+                    not getattr(self.solver.M, "SUPPORTS_NESTED_CONTOURS", False)):
                 raise ValueError(
                     "The current level set contains an enclosed air hole. The existing "
                     "CST geometry builder extrudes every contour as solid metal and "
@@ -296,7 +299,7 @@ def _write_json(path: Path, value) -> None:
 
 
 def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
-         expected_case: str = "coupler") -> None:
+         expected_case: str = "coupler", maximize: bool = True) -> None:
     safe_console()
     parser = base_parser(
         f"Run the adjoint_levelset optimizer on the CST {expected_case}",
@@ -350,6 +353,9 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
         """Apply shared geometric projections and repair connectivity in place."""
         topology_candidate.phi = np.asarray(trial.phi, dtype=float).copy()
         apply_min_gap(topology_candidate, cfg)
+        apply_min_feature(
+            topology_candidate, cfg.constraints.min_feature_mm,
+            force_air=force_air, force_metal=force_metal)
         if topology_guard is not None and not topology_guard.apply(topology_candidate, log=log):
             raise RuntimeError(
                 "Connectivity repair failed for the updated geometry; refusing to "
@@ -404,7 +410,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
         problem = CstAdjointLevelSetProblem(
             cfg, setup, solver, sample_offset, prefactor_scale, output_dir, log=log)
         opt_cfg = als.OptimizerConfig(
-            maximize=True,
+            maximize=bool(maximize),
             step_cells=float(cfg.optimizer.step_cells),
             step_min_cells=float(cfg.optimizer.step_min_cells),
             step_max_cells=float(cfg.optimizer.step_cells),
@@ -513,15 +519,34 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
         )
         final_fom = (optimizer.history[-1]["f_after"] if optimizer.history
                      else float("nan"))
-        _write_json(output_dir / "final_shape.json", [
-            np.asarray(poly, dtype=float).tolist()
-            for poly in als.boundary_polygons(final_ls)
-        ])
+        final_contours = als.boundary_polygons(final_ls)
+        if getattr(model, "SUPPORTS_NESTED_CONTOURS", False):
+            final_regions = classify_metal_regions(final_contours)
+            final_polygons = [region.outer for region in final_regions]
+            final_polygons += [
+                hole for region in final_regions for hole in region.holes]
+            final_shape = {
+                "unit": "mm",
+                "n_polygons": len(final_polygons),
+                "polygons": [polygon.tolist() for polygon in final_polygons],
+                "regions": [
+                    {"outer": region.outer.tolist(),
+                     "holes": [hole.tolist() for hole in region.holes],
+                     "depth": region.depth}
+                    for region in final_regions
+                ],
+            }
+        else:
+            final_shape = [np.asarray(poly, dtype=float).tolist()
+                           for poly in final_contours]
+        _write_json(output_dir / "final_shape.json", final_shape)
         plotting.adjoint_levelset_sparams_figure(
             cfg, sparams_history, output_dir / "fig7_sparams_vs_iteration.png")
         _write_json(output_dir / "adjoint_levelset_summary.json", {
             "case": cfg.name,
-            "objective": f"maximize |S{cfg.objective.to_port}{cfg.objective.from_port}|",
+            "objective": (
+                f"{'maximize' if maximize else 'minimize'} "
+                f"|S{cfg.objective.to_port}{cfg.objective.from_port}|"),
             "final_fom": final_fom,
             "iterations_requested": cfg.optimizer.max_iterations,
             "iterations_recorded": len(iteration_records),

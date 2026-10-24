@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-__all__ = ["CstSetup", "COUPLER", "DIVIDER"]
+__all__ = ["CstSetup", "COUPLER", "DIVIDER", "ANTENNA"]
 
 
 @dataclass(frozen=True)
@@ -143,3 +143,8 @@ COUPLER = CstSetup()
 # 的大平面板，0.1 mm 下每份文件要 200 MB 以上；z 仍留 0.1 mm 给采样面吸附。
 DIVIDER = CstSetup(eps_r=3.0, loss_tangent=0.001, ports=(1, 2, 3),
                    export_step_mm=0.2, export_step_z_mm=0.1)
+
+# Continuous patch antenna from Fig. 5/Table I; target frequency is 7.5 GHz.
+ANTENNA = CstSetup(frequency_ghz=7.5, eps_r=3.55, loss_tangent=0.0027,
+                   substrate_h_mm=1.524, metal_thickness_mm=0.018,
+                   ports=(1,), export_step_mm=0.2, export_step_z_mm=0.1)

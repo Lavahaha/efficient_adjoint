@@ -1,0 +1,58 @@
+# Continuous patch antenna optimization. CST-side geometry/material parameters
+# are defined in eaopt/solver/cst_setup.py and cst_model_antenna.py.
+name: antenna
+description: Continuous patch antenna, single-port S11 minimization
+
+objective:
+  type: transmission
+  from_port: 1
+  to_port: 1
+
+design_region:
+  box:
+    x: [-22.0, 22.0]
+    y: [-22.0, 22.0]
+  grid_step_mm: 0.2
+  field_margin_mm: 2.0
+
+initial_metal:
+  - vertices: [[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]]
+
+constraints:
+  min_gap_mm: 0.0
+  min_feature_mm: 0.6
+  allowed_region:
+    x: [-20.0, 20.0]
+    y: [-20.0, 20.0]
+  taper_edges: none
+  require_connected: false
+
+sampling:
+  field_z_mm: 0.05
+  intersection_offset_mm: 0.4
+  wls_radius_cells: 2.0
+  wls_order: 1
+  scatter_max_cells: 1.0
+  sample_side: outside
+
+optimizer:
+  step_cells: 1.0
+  step_min_cells: 0.25
+  step_decay_factor: 0.5
+  step_plateau_patience: 2
+  step_relative_threshold: 1.0e-3
+  cfl: 0.5
+  velocity_sign: 1.0
+  normalize: none
+  step_ref_quantile: 0.9
+  max_iterations: 30
+  fom_tolerance: 1.0e-4
+  convergence_window: 5
+
+level_set:
+  reinit_every: 1
+  extension_band_mm: 1.0
+  extension_method: auto
+
+output:
+  dir: results/antenna

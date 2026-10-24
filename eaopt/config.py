@@ -130,6 +130,7 @@ class LevelSetSpec:
 @dataclass
 class ConstraintSpec:
     min_gap_mm: float = 0.0  # 金属间最小间距（论文 0.1 mm）
+    min_feature_mm: float = 0.0  # 金属线宽、孔径和间隙的最小过滤尺度；0=关闭
     # 可动金属的活动范围（速度掩膜区域），None 表示整个设计区都可动。
     # 论文只有一个设计区：design_region.box 就是可动范围，**这里留空**。
     # 保留该字段是为了"设计区比可动范围大"的算例（如盒子要覆盖固定障碍时）。
@@ -214,6 +215,13 @@ class CaseConfig:
             poly.validate(f"fixed_region[{i}]")
         if self.constraints.allowed_region is not None:
             self.constraints.allowed_region.validate("constraints.allowed_region")
+        if self.constraints.min_feature_mm < 0:
+            raise ValueError("constraints.min_feature_mm 不能为负")
+        if (self.constraints.min_feature_mm > 0 and
+                self.constraints.min_feature_mm <
+                2.0 * self.design_region.grid_step_mm):
+            raise ValueError(
+                "constraints.min_feature_mm 至少应为两个设计网格单元")
         if self.constraints.require_connected and not self.initial_metal:
             raise ValueError(
                 "constraints.require_connected=true 但没有 initial_metal："
@@ -283,6 +291,7 @@ class CaseConfig:
             f"速度延拓    : {self.level_set.extension_method}"
             f"（带宽 {self.level_set.extension_band_mm} mm）",
             f"约束        : 最小间距 {self.constraints.min_gap_mm} mm, "
+            f"最小特征 {self.constraints.min_feature_mm} mm, "
             f"边缘 taper 作用于 {self.constraints.taper_edges} 边"
             + (f", 活动范围 {self.constraints.allowed_region}" if self.constraints.allowed_region else ""),
             f"优化        : 步长 {self.optimizer.step_cells} 格 "
