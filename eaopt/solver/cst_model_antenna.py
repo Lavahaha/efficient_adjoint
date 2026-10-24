@@ -105,9 +105,9 @@ def setting_blocks(portnum: int) -> list[tuple[str, str]]:
         ("Monitor Efield", field_monitor("Efield", FREQ)),
         ("Monitor Hfield", field_monitor("Hfield", FREQ)),
         ("Boundary", set_boundaries(
-            "open (add space)", "open (add space)",
-            "open (add space)", "open (add space)",
-            "open (add space)", "open (add space)")),
+            "expanded open", "expanded open",
+            "expanded open", "expanded open",
+            "expanded open", "expanded open")),
     ]
 
 

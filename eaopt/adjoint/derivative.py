@@ -80,5 +80,7 @@ def shape_derivative(
     h_t_back = h_back - h_n_back[:, None] * n3
     h_t_dot = np.sum(h_t_fwd * h_t_back, axis=1)
 
-    integrand = EPS0 * eps_r * e_n_fwd * e_n_back + MU0 * h_t_dot
-    return np.real(phase * (-2j * omega / pin) * integrand)
+    # integrand = EPS0 * eps_r * e_n_fwd * e_n_back + MU0 * h_t_dot
+    integrand = EPS0 * eps_r * e_n_fwd * e_n_fwd + MU0 * h_t_fwd * h_t_fwd
+    # return np.real(phase * (-2j * omega / pin) * integrand)
+    return np.real(phase * (-1/ pin) * integrand)
