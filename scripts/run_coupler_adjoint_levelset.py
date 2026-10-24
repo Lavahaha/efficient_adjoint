@@ -110,6 +110,7 @@ class CstAdjointLevelSetProblem:
         self.eval_log = output_dir / "cst_evaluations.jsonl"
         self.eval_log.write_text("", encoding="utf-8")
         self.s_key = (int(cfg.objective.to_port), int(cfg.objective.from_port))
+        self.forward_only = self.s_key[0] == self.s_key[1]
 
     def _next_id(self) -> int:
         result = self.next_eval_id
@@ -240,6 +241,14 @@ class CstAdjointLevelSetProblem:
                      for value in result)
 
     def adjoint(self, ls: als.LevelSet, fwd: als.ForwardResult) -> als.FieldBundle:
+        if self.forward_only:
+            self._write_eval({
+                "eval_id": fwd.extra["eval_id"],
+                "kind": "adjoint",
+                "field_z_mm": fwd.extra["z_mm"],
+                "fields_reused_from": "forward",
+            })
+            return fwd.fields
         sol = self.solver.solve_backward()
         fields, z_used = _field_bundle(
             sol, self.requested_z_mm, self.setup.metal_thickness_mm)

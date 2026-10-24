@@ -141,7 +141,9 @@ class OptimizerPipeline:
                     break
 
                 # ---- 形状导数 -> 速度 -> 几何更新 ----
-                sol_b = self.solver.solve_backward()
+                sol_b = (sol_f if int(cfg.objective.from_port) ==
+                         int(cfg.objective.to_port)
+                         else self.solver.solve_backward())
                 V, steps = self._assemble_velocity(sol_f, sol_b, movable)
                 for _ in range(steps):
                     # 子步前留一份 φ：连通性补不上来时整子步回滚（不能带着

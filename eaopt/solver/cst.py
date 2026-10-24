@@ -49,7 +49,7 @@ __all__ = ["CstSolver"]
 
 
 class CstSolver(SolverInterface):
-    """一次会话、两个工程（fwd/bwd），逐轮改设计区 + 求解。"""
+    """一次会话；反射目标仅用 fwd 工程，其余目标用 fwd/bwd 两工程。"""
 
     def __init__(self, cfg: CaseConfig, *, setup: CstSetup | None = None,
                  model=None, auto_init: bool = False,
@@ -67,6 +67,10 @@ class CstSolver(SolverInterface):
         self.cfg = cfg
         self.setup = setup
         self.M = model
+        # Reflection objectives reuse the forward fields as adjoint fields.
+        self.forward_only = (
+            int(cfg.objective.from_port) == int(cfg.objective.to_port))
+        self.project_tags = ("fwd",) if self.forward_only else artifacts.TAGS
         self.auto_init = auto_init
         self.save_fields = (setup.save_fields if save_fields is None
                             else bool(save_fields))
@@ -108,8 +112,8 @@ class CstSolver(SolverInterface):
         return prj
 
     def _ensure_projects(self) -> None:
-        """确认两个工程都可用；``auto_init`` 时缺哪个建哪个。"""
-        for tag in artifacts.TAGS:
+        """确认所需工程可用；``auto_init`` 时缺哪个建哪个。"""
+        for tag in self.project_tags:
             if self.projects.get(tag) is not None:
                 continue
             if not self.project_path(tag).is_file():
@@ -117,7 +121,7 @@ class CstSolver(SolverInterface):
                     self._open(tag)             # 报错并给出 init 脚本提示
                 self.log(f"[ .. ] {tag} 工程不存在 → 自动初始化")
                 self._initialize(tag)
-        for tag in artifacts.TAGS:
+        for tag in self.project_tags:
             self._open(tag)
 
     def _initialize(self, tag: str):
@@ -183,7 +187,7 @@ class CstSolver(SolverInterface):
             geometry = polys
             self.last_prepared_polys = [poly.copy() for poly in polys]
         self._ensure_projects()
-        for tag in artifacts.TAGS:
+        for tag in self.project_tags:
             prj = self._open(tag)
             if self.clear_results:
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=self.log)
@@ -208,6 +212,10 @@ class CstSolver(SolverInterface):
 
     def solve_backward(self) -> Solution:
         """端口 to_port 激励（工程 bwd）= 论文的伴随仿真。"""
+        if self.forward_only:
+            raise RuntimeError(
+                "This reflection objective reuses the forward fields; "
+                "no backward CST solve is configured.")
         return self._solve("bwd")
 
     def export_field_for_plot(self, box, *, eval_id: int, tag: str = "fwd"):
@@ -235,7 +243,7 @@ class CstSolver(SolverInterface):
         """
         if self.de is None:
             return
-        for tag in artifacts.TAGS:
+        for tag in self.project_tags:
             prj = self.projects.get(tag)
             if prj is None:
                 continue
