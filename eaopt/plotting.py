@@ -367,8 +367,9 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     if np.min(phi) < 0.0 < np.max(phi):
         contour = ax.contour(x, y, phi.T, levels=[0.0], colors=["#252525"],
                              linewidths=1.8, zorder=6)
-        for collection in contour.collections:
-            collection.set_path_effects(metal_outline)
+        # Matplotlib 3.10 removed ``QuadContourSet.collections``; the contour
+        # set itself is a collection and accepts path effects across versions.
+        contour.set_path_effects(metal_outline)
     elif np.min(phi) < 0.0 and np.max(phi) <= 0.0:
         # With no air nodes the metal fills the design box, so its boundary is
         # the box edge rather than an interior zero contour.
