@@ -310,6 +310,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
     from matplotlib.patches import Polygon as MplPolygon, Rectangle
+    import matplotlib.patheffects as pe
     from eaopt.solver.case import load_case
 
     phi = np.asarray(phi, dtype=float)
@@ -349,19 +350,25 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
         vmin=0.0, vmax=vmax, interpolation="nearest", aspect="equal", zorder=1,
     )
 
-    # Leave all metal interiors transparent so the |E| map remains visible on
-    # PEC (where CST typically exports values close to zero). Only draw gray
-    # outlines for fixed metal; the movable metal outline comes from phi.
+    # Keep metal interiors transparent so the |E| map remains visible. A light
+    # halo plus a thin dark stroke keeps boundaries legible over every field
+    # color without hiding nearby cells.
+    metal_outline = [pe.Stroke(linewidth=4.0, foreground="white"),
+                     pe.Stroke(linewidth=1.8, foreground="#252525"),
+                     pe.Normal()]
     for points in fixed_metal_polygons:
         ax.add_patch(MplPolygon(
             np.asarray(points, dtype=float), closed=True,
-            fill=False, edgecolor="#777777", linewidth=7.5,
+            fill=False, edgecolor="#252525", linewidth=1.8,
+            path_effects=metal_outline,
             zorder=4,
         ))
 
     if np.min(phi) < 0.0 < np.max(phi):
-        ax.contour(x, y, phi.T, levels=[0.0], colors=["#777777"],
-                   linewidths=7.5, zorder=6)
+        contour = ax.contour(x, y, phi.T, levels=[0.0], colors=["#252525"],
+                             linewidths=1.8, zorder=6)
+        for collection in contour.collections:
+            collection.set_path_effects(metal_outline)
     elif np.min(phi) < 0.0 and np.max(phi) <= 0.0:
         # With no air nodes the metal fills the design box, so its boundary is
         # the box edge rather than an interior zero contour.
@@ -370,7 +377,8 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
              (cfg.design_region.box.x[1], cfg.design_region.box.y[0]),
              (cfg.design_region.box.x[1], cfg.design_region.box.y[1]),
              (cfg.design_region.box.x[0], cfg.design_region.box.y[1])],
-            closed=True, fill=False, edgecolor="#777777", linewidth=7.5,
+            closed=True, fill=False, edgecolor="#252525", linewidth=1.8,
+            path_effects=metal_outline,
             zorder=6,
         ))
 
@@ -380,9 +388,13 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     ax.add_patch(Rectangle((sx0, sy0), sx1 - sx0, sy1 - sy0,
                            fill=False, edgecolor="#555555", linewidth=1.0, zorder=3))
     box = cfg.design_region.box
-    ax.add_patch(Rectangle((box.x[0], box.y[0]), box.width, box.height,
-                           fill=False, edgecolor="#d62728", linestyle="--",
-                           linewidth=7.5, zorder=7))
+    design_box = Rectangle(
+        (box.x[0], box.y[0]), box.width, box.height,
+        fill=False, edgecolor="#ff8c00", linestyle="--",
+        linewidth=1.8, path_effects=[pe.Stroke(linewidth=3.4, foreground="white"),
+                                     pe.Normal()], zorder=7,
+    )
+    ax.add_patch(design_box)
 
     bounds = layout["bounds"]
     ax.set_xlim(bounds[0], bounds[1])
@@ -398,8 +410,10 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     colorbar.set_label("|E| (V/m), 99.5th percentile scale", fontsize=12)
     colorbar.ax.tick_params(labelsize=10)
     handles = [
-        Line2D([0], [0], color="#777777", linewidth=7.5, label="metal outline"),
-        Line2D([0], [0], color="#d62728", linestyle="--", linewidth=7.5,
+        Line2D([0], [0], color="#252525", linewidth=1.8,
+               path_effects=metal_outline, label="optimized metal boundary"),
+        Line2D([0], [0], color="#ff8c00", linestyle="--", linewidth=1.8,
+               path_effects=[pe.Stroke(linewidth=3.4, foreground="white"), pe.Normal()],
                label="design region"),
         Line2D([0], [0], color="#555555", linewidth=1.0, label="substrate edge"),
     ]
