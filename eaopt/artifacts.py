@@ -185,6 +185,24 @@ def save_solution(outdir, n: int, tag: str, sol, *, save_fields: bool = False,
     if save_fields:
         out["e_field"] = _save_field(d / f"fields_{tag}_e.npz", sol.e_field)
         out["h_field"] = _save_field(d / f"fields_{tag}_h.npz", sol.h_field)
+    frequency_meta = {}
+    for freq, result in sorted(getattr(sol, "frequency_results", {}).items()):
+        label = f"{float(freq):g}GHz"
+        sp_path = d / f"s_params_{tag}_{label}.json"
+        out[f"s_params_{label}"] = save_json(
+            sp_path, s_params_to_json(result.s_params))
+        freq_entry = {
+            "s_params": {f"S{i},{j}": [float(v.real), float(v.imag)]
+                         for (i, j), v in sorted(result.s_params.items())},
+            "s_params_file": sp_path.name,
+        }
+        if save_fields:
+            e_path = d / f"fields_{tag}_e_{label}.npz"
+            h_path = d / f"fields_{tag}_h_{label}.npz"
+            out[f"e_field_{label}"] = _save_field(e_path, result.e_field)
+            out[f"h_field_{label}"] = _save_field(h_path, result.h_field)
+            freq_entry["fields"] = {"e": e_path.name, "h": h_path.name}
+        frequency_meta[label] = freq_entry
     meta_path = d / "meta.json"
     meta = load_json(meta_path) if meta_path.is_file() else {"iteration": int(n)}
     meta.setdefault("tags", {})
@@ -194,6 +212,7 @@ def save_solution(outdir, n: int, tag: str, sol, *, save_fields: bool = False,
                      for (i, j), v in sorted(sol.s_params.items())},
         "files": {k: str(v) for k, v in out.items()},
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "frequency_results": frequency_meta,
     }
     if extra:
         meta["tags"][tag].update(extra)

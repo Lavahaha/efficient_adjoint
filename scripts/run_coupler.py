@@ -24,10 +24,10 @@ from eaopt.solver.case import load_case
 from eaopt.solver.cst import CstSolver
 
 
-def main() -> None:
+def main(config_default="configs/coupler.yaml") -> None:
     safe_console()
     p = base_parser("运行伴随法形状优化（CST）",
-                    config_default="configs/coupler.yaml")
+                    config_default=config_default)
     args = p.parse_args()
     log = make_log(args.log)
 

@@ -37,9 +37,10 @@ from eaopt.geometry.extension import extend_velocity
 from eaopt.geometry.levelset import LevelSet2D
 from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_gap,
                                         build_velocity_mask, interp_mask_at)
-from eaopt.optimize.objective import make_fom
+from eaopt.optimize.objective import (fom_key, make_fom, multi_frequency_fom)
 from eaopt.optimize.step import SUBSTEP_CAP, fixed_step_velocity, plan_substeps
 from eaopt.solver.cst_setup import COUPLER, CstSetup
+from eaopt.solver.base import FrequencyResult
 
 __all__ = ["make_level_set", "movable_contours", "History", "OptimizerPipeline"]
 
@@ -88,7 +89,9 @@ class OptimizerPipeline:
         self.fom = make_fom(cfg)
         # ω 与 εr 取自 CST 侧单一事实来源（模板里的频点/基板是同一份数据，
         # 改一处两边同时变；伴随公式与仿真模型不会悄悄脱节）。
-        self.omega = 2.0 * np.pi * setup.frequency_ghz * 1e9
+        self.frequencies_ghz = tuple(float(f) for f in
+                                     (cfg.objective.frequencies_ghz or
+                                      (setup.frequency_ghz,)))
         self.eps_r = setup.eps_r
         # 连通性硬约束（论文 III-B）：锚点在**初始** φ 上推导，此后不变
         self.guard = (ConnectivityGuard(self.ls, cfg)
@@ -118,7 +121,23 @@ class OptimizerPipeline:
                 # φ_{it+1}，重算的轮廓会和本轮 shape.json 对不上。
                 artifacts.save_ls_phi(self.outdir, it, self.ls)
                 sol_f = self.solver.solve_forward()
-                fom = self.fom(sol_f)
+                if cfg.objective.frequencies_ghz:
+                    by_freq = self._frequency_results(sol_f)
+                    sp_by_freq = {f: item.s_params for f, item in by_freq.items()}
+                    fom, margins, weights = multi_frequency_fom(sp_by_freq, cfg)
+                    rec_multi = {}
+                    key = fom_key(cfg)
+                    for freq, margin, weight in zip(self.frequencies_ghz,
+                                                    margins, weights):
+                        sval = by_freq[freq].s_params[key]
+                        label = f"{freq:g}ghz"
+                        rec_multi[f"s{key[0]}{key[1]}_{label}_db"] = float(
+                            20.0 * np.log10(abs(sval)))
+                        rec_multi[f"margin_{label}_db"] = float(margin)
+                        rec_multi[f"weight_{label}"] = float(weight)
+                else:
+                    fom = self.fom(sol_f)
+                    rec_multi = {}
                 rec = {
                     "iteration": it,
                     "fom": float(fom),
@@ -129,11 +148,26 @@ class OptimizerPipeline:
                     "arg_s21_deg": float(np.angle(sol_f.s_params[(2, 1)], deg=True)),
                     "arg_s31_deg": float(np.angle(sol_f.s_params[(3, 1)], deg=True)),
                     "time_s": time.perf_counter() - t0,
+                    **rec_multi,
                 }
                 self._record(rec)
                 self._snapshot(it, sol_f)
-                print(f"[iter {it:3d}] FoM={fom:.6f}  |S31|={rec['s31_db']:7.2f} dB  "
-                      f"({rec['time_s']:.2f}s)")
+                if cfg.objective.frequencies_ghz:
+                    detail = ", ".join(
+                        f"{f:g}GHz={rec[f's{key[0]}{key[1]}_{f:g}ghz_db']:.2f} dB "
+                        f"(w={rec[f'weight_{f:g}ghz']:.2f})"
+                        for f in self.frequencies_ghz)
+                    print(f"[iter {it:3d}] soft-min margin={fom:.3f} dB; "
+                          f"{detail} ({rec['time_s']:.2f}s)")
+                else:
+                    print(f"[iter {it:3d}] FoM={fom:.6f}  "
+                          f"|S31|={rec['s31_db']:7.2f} dB  "
+                          f"({rec['time_s']:.2f}s)")
+
+                if cfg.objective.frequencies_ghz and np.all(margins >= 0.0):
+                    self.history.converged = True
+                    self.history.stop_reason = "all_frequency_targets_met"
+                    break
 
                 if self._converged():
                     self.history.converged = True
@@ -182,6 +216,17 @@ class OptimizerPipeline:
         return self.history
 
     # ------------------------------------------------------------------ #
+    def _frequency_results(self, sol):
+        """Return per-frequency results, adapting legacy one-frequency solvers."""
+        if sol.frequency_results:
+            return {float(f): row for f, row in sol.frequency_results.items()}
+        if len(self.frequencies_ghz) != 1:
+            raise RuntimeError(
+                "多频优化求解器必须返回 Solution.frequency_results，"
+                "且包含所有目标频点")
+        return {self.frequencies_ghz[0]: FrequencyResult(
+            sol.s_params, sol.e_field, sol.h_field)}
+
     def _assemble_velocity(self, sol_f, sol_b, movable) -> tuple[np.ndarray, int]:
         """将一轮的边界形状导数装配为网格速度场 V，返回 (V, HJ 子步数)。
 
@@ -199,25 +244,51 @@ class OptimizerPipeline:
         pts, nrm = boundary_samples(movable, self.ls, cfg)
         if len(pts) == 0:      # 没有可动边界（被投影/掩膜吃光）——不更新
             return np.zeros(self.ls.phi.shape), 0
-        self._check_field_grids(sol_f, sol_b)
-        # 按当前设置直接使用式 (54) 的复数 S 参数导数，不乘 |S| 的相位链式因子。
+        fwd_by_freq = self._frequency_results(sol_f)
+        back_by_freq = self._frequency_results(sol_b)
+        key = fom_key(cfg)
+        if set(fwd_by_freq) != set(self.frequencies_ghz) or \
+                set(back_by_freq) != set(self.frequencies_ghz):
+            raise RuntimeError(
+                f"前向/伴随结果频点须完整匹配 {self.frequencies_ghz} GHz")
 
-        # 采样点是亚格点，场值按坐标用 WLS 取。四个场共用一套算子：
-        # fwd/bwd 必须用同一离散，否则伴随梯度会静默失真。
-        # z=0 是金属底界面；若导出网格无精确 z=0，优先取最近的上侧切片。
-        z_side = "above" if s.field_z_mm == 0.0 else "nearest"
-        iz, z_used = sol_f.e_field.nearest_z_plane(s.field_z_mm, side=z_side)
-        self._check_sample_plane(z_used)
-        mask = field_node_mask(self.ls, sol_f.e_field, cfg)
-        st = build_wls_stencil(
-            pts, sol_f.e_field.axes()[:2], mask,
-            radius_cells=s.wls_radius_cells, order=s.wls_order)
-        e_f, h_f, e_b, h_b = (
-            f.sample_wls(pts, iz, stencil=st).values
-            for f in (sol_f.e_field, sol_f.h_field, sol_b.e_field, sol_b.h_field)
-        )
-        dp = shape_derivative(e_f, h_f, e_b, h_b, sol_f.pin,
-                              self.omega, self.eps_r, nrm)
+        # 采样点相同，但不同频点分别取场、做链式法则和形状导数；最后
+        # 按 soft-min 的动态权重合并边界速度。
+        if cfg.objective.frequencies_ghz:
+            sp_by_freq = {f: row.s_params for f, row in fwd_by_freq.items()}
+            _, margins, weights = multi_frequency_fom(sp_by_freq, cfg)
+        else:
+            margins = np.asarray([0.0])
+            weights = np.asarray([1.0])
+        dp = np.zeros(len(pts), dtype=float)
+        for index, freq in enumerate(self.frequencies_ghz):
+            fwd = fwd_by_freq[freq]
+            back = back_by_freq[freq]
+            self._check_field_grids(fwd.e_field, fwd.h_field,
+                                    back.e_field, back.h_field)
+            z_side = "above" if s.field_z_mm == 0.0 else "nearest"
+            iz, z_used = fwd.e_field.nearest_z_plane(s.field_z_mm, side=z_side)
+            self._check_sample_plane(z_used)
+            mask = field_node_mask(self.ls, fwd.e_field, cfg)
+            st = build_wls_stencil(
+                pts, fwd.e_field.axes()[:2], mask,
+                radius_cells=s.wls_radius_cells, order=s.wls_order)
+            e_f, h_f, e_b, h_b = (
+                grid.sample_wls(pts, iz, stencil=st).values
+                for grid in (fwd.e_field, fwd.h_field,
+                             back.e_field, back.h_field)
+            )
+            sval = complex(fwd.s_params[key])
+            mag = abs(sval)
+            phase = complex(np.exp(-1j * np.angle(sval)))
+            if cfg.objective.frequencies_ghz:
+                scale = (float(weights[index]) * 20.0 /
+                         (np.log(10.0) * mag))
+            else:
+                scale = 1.0
+            dp += scale * shape_derivative(
+                e_f, h_f, e_b, h_b, sol_f.pin,
+                2.0 * np.pi * freq * 1e9, self.eps_r, nrm, phase=phase)
         # 速度回填到偏移前的边界点，确保 φ=0 邻域有延拓种子。
         side = 1.0 if s.sample_side == "outside" else -1.0
         bnd = pts - side * s.intersection_offset_mm * nrm
@@ -250,15 +321,15 @@ class OptimizerPipeline:
                   f"（延拓带 {cfg.level_set.extension_band_mm:g} mm 为物理上限）")
         return V * v_mask_grid, steps
 
-    def _check_field_grids(self, sol_f, sol_b) -> None:
+    def _check_field_grids(self, fwd_e, fwd_h, back_e, back_h) -> None:
         """四个场必须导出在同一张 (x, y) 网格上（z 由各自的采样面吸附决定）。
 
         网格不一致时"按坐标取场"会取到别处的值、而且不报错——伴随法要求
         fwd/bwd 用同一离散。旧节点方案靠"逐点重合"隐式保证，现在必须显式查。
         """
-        ref = sol_f.e_field
-        for name, f in (("fwd H", sol_f.h_field), ("bwd E", sol_b.e_field),
-                        ("bwd H", sol_b.h_field)):
+        ref = fwd_e
+        for name, f in (("fwd H", fwd_h), ("bwd E", back_e),
+                        ("bwd H", back_h)):
             for k, ax_name in ((0, "x"), (1, "y")):
                 a, b = ref.axes()[k], f.axes()[k]
                 if a.shape != b.shape or not np.allclose(a, b, atol=1e-9):
@@ -297,6 +368,11 @@ class OptimizerPipeline:
     # ------------------------------------------------------------------ #
     def _converged(self) -> bool:
         opt = self.cfg.optimizer
+        if self.cfg.objective.frequencies_ghz:
+            latest = self.history.records[-1]
+            if any(latest.get(f"margin_{f:g}ghz_db", -np.inf) < 0.0
+                   for f in self.frequencies_ghz):
+                return False
         w = opt.convergence_window
         if len(self.history.records) < w + 1:
             return False
@@ -355,3 +431,24 @@ class OptimizerPipeline:
                                 self.outdir / "sparams_vs_iter.png")
         plotting.efield_evolution_figure(self.cfg, self.outdir,
                                          self.outdir / "efield_evolution.png")
+        if self.cfg.objective.frequencies_ghz:
+            import matplotlib.pyplot as plt
+
+            key = fom_key(self.cfg)
+            fig, ax = plt.subplots(figsize=(7, 4.5))
+            for freq in self.frequencies_ghz:
+                label = f"{freq:g}ghz"
+                col = f"s{key[0]}{key[1]}_{label}_db"
+                xs = [r["iteration"] for r in self.history.records if col in r]
+                ys = [r[col] for r in self.history.records if col in r]
+                ax.plot(xs, ys, "o-", label=f"|S{key[0]}{key[1]}| @ {freq:g} GHz")
+            ax.axhline(self.cfg.objective.target_db, color="black", linestyle="--",
+                       label=f"target {self.cfg.objective.target_db:g} dB")
+            ax.set_xlabel("iteration")
+            ax.set_ylabel("S parameter (dB)")
+            ax.set_title(f"{self.cfg.name}: multi-frequency target")
+            ax.grid(True, alpha=0.25)
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(self.outdir / "s21_multifrequency.png", dpi=140)
+            plt.close(fig)

@@ -64,10 +64,12 @@ eaopt/
 │   └── cst.py           # CstSolver：pipeline ↔ 两个工程的适配器（顶层 import）
 
 configs/coupler.yaml     # 算例配置（论文 III-A 耦合器）
+configs/divider_multifreq.yaml # divider 双频探索（S21@4/6 GHz 均达 -3 dB）
 scripts/cst_init_fwd.py  # 建前向工程（端口 1 激励）+ 首次仿真 → iter_000/
 scripts/cst_init_bwd.py  # 建反向工程（端口 3 激励）+ 首次仿真
 scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 iter_NNN/
 scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
+scripts/run_divider_multifreq.py # 运行 divider 双频探索案例
 scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
 scripts/plot_results.py  # 事后重画结果图（S 参数曲线 / 电场演化 / 快照），不跑仿真
 docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
@@ -92,6 +94,7 @@ pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
     cst-studio-suite-link
 
 python scripts/run_coupler.py          # 跑优化（缺工程会自动初始化，约 20 轮）
+python scripts/run_divider_multifreq.py # divider 双频优化：S21@4/6 GHz，目标均为 -3 dB
 python scripts/plot_layout.py          # 渲染布局参考图（核对 CST 模型用）
 python -m pytest tests/ -q             # 测试（不需要 CST）
 ```

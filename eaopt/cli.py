@@ -96,7 +96,11 @@ def banner(log, title: str, cfg: CaseConfig, setup: CstSetup | None = None) -> N
     log(f"激励端口    : fwd={setup.stimulus('fwd', cfg.objective)} "
         f"bwd={setup.stimulus('bwd', cfg.objective)}  "
         f"（建工程时写死，之后不再触碰激励 API）")
-    log(f"频点        : {setup.frequency_ghz} GHz")
+    if cfg.objective.frequencies_ghz:
+        log(f"目标频点    : {cfg.objective.frequencies_ghz} GHz")
+        log(f"CST 扫频范围: 0–{setup.fmax_ghz:g} GHz")
+    else:
+        log(f"频点        : {setup.frequency_ghz} GHz")
     log(f"场导出步长  : {step_xy:g} mm（面内）× {step_z:g} mm（z）")
     log("-" * 72)
 

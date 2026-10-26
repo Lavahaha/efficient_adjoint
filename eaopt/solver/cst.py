@@ -41,7 +41,7 @@ from eaopt.config import CaseConfig
 from eaopt.geometry.contour import (SIMPLIFY_TOL_CELLS, classify_metal_regions,
                                     close_open_contours)
 from eaopt.solver import cst_results as R
-from eaopt.solver.base import Solution, SolverInterface
+from eaopt.solver.base import FrequencyResult, Solution, SolverInterface
 from eaopt.solver.case import load_case
 from eaopt.solver.cst_setup import CstSetup
 
@@ -134,7 +134,12 @@ class CstSolver(SolverInterface):
                 "scripts/cst_update.py 改形状。")
         prj = self._environment().new_mws()
         port = self.setup.stimulus(tag, self.cfg.objective)
-        blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port)
+        freqs = self.cfg.objective.frequencies_ghz
+        if freqs:
+            blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port,
+                                            frequencies_ghz=freqs)
+        else:
+            blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port)
         self.log(f"[ .. ] 建 {tag} 工程：{len(blocks)} 个命令块，"
                  f"激励端口 = {port}")
         _apply_blocks(prj.model3d, blocks,
@@ -267,16 +272,27 @@ class CstSolver(SolverInterface):
         # cst.results 读的是磁盘结果：先存盘再读，否则读到的可能是上一轮
         _save(prj, path, self.log, what="求解后存盘")
 
-        sp = R.read_s_params(path, self.setup.stimulus(tag, self.cfg.objective),
-                             response_ports=tuple(self.setup.ports),
-                             freq_ghz=float(self.setup.frequency_ghz),
-                             log=self.log)
+        freqs = tuple(float(f) for f in
+                      (self.cfg.objective.frequencies_ghz or
+                       (self.setup.frequency_ghz,)))
+        frequency_results = {}
+        for freq in freqs:
+            sp = R.read_s_params(
+                path, self.setup.stimulus(tag, self.cfg.objective),
+                response_ports=tuple(self.setup.ports), freq_ghz=freq,
+                log=self.log)
+            e_field = _export(m3d, "Efield", self.cfg, self.setup, tag,
+                              self.log, freq_ghz=freq)
+            h_field = _export(m3d, "Hfield", self.cfg, self.setup, tag,
+                              self.log, freq_ghz=freq)
+            frequency_results[freq] = FrequencyResult(sp, e_field, h_field)
+        primary = frequency_results[freqs[0]]
         sol = Solution(
-            s_params=sp,
-            e_field=_export(m3d, "Efield", self.cfg, self.setup, tag, self.log),
-            h_field=_export(m3d, "Hfield", self.cfg, self.setup, tag, self.log),
-            pin=float(self.setup.port_power_w),
-            extra={"tag": tag, "solver_seconds": seconds})
+            s_params=primary.s_params, e_field=primary.e_field,
+            h_field=primary.h_field, pin=float(self.setup.port_power_w),
+            extra={"tag": tag, "solver_seconds": seconds},
+            frequency_results=(frequency_results
+                               if self.cfg.objective.frequencies_ghz else {}))
         if self._it is not None:
             paths = artifacts.save_solution(self.cfg.output.dir, self._it, tag,
                                             sol, save_fields=self.save_fields)
@@ -467,12 +483,14 @@ def _solver_running(m3d) -> bool:
         return False
 
 
-def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log):
+def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log,
+            *, freq_ghz: float | None = None):
     """导出该场并裁到设计区 ± field_margin_mm。"""
-    out = Path(cfg.output.dir) / "cst_work" / f"{tag}_{field_type}.txt"
+    freq = float(setup.frequency_ghz if freq_ghz is None else freq_ghz)
+    out = Path(cfg.output.dir) / "cst_work" / f"{tag}_{field_type}_{freq:g}GHz.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
     step_xy, step_z = setup.resolve_export_steps(cfg.field_export_step_mm)
     return R.export_field_cropped(
-        m3d, field_type, float(setup.frequency_ghz), step_xy, out,
+        m3d, field_type, freq, step_xy, out,
         cfg.design_region.box, float(cfg.design_region.field_margin_mm),
         step_z_mm=step_z, log=log)

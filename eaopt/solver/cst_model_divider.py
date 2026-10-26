@@ -249,7 +249,7 @@ def model_blocks() -> list[str]:
             + _design_parts() + _ports())
 
 
-def setting_blocks(portnum: int) -> list[tuple[str, str]]:
+def setting_blocks(portnum: int, frequencies_ghz=None) -> list[tuple[str, str]]:
     """全部**设置**类块 ``[(标签, 命令文本)]``：求解器/频段/监视器/边界。
 
     与耦合器逐条同款（只有激励端口号随算例变），顺序与 template_blocks 一致。
@@ -258,6 +258,16 @@ def setting_blocks(portnum: int) -> list[tuple[str, str]]:
         raise ValueError(
             f"激励端口 {portnum} 不在模板建的端口 {DIVIDER.ports} 里"
             "（fwd 激励 objective.from_port、bwd 激励 to_port）")
+    freqs = tuple(float(f) for f in (frequencies_ghz or (FREQ,)))
+    if not freqs or any(not math.isfinite(f) or f <= 0 or f > FMAX
+                        for f in freqs):
+        raise ValueError(f"场监视器频点必须是 (0, {FMAX:g}] GHz 内的有限值")
+    monitor_blocks = []
+    for freq in freqs:
+        monitor_blocks.extend([
+            (f"Monitor Efield {freq:g} GHz", field_monitor("Efield", freq)),
+            (f"Monitor Hfield {freq:g} GHz", field_monitor("Hfield", freq)),
+        ])
     return [
         # 网格生成器：GUI 打开时域求解器对话框时 CST 自己写的那一条
         ("Mesh", MESH_CREATOR),
@@ -266,14 +276,14 @@ def setting_blocks(portnum: int) -> list[tuple[str, str]]:
         # 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
         ("Solver", time_domain_solver_setup(str(portnum))),
         ("FrequencyRange", frequency_range(FMIN, FMAX)),
-        ("Monitor Efield", field_monitor("Efield", FREQ)),
-        ("Monitor Hfield", field_monitor("Hfield", FREQ)),
+        *monitor_blocks,
         ("Boundary", set_boundaries("magnetic", "magnetic", "magnetic",
                                     "magnetic", "magnetic", "electric")),
     ]
 
 
-def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
+def template_blocks(project: str, portnum: int,
+                    frequencies_ghz=None) -> list[tuple[str, str]]:
     """模板的全部命令块 ``[(标题, VBA 命令文本)]`` —— **单一事实来源**。
 
     调用方逐块交给 ``model3d.add_to_history(标题, 命令文本)``。``project``
@@ -281,7 +291,7 @@ def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
     """
     blocks = [("Units", UNITS_BLOCK)]
     blocks += [(block_header(c), c) for c in model_blocks()]
-    blocks += setting_blocks(portnum)
+    blocks += setting_blocks(portnum, frequencies_ghz)
     return blocks
 
 

@@ -34,7 +34,7 @@ CASE_INTERFACE = ("template_blocks", "model_blocks", "setting_blocks",
 
 def known_cases() -> tuple[str, ...]:
     """有 ``CstSetup`` + 模板模块的算例名（= 合法的 YAML ``name``）。"""
-    return ("coupler", "divider", "antenna")
+    return ("coupler", "divider", "divider_multifreq", "antenna")
 
 
 def _check_interface(model, name: str) -> None:
@@ -59,6 +59,11 @@ def load_case(cfg: CaseConfig) -> tuple[CstSetup, object]:
         _check_interface(model, cfg.name)
         return COUPLER, model
     if cfg.name == "divider":
+        from eaopt.solver import cst_model_divider as model
+        from eaopt.solver.cst_setup import DIVIDER
+        _check_interface(model, cfg.name)
+        return DIVIDER, model
+    if cfg.name == "divider_multifreq":
         from eaopt.solver import cst_model_divider as model
         from eaopt.solver.cst_setup import DIVIDER
         _check_interface(model, cfg.name)

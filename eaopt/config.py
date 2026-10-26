@@ -16,6 +16,7 @@
 # 注意：不引入 from __future__ import annotations —— _build 依赖运行期
 # 真实类型对象来递归构造嵌套 dataclass，字符串注解会使其失效。
 import dataclasses
+import math
 import types
 import typing
 from dataclasses import dataclass, field
@@ -69,6 +70,11 @@ class ObjectiveSpec:
     type: str = "transmission"  # 目前实现: maximize |S_ij|
     from_port: int = 1
     to_port: int = 3
+    # Optional multi-frequency target. When set, the optimizer maximizes a
+    # smooth minimum of the dB margins relative to target_db.
+    frequencies_ghz: list[float] | None = None
+    target_db: float = -3.0
+    beta_per_db: float = 1.0
 
 
 @dataclass
@@ -191,6 +197,18 @@ class CaseConfig:
     def validate(self) -> None:
         if not self.name:
             raise ValueError("缺少算例名称 name")
+        if self.objective.frequencies_ghz is not None:
+            freqs = self.objective.frequencies_ghz
+            if len(freqs) < 2 or any(
+                    not math.isfinite(float(f)) or float(f) <= 0 for f in freqs):
+                raise ValueError("objective.frequencies_ghz 至少包含两个正频点")
+            if any(float(a) >= float(b) for a, b in zip(freqs, freqs[1:])):
+                raise ValueError("objective.frequencies_ghz 必须严格递增且无重复")
+            if (not math.isfinite(float(self.objective.target_db)) or
+                    not math.isfinite(float(self.objective.beta_per_db)) or
+                    self.objective.beta_per_db <= 0):
+                raise ValueError(
+                    "objective.target_db 必须有限，beta_per_db 必须为有限正数")
         if self.design_region is None:
             raise ValueError("缺少 design_region 配置")
         self.design_region.box.validate("design_region.box")
@@ -285,7 +303,12 @@ class CaseConfig:
         lines = [
             f"算例        : {self.name} — {self.description}",
             f"设计区域    : x∈{dr.x} y∈{dr.y} mm, 网格步长 {self.design_region.grid_step_mm} mm",
-            f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}|",
+            (f"目标函数    : soft-min dB margin of S{self.objective.to_port}"
+             f"{self.objective.from_port} at {self.objective.frequencies_ghz} GHz "
+             f"(target {self.objective.target_db:g} dB, "
+             f"beta {self.objective.beta_per_db:g}/dB)"
+             if self.objective.frequencies_ghz else
+             f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}|"),
             f"边界采样    : intersection — {sample}",
             f"场导出步长  : {self.field_export_step_mm} mm",
             f"速度延拓    : {self.level_set.extension_method}"

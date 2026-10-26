@@ -15,7 +15,16 @@ from dataclasses import dataclass, field
 
 from eaopt.adjoint.fields import FieldGrid
 
-__all__ = ["Solution", "SolverInterface"]
+__all__ = ["FrequencyResult", "Solution", "SolverInterface"]
+
+
+@dataclass
+class FrequencyResult:
+    """S 参数与复数 E/H 场，均对应同一个 GHz 频点。"""
+
+    s_params: dict
+    e_field: FieldGrid
+    h_field: FieldGrid
 
 
 @dataclass
@@ -26,6 +35,7 @@ class Solution:
     i 端口激励（与 CST 一致）；
     e_field / h_field: FieldGrid 复矢量场（V/m, A/m）；
     pin: 入射功率 (W)。
+    frequency_results: 可选的按 GHz 频点索引的完整结果（多频优化用）。
     """
 
     s_params: dict
@@ -33,6 +43,7 @@ class Solution:
     h_field: FieldGrid
     pin: float
     extra: dict = field(default_factory=dict)
+    frequency_results: dict[float, FrequencyResult] = field(default_factory=dict)
 
 
 class SolverInterface(ABC):
