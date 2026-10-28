@@ -101,7 +101,7 @@ sampling:
   # CST 包围盒定，**不要求与 φ 网格对齐**）；速度回写 = 最近节点 + 四邻居
   # 反距离平方。参数与耦合器一致，只有 wls_radius_cells 的**物理**半径
   # 变大：本算例场导出步长是 0.2 mm（耦合器 0.1），2 格 = 0.4 mm。
-  field_z_mm: -0.1        # 金属下方的介质里（z=0 是基板顶面=金属底面）
+  field_z_mm: 0        # 金属下方的介质里（z=0 是基板顶面=金属底面）
                           # **不能填 0.0**：吸附过去会落进金属体内
                           # （PEC 里 E/H≈0，δp 恒为 0 且不报错）
   # --- intersection 方案参数 ---
@@ -120,6 +120,7 @@ sampling:
   sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
 
 optimizer:
+  pseudo_time_step: 1.0e-8  # 初始伪时间步；FoM 不改善时回溯减半
   step_cells: 4.0      # 初始每轮最大法向位移 = 4 个网格 = 0.4 mm
   step_min_cells: 1.0
   step_decay_factor: 0.5
