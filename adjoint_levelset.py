@@ -414,7 +414,7 @@ class AdjointLevelSetOptimizer:
                                        self.p.sample_offset,
                                        getattr(self.p, "eps", EPS0), getattr(self.p, "mu", MU0))
         f, c = fom_value_and_weight(fwd.s, self.p.fom_kind)
-        g = real_gradient(g_c, c)
+        g = np.real(g_c)
         if not self.cfg.maximize:
             g = -g
         V = boundary_to_grid_velocity(ls, bnd, g, self.design_mask,
