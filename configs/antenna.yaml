@@ -43,7 +43,8 @@ sampling:
   sample_side: outside
 
 optimizer:
-  step_cells: 1.0
+  pseudo_time_step: 1.0e-8  # 初始伪时间步；FoM 不改善时回溯减半
+  step_cells: 1.0  # 仅旧 pipeline 使用
   step_min_cells: 0.25
   step_decay_factor: 0.5
   step_plateau_patience: 2

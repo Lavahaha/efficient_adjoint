@@ -15,7 +15,7 @@ What this module does (paper section in brackets)
 4. Level-set evolution  phi_t + V|grad phi| = 0 (upwind HJ, RK2)    [II-C, Eq. 26-31]
 5. Signed-distance reinitialisation, design-region / keep-metal /
    keep-air masks, connectivity constraint                         [III-A/B constraints]
-6. The outer loop with a plateau-based step-size schedule
+6. The outer loop with fixed pseudo-time and FoM backtracking
 
 What it does NOT do: run the Maxwell solver. You plug that in through the small
 `Problem` interface (forward(), adjoint()). See demo_fdfd_check.py for a runnable
@@ -389,12 +389,7 @@ class Problem(Protocol):
 @dataclass
 class OptimizerConfig:
     maximize: bool = True
-    step_cells: float = 1.0        # max boundary displacement per iteration (cells)
-    step_min_cells: float = 1.0
-    step_max_cells: float = 1.5
-    step_decay_factor: float = 0.5
-    plateau_patience: int = 2
-    plateau_relative_threshold: float = 1e-3
+    pseudo_time_step: float = 1e-8
     cfl: float = 0.4
     smooth_sigma_cells: float = 1.5
     band_cells: float = 4.0
@@ -409,6 +404,7 @@ class AdjointLevelSetOptimizer:
         self.force_metal, self.force_air, self.anchor = force_metal, force_air, anchor
         self.geometry_projector = geometry_projector
         self.history: List[dict] = []
+        self.stop_reason = "not_started"
 
     # one boundary velocity from one forward + one adjoint solve
     def velocity(self, ls: LevelSet, fwd: ForwardResult):
@@ -429,96 +425,142 @@ class AdjointLevelSetOptimizer:
     def run(self, ls: LevelSet, n_iter: int = 30,
             callback: Optional[Callable[[int, LevelSet, LevelSet, dict], None]] = None,
             state_callback: Optional[Callable[[int, LevelSet, ForwardResult], None]] = None):
-        """Commit one geometry update per iteration; FoM only controls step decay.
+        """Evolve with a fixed pseudo-time step and backtrack non-improving trials.
 
-        A small relative FoM gain for ``plateau_patience`` consecutive iterations
-        halves the *next* step, down to ``step_min_cells``. No candidate is
-        selected or rolled back based on its FoM. ``state_callback`` receives
-        state 0 and every committed state.
+        The configured time step is independent of the current velocity
+        magnitude, so a small shape derivative produces a proportionally small
+        geometry update. CFL sub-stepping in :func:`advect_levelset` remains in
+        place for numerical stability. A trial is committed only when its FoM
+        improves; otherwise the same direction is retried with half the time
+        step. ``state_callback`` receives state 0 and every accepted state.
         """
         cfg, dx = self.cfg, ls.grid.dx
-        if cfg.step_cells <= 0 or cfg.step_min_cells <= 0:
-            raise ValueError("step_cells and step_min_cells must be positive")
-        if cfg.step_min_cells > cfg.step_cells:
-            raise ValueError("step_min_cells cannot exceed the initial step_cells")
-        if cfg.step_max_cells < cfg.step_min_cells:
-            raise ValueError("step_max_cells cannot be below step_min_cells")
-        if not 0.0 < cfg.step_decay_factor < 1.0:
-            raise ValueError("step_decay_factor must be between 0 and 1")
-        if cfg.plateau_patience < 1 or cfg.plateau_relative_threshold < 0.0:
-            raise ValueError("plateau patience must be positive and threshold nonnegative")
+        if not np.isfinite(cfg.pseudo_time_step) or cfg.pseudo_time_step <= 0.0:
+            raise ValueError("pseudo_time_step must be finite and positive")
+        max_backtracks = 12
+        backtrack_factor = 0.5
+        displacement_tolerance = 1e-3 * dx
         fwd = self.p.forward(ls)
         f_cur = fom_value_and_weight(fwd.s, self.p.fom_kind)[0]
         if state_callback:
             state_callback(0, ls, fwd)
-        step_floor = cfg.step_min_cells
-        step = min(cfg.step_cells, cfg.step_max_cells)
-        plateau_count = 0
+        pseudo_time_step = cfg.pseudo_time_step
+        self.stop_reason = "max_iterations"
         for it in range(n_iter):
             V, f, bnd, g = self.velocity(ls, fwd)
-            vmax = np.abs(V).max()
+            vmax = float(np.max(np.abs(V)))
             if vmax == 0:
                 rec = dict(it=it, f_before=f_cur, f_after=f_cur, delta_f=0.0,
-                           relative_gain=0.0, step_used=step, step_next=step,
-                           updated=False, area=ls.area(), vmax=0.0,
-                           plateau_count=plateau_count, step_reduced=False,
-                           reason="zero_velocity",
+                           relative_gain=0.0,
+                           pseudo_time_step_used=pseudo_time_step,
+                           pseudo_time_step_next=pseudo_time_step,
+                           predicted_displacement=0.0, updated=False,
+                           area=ls.area(), vmax=0.0, backtracks=0,
+                           reason="converged_zero_velocity",
                            eval_id_before=fwd.extra.get("eval_id") if isinstance(fwd.extra, dict) else None,
                            eval_id_after=fwd.extra.get("eval_id") if isinstance(fwd.extra, dict) else None)
                 self.history.append(rec)
                 if callback:
                     callback(it, ls, ls, rec)
-                raise RuntimeError(
-                    f"Iteration {it} cannot update geometry: velocity is zero; "
-                    "stopping instead of recording a no-op iteration."
-                )
+                self.stop_reason = "converged_zero_velocity"
+                break
 
             if not np.isfinite(vmax):
                 raise RuntimeError(f"Iteration {it} produced a non-finite velocity")
+            predicted_displacement = pseudo_time_step * vmax
+            if predicted_displacement <= displacement_tolerance:
+                rec = dict(it=it, f_before=f_cur, f_after=f_cur, delta_f=0.0,
+                           relative_gain=0.0,
+                           pseudo_time_step_used=pseudo_time_step,
+                           pseudo_time_step_next=pseudo_time_step,
+                           predicted_displacement=predicted_displacement,
+                           updated=False, area=ls.area(), vmax=vmax,
+                           backtracks=0, reason="converged_small_displacement",
+                           eval_id_before=fwd.extra.get("eval_id") if isinstance(fwd.extra, dict) else None,
+                           eval_id_after=fwd.extra.get("eval_id") if isinstance(fwd.extra, dict) else None)
+                self.history.append(rec)
+                if callback:
+                    callback(it, ls, ls, rec)
+                self.stop_reason = "converged_small_displacement"
+                break
 
             ls_before, fwd_before, f_before = ls, fwd, f_cur
             eval_id_before = (fwd_before.extra.get("eval_id")
                               if isinstance(fwd_before.extra, dict) else None)
-            trial = ls.copy()
-            trial.phi = advect_levelset(
-                trial.phi, V, step * dx / vmax, dx, cfl=cfg.cfl)
-            apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
-            if self.geometry_projector is not None:
-                self.geometry_projector(trial)
-            if np.max(np.abs(trial.phi - ls.phi)) <= 1e-12 * max(dx, 1.0):
-                raise RuntimeError(
-                    f"Iteration {it} produced no level-set change after constraints; "
-                    "cannot count it as a geometry update."
-                )
+            accepted = False
+            backtracks = 0
+            trial_fwd = None
+            trial = None
+            trial_f = f_before
+            trial_tau = pseudo_time_step
+            small_step_reached = False
+            for backtracks in range(max_backtracks + 1):
+                if trial_tau * vmax <= displacement_tolerance:
+                    small_step_reached = True
+                    break
+                trial = ls.copy()
+                trial.phi = advect_levelset(
+                    trial.phi, V, trial_tau, dx, cfl=cfg.cfl)
+                apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
+                if self.geometry_projector is not None:
+                    self.geometry_projector(trial)
+                if np.max(np.abs(trial.phi - ls.phi)) > 1e-12 * max(dx, 1.0):
+                    trial_fwd = self.p.forward(trial)
+                    trial_f = fom_value_and_weight(
+                        trial_fwd.s, self.p.fom_kind)[0]
+                    delta_f = trial_f - f_before
+                    objective_gain = delta_f if cfg.maximize else -delta_f
+                    if np.isfinite(objective_gain) and objective_gain > 0.0:
+                        accepted = True
+                        break
+                if backtracks < max_backtracks:
+                    trial_tau *= backtrack_factor
 
-            # forward() rebuilds both CST projects before solving the new
-            # geometry, so the next adjoint solve uses this same committed state.
-            fwd = self.p.forward(trial)
-            f_cur = fom_value_and_weight(fwd.s, self.p.fom_kind)[0]
+            if not accepted:
+                # A rejected trial may have replaced the solver's active
+                # geometry. Restore the last accepted shape before returning.
+                fwd = self.p.forward(ls)
+                restored_eval_id = (fwd.extra.get("eval_id")
+                                    if isinstance(fwd.extra, dict) else None)
+                rec = dict(
+                    it=it, f_before=f_before, f_after=f_before, delta_f=0.0,
+                    objective_gain=0.0, relative_gain=0.0,
+                    pseudo_time_step_used=trial_tau,
+                    pseudo_time_step_next=trial_tau,
+                    predicted_displacement=trial_tau * vmax,
+                    updated=False, area=ls.area(), vmax=vmax,
+                    backtracks=backtracks, eval_id_before=eval_id_before,
+                    eval_id_after=restored_eval_id,
+                    reason=("converged_small_displacement" if small_step_reached
+                            else "line_search_failed"),
+                )
+                self.history.append(rec)
+                if callback:
+                    callback(it, ls_before, ls_before, rec)
+                if state_callback:
+                    state_callback(it, ls, fwd)
+                self.stop_reason = (
+                    "converged_small_displacement" if small_step_reached
+                    else "line_search_failed")
+                break
+
+            fwd = trial_fwd
+            f_cur = trial_f
             delta_f = f_cur - f_before
             objective_gain = delta_f if cfg.maximize else -delta_f
             relative_gain = objective_gain / max(abs(f_before), 1e-12)
-            if relative_gain <= cfg.plateau_relative_threshold:
-                plateau_count += 1
-            else:
-                plateau_count = 0
-
-            step_next = step
-            step_reduced = False
-            if plateau_count >= cfg.plateau_patience:
-                if step > step_floor:
-                    step_next = max(step * cfg.step_decay_factor, step_floor)
-                    step_reduced = step_next < step
-                plateau_count = 0
-
+            pseudo_time_step = trial_tau
             eval_id_after = (fwd.extra.get("eval_id")
                              if isinstance(fwd.extra, dict) else None)
             rec = dict(
                 it=it, f_before=f_before, f_after=f_cur, delta_f=delta_f,
                 objective_gain=objective_gain,
-                relative_gain=relative_gain, step_used=step, step_next=step_next,
-                updated=True, area=trial.area(), vmax=float(vmax),
-                plateau_count=plateau_count, step_reduced=step_reduced,
+                relative_gain=relative_gain,
+                pseudo_time_step_used=pseudo_time_step,
+                pseudo_time_step_next=pseudo_time_step,
+                predicted_displacement=pseudo_time_step * vmax,
+                updated=True, area=trial.area(), vmax=vmax,
+                backtracks=backtracks,
                 eval_id_before=eval_id_before, eval_id_after=eval_id_after,
                 reason="committed",
             )
@@ -528,7 +570,6 @@ class AdjointLevelSetOptimizer:
             ls = trial
             if state_callback:
                 state_callback(it + 1, ls, fwd)
-            step = step_next
         return ls
 
 

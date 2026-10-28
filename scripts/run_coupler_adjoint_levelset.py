@@ -392,13 +392,11 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     log(f"[adjoint_levelset] output: {output_dir}")
     log(f"[adjoint_levelset] field offset: {sample_offset:g} mm; "
         f"requested z={cfg.sampling.field_z_mm:g} mm; eps_r={setup.eps_r:g}")
-    log(f"[adjoint_levelset] step={cfg.optimizer.step_cells:g} cells "
-        f"({cfg.optimizer.step_cells * dx:g} mm max), CFL={cfg.optimizer.cfl:g}; "
-        f"extension band={cfg.level_set.extension_band_mm:g} mm; minimum="
-        f"{cfg.optimizer.step_min_cells:g} cell")
-    log("[adjoint_levelset] FoM plateau scheduler halves the next step after "
-        f"{cfg.optimizer.step_plateau_patience} low-gain iterations; geometry is "
-        "committed each iteration")
+    log(f"[adjoint_levelset] pseudo_time_step={cfg.optimizer.pseudo_time_step:g}; "
+        f"CFL={cfg.optimizer.cfl:g}; "
+        f"extension band={cfg.level_set.extension_band_mm:g} mm")
+    log("[adjoint_levelset] a trial is committed only when FoM improves; "
+        "rejected trials halve pseudo_time_step")
     log("[adjoint_levelset] signed-distance reinitialization runs on every update; "
         "level_set.reinit_every applies to the legacy pipeline only")
     log("[adjoint_levelset] prefactor is (-2j*omega/Pin) times "
@@ -420,12 +418,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             cfg, setup, solver, sample_offset, prefactor_scale, output_dir, log=log)
         opt_cfg = als.OptimizerConfig(
             maximize=bool(maximize),
-            step_cells=float(cfg.optimizer.step_cells),
-            step_min_cells=float(cfg.optimizer.step_min_cells),
-            step_max_cells=float(cfg.optimizer.step_cells),
-            step_decay_factor=float(cfg.optimizer.step_decay_factor),
-            plateau_patience=int(cfg.optimizer.step_plateau_patience),
-            plateau_relative_threshold=float(cfg.optimizer.step_relative_threshold),
+            pseudo_time_step=float(cfg.optimizer.pseudo_time_step),
             cfl=float(cfg.optimizer.cfl),
             smooth_sigma_cells=1.5,
             band_cells=float(cfg.level_set.extension_band_mm) / dx,
@@ -475,8 +468,11 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
                 )
                 log(f"[adjoint_levelset] iter={it:03d}: "
                     f"FoM {rec['f_before']:.8g} -> {rec['f_after']:.8g} "
-                    f"(Δ={rec['delta_f']:+.4g}), step={rec['step_used']:.4g} -> "
-                    f"{rec['step_next']:.4g} cells, updated={rec['updated']}, "
+                    f"(Δ={rec['delta_f']:+.4g}), "
+                    f"pseudo_dt={rec['pseudo_time_step_used']:.4g} -> "
+                    f"{rec['pseudo_time_step_next']:.4g}, "
+                    f"move≈{rec['predicted_displacement']:.4g} mm, "
+                    f"backtracks={rec['backtracks']}, updated={rec['updated']}, "
                     f"reason={rec['reason']}")
 
             def save_state(state_it, state_ls, fwd):
@@ -557,6 +553,8 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
                 f"{'maximize' if maximize else 'minimize'} "
                 f"|S{cfg.objective.to_port}{cfg.objective.from_port}|"),
             "final_fom": final_fom,
+            "stop_reason": optimizer.stop_reason,
+            "pseudo_time_step_initial": cfg.optimizer.pseudo_time_step,
             "iterations_requested": cfg.optimizer.max_iterations,
             "iterations_recorded": len(iteration_records),
             "cst_evaluations": problem.next_eval_id,

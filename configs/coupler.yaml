@@ -88,7 +88,8 @@ sampling:
                           # 交点上，与 δz 无关（否则 skfmm 延拓没种子，见 pipeline）
   sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
 optimizer:
-  step_cells: 8.0      # 每轮最大法向位移 = 8 个网格 = 0.8 mm
+  pseudo_time_step: 1.0e-8  # 初始伪时间步；FoM 不改善时回溯减半
+  step_cells: 8.0      # 仅旧 pipeline 使用；adjoint-levelset runner 使用 pseudo_time_step
   step_min_cells: 1.0
   step_decay_factor: 0.5
   step_plateau_patience: 2

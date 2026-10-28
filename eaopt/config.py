@@ -101,6 +101,8 @@ class SamplingSpec:
 
 @dataclass
 class OptimizerSpec:
+    # Standalone adjoint-level-set pseudo-time step applied to raw velocity.
+    pseudo_time_step: float = 1.0e-8
     # 每轮迭代的**最大边界位移** = step_cells × 网格步长（论文 Fig.3b ≈ 1 格）。
     # 由 HJ 演化 steps = round(step_cells/cfl) 个子步实现，每子步位移 = cfl·dx。
     # normalize="none" 时语义变为：|δp| 的 step_ref_quantile 分位点每轮位移
@@ -261,6 +263,9 @@ class CaseConfig:
             raise ValueError("sampling.scatter_max_cells 必须为正")
         if self.optimizer.step_cells <= 0:
             raise ValueError("optimizer.step_cells 必须为正")
+        if (not math.isfinite(self.optimizer.pseudo_time_step) or
+                self.optimizer.pseudo_time_step <= 0.0):
+            raise ValueError("optimizer.pseudo_time_step 必须为有限正数")
         if self.optimizer.step_min_cells <= 0 or self.optimizer.step_min_cells > self.optimizer.step_cells:
             raise ValueError("optimizer.step_min_cells 必须为正且不大于 step_cells")
         if not 0.0 < self.optimizer.step_decay_factor < 1.0:
@@ -317,8 +322,8 @@ class CaseConfig:
             f"最小特征 {self.constraints.min_feature_mm} mm, "
             f"边缘 taper 作用于 {self.constraints.taper_edges} 边"
             + (f", 活动范围 {self.constraints.allowed_region}" if self.constraints.allowed_region else ""),
-            f"优化        : 步长 {self.optimizer.step_cells} 格 "
-            f"(= {self.optimizer.step_cells * self.design_region.grid_step_mm:g} mm), "
+            f"优化        : pseudo_time_step={self.optimizer.pseudo_time_step:g}, "
+            f"legacy step_cells={self.optimizer.step_cells}, "
             f"cfl {self.optimizer.cfl}, 最大 {self.optimizer.max_iterations} 次迭代",
             f"输出目录    : {self.output.dir}",
         ]
