@@ -8,7 +8,7 @@ CST 侧的一切（模板布局、频点、材料、端口、求解设置、场�
 算例数据 = ``COUPLER``（论文 III-A 高定向性定向耦合器）与 ``DIVIDER``
 （论文 III-B 不等分 Wilkinson 功分器）；"算例名 → (常量, 模板模块)"的分发在
 ``eaopt.solver.case.load_case``。**改算例就改这里**，模板命令块
-（``cst_model`` / ``cst_model_divider``）与 pipeline（伴随公式用的 ω、εr）
+（``cst_model`` / ``cst_model_divider``）与 runner（伴随公式用的 ω、εr）
 都从这里取值：改 ``frequency_ghz`` 时监视器频点、扫频带、S 参数读取频点与
 形状导数会同时跟着变。
 
@@ -29,8 +29,7 @@ CST 侧的一切（模板布局、频点、材料、端口、求解设置、场�
 取值——**规则在 CST 代码里，值在优化配置里**，不重复定义。
 
 场导出步长（``export_step_mm``）是 CST 侧参数，缺省跟随优化侧的
-``CaseConfig.field_export_step_mm``：取设计区网格步长（WLS 邻域半径以场格数
-计，步长 = 拟合分辨率；**不要求
+``CaseConfig.field_export_step_mm``：取设计区网格步长（步长决定取场分辨率；**不要求
 导出网格与 φ 网格对齐**——导出原点由 CST 包围盒定，实测 y −3.55 与设计区
 −2.6 差半格，取场按坐标做）。导出点数按步长的立方增长，改步长前先算一下文件大小
 （0.2 mm → 13 MB，0.1 mm → 4 倍）。
@@ -49,7 +48,7 @@ __all__ = ["CstSetup", "COUPLER", "DIVIDER", "ANTENNA"]
 class CstSetup:
     """一个算例在 CST 侧的全部常量与规则（默认值 = 论文 III-A 耦合器）。"""
 
-    # ---- 物理 / 材料（同时供优化器用：pipeline 的 ω 与伴随公式的 εr）----
+    # ---- 物理 / 材料（同时供优化器用：runner 的 ω 与伴随公式的 εr）----
     frequency_ghz: float = 5.0      # 优化频点 = 监视器频点 = S 参数读取频点
     eps_r: float = 3.66             # Rogers4350B
     loss_tangent: float = 0.0037
@@ -98,7 +97,7 @@ class CstSetup:
     def stimulus(self, tag: str, objective) -> int:
         """该工程只激励哪个端口：fwd = objective.from_port，bwd = to_port。
 
-        激励"烤"在工程里（建工程时写死 StimulationPort），此后 pipeline
+        激励"烤"在工程里（建工程时写死 StimulationPort），此后 runner
         永不触碰激励 API——多激励叠加的场会让伴随梯度静默失效，而 S 参数
         照样出数，光看 S 参数发现不了。
         """
@@ -116,7 +115,7 @@ class CstSetup:
     def resolve_export_steps(self, sampling_step_mm: float) -> tuple[float, float]:
         """(面内, z) 两个场导出步长（mm）——ASCIIExport 逐轴给步长。
 
-        面内步长决定 WLS 拟合分辨率（半径以场格数计），z 步长只决定采样面
+        面内步长决定插值分辨率，z 步长只决定采样面
         能吸附到哪些 z 面（每轴点数按各自步长线性增长）。功分器算例把面内
         放到 0.2 mm 省导出体积（±1.6 mm 厚的平板层在 5 GHz 下沿 z 变化很慢），
         z 保持 0.1 mm；CST 原始 z 网格导出后会重采样到零锚点，保证包含 z=0。

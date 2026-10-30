@@ -2,7 +2,7 @@
 
 这里全是**纯展示/纯 argparse**——不碰 CST，也不碰仿真流程。三个 CST 程序
 （``scripts/cst_init_fwd.py`` / ``cst_init_bwd.py`` / ``cst_update.py``）与
-``scripts/run_coupler.py`` 共用这一份；各脚本自己的流程代码在各自文件里。
+``scripts/run_coupler_adjoint_levelset.py`` 共用这一份；各脚本自己的流程代码在各自文件里。
 
 （脚本也可以直接 ``import cst.interface``——本模块不代劳，那不是它的职责。）
 """

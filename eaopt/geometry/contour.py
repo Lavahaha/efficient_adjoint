@@ -1,8 +1,4 @@
-"""轮廓提取与平滑：零等值面 -> 多边形（世界坐标，mm）。
-
-提取用 matplotlib 的 contour（网格上线性插值，等价 marching squares，
-避免自写 16 种情形表的出错风险）。
-"""
+"""Contour validation, simplification and nesting for CST geometry."""
 
 from __future__ import annotations
 
@@ -11,7 +7,6 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = [
-    "extract_contours",
     "dedupe_vertices",
     "close_open_contours",
     "simplify_polygon",
@@ -137,31 +132,6 @@ def _segments_touch(a, b, c, d, tol: float) -> bool:
             or on_segment(c, d, a) or on_segment(c, d, b))
 
 
-def extract_contours(
-    xs: np.ndarray, ys: np.ndarray, phi: np.ndarray, min_cell_length: float = 3.0
-) -> list[np.ndarray]:
-    """提取 φ=0 等值线。
-
-    xs/ys: 网格坐标（mm）；phi: (nx, ny)。
-    返回轮廓顶点列表（世界坐标）；短于 min_cell_length 个网格的碎屑被丢弃。
-    闭合轮廓首尾重复。开放轮廓 = 可动金属穿出设计区边界时与红框相交的
-    轮廓段（不是设计区外的馈线本身，馈线由 fixed_region/求解器模板负责）：
-    它们用于与设计区外的固定多边形拼接成完整金属几何；
-    其端点邻域在导数采样时将被速度掩膜固定（taper 到 0）。
-    """
-    import matplotlib.pyplot as plt
-
-    cs = plt.contour(xs, ys, phi.T, levels=[0.0])
-    min_len = min_cell_length * (xs[1] - xs[0])
-    paths = []
-    for seg in cs.allsegs[0]:
-        v = np.asarray(seg)
-        if _polyline_length(v) >= min_len:
-            paths.append(v)
-    plt.close(cs.figure)
-    return paths
-
-
 def dedupe_vertices(vertices: np.ndarray, tol_mm: float = 1e-6) -> np.ndarray:
     """去掉相邻重复/极近顶点（闭合轮廓保留首尾重复一个）。
 
@@ -198,8 +168,7 @@ def dedupe_vertices(vertices: np.ndarray, tol_mm: float = 1e-6) -> np.ndarray:
 #:
 #: **不做"自动容差"**：拿轮廓自己的段长统计（中位/分位）去定容差看着省事，
 #: 但长短段混排的多边形会给出发散的值——3×0.1 的矩形中位段长 1.55 mm，
-#: 0.2 倍就是 0.31 mm，足以把整个短边吃掉（`tests/test_cst_solver.py` 与
-#: `tests/test_cst_update_script.py` 里那几个手写矩形当场被压成 3 个点）。
+#: 0.2 倍就是 0.31 mm，足以把整个短边吃掉并把矩形压成三角形。
 #: 网格步长只有调用方知道，就由调用方给。
 SIMPLIFY_TOL_CELLS = 0.2
 
@@ -281,12 +250,6 @@ def simplify_polygon(points, tol_mm, max_points=SIMPLIFY_MAX_POINTS):
                 f"{max_points}；请检查轮廓碎片/细节，或调整简化策略。"
             )
     return pts[keep]
-
-
-def _polyline_length(pts: np.ndarray) -> float:
-    if len(pts) < 2:
-        return 0.0
-    return float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
 
 
 def close_open_contours(
@@ -420,7 +383,7 @@ def _check_no_nested(polys: list[np.ndarray]) -> None:
                     f"第 {i} 个闭合多边形整个落在第 {j} 个里面：设计金属里出现了"
                     "空气洞。CST 会把这条轮廓单独挤成一块悬空的金属（洞变实心），"
                     "与 φ 描述的几何不一致且不报错。请检查优化是否在掐断结构"
-                    "（连通性约束 / optimizer.step_cells），或先实现带洞轮廓的"
+                    "（连通性约束 / optimizer.pseudo_time_step），或先实现带洞轮廓的"
                     "布尔减再放开。"
                 )
 

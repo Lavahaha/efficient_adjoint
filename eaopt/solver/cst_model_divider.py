@@ -41,9 +41,8 @@ from eaopt.solver.cst_setup import DIVIDER
 
 __all__ = [
     # 模板接口（与 cst_model 同名同义）：求解器与三个 CST 程序只按这套名字
-    # 调用算例模块，一个都不能少（tests/test_case_contract.py 逐个锁定）。
     # design_region_update 是**通用实现**，这里只是重新导出——
-    # 漏掉它的话 cst_init_*.py 建工程一切正常，直到 pipeline 第一次
+    # 漏掉它的话 cst_init_*.py 建工程一切正常，直到 runner 第一次
     # build_model 才在 cst.py 里 AttributeError（实测踩过）。
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
     "UNITS_BLOCK", "DESIGN_COMPONENT", "design_region_update", "layout_view",
@@ -78,7 +77,6 @@ EPS_EFF = 2.4326
 LAMBDA_G = C0 / (FREQ * math.sqrt(EPS_EFF))         # 波导波长 38.44 mm @5 GHz
 
 # ---- 设计区（= 红框 = 可动金属的活动范围；必须与 configs/divider.yaml 一致，
-#      由 tests/test_cst_model_divider.py 锁定）----
 L_IN = 19.2                 # 输入段长 = λg/2 = 19.22（取到 0.1 网格）
 ARM_DX, ARM_DY = 8.5, 4.5   # 分路臂的水平投影 / 竖向抬升（图上量得的张角）
 L_ARM = math.hypot(ARM_DX, ARM_DY)                  # 臂长 9.618 ≈ λg/4 = 9.61
@@ -216,7 +214,7 @@ def _fixed_metal_parts() -> list[str]:
 
 
 def _design_parts() -> list[str]:
-    """设计区初始金属（Y 形，pipeline 每轮按 φ 重建整块设计区）。"""
+    """设计区初始金属（Y 形，runner 每轮按 φ 重建整块设计区）。"""
     names = ("in_strip", "arm_top", "arm_bot")
     polys = initial_metal_polygons()
     return [polygon_extrude(n, DESIGN_COMPONENT, "PEC", p, METAL_T)

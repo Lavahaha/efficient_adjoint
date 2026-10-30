@@ -16,7 +16,7 @@ import numpy as np
 from eaopt.config import CaseConfig
 from eaopt.solver.base import Solution
 
-__all__ = ["make_fom", "fom_key", "fom_phase",
+__all__ = ["make_fom", "fom_key",
            "multi_frequency_fom", "multi_frequency_weights"]
 
 
@@ -33,19 +33,11 @@ def make_fom(cfg: CaseConfig) -> Callable[[Solution], float]:
     key = fom_key(cfg)
 
     def fom(sol: Solution, key=key) -> float:
+        if cfg.objective.frequencies_ghz:
+            return multi_frequency_fom({f: row.s_params for f, row in sol.frequency_results.items()}, cfg)[0]
         return float(abs(sol.s_params[key]))
 
     return fom
-
-
-def fom_phase(cfg: CaseConfig, sol: Solution) -> complex:
-    """|S| 目标的链式法则因子 e^{−j·arg S}（论文式 5 里的 ∂f/∂E 相位）。
-
-    FoM = |S| 是实值函数，dFoM = Re[e^{−j·arg S}·dS]；形状导数按式 (55)
-    算的是 dS 那一项，必须乘上这个因子才等价。缺它 = 在求 Re[S] 的导数，
-    优化方向整体跑偏且不报错（divider 实测 arg S21 ≈ −115°）。
-    """
-    return complex(np.exp(-1j * np.angle(sol.s_params[fom_key(cfg)])))
 
 
 def multi_frequency_weights(margins_db, beta_per_db: float) -> np.ndarray:

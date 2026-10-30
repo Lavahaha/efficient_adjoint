@@ -45,7 +45,6 @@ design_region:
 initial_metal:
   # Y 形三块：输入段 + 上臂 + 下臂（并集；分叉处重叠，LevelSet2D 自动连成一体）。
   # **必须与 eaopt/solver/cst_model_divider.py::initial_metal_polygons() 一致**
-  # （tests/test_cst_model_divider.py::test_config_initial_metal_matches_template
   # 锁定）。分叉臂末端最后 1.0 mm 做梯形过渡，确保其两个顶点分别与
   # 固定输出微带线在 x=33.7 的两个顶点重合；连接处无三角缺口，也不外扩重叠。
   - vertices: [
@@ -96,49 +95,16 @@ constraints:
   require_connected: true
 
 sampling:
-  # 交点方案：边界点 = marching 在网格线上的交点（两端节点 φ 线性插值，
-  # 亚格点）；场值按坐标用加权最小二乘从 CST 导出网格取（导出网格原点由
-  # CST 包围盒定，**不要求与 φ 网格对齐**）；速度回写 = 最近节点 + 四邻居
-  # 反距离平方。参数与耦合器一致，只有 wls_radius_cells 的**物理**半径
-  # 变大：本算例场导出步长是 0.2 mm（耦合器 0.1），2 格 = 0.4 mm。
-  field_z_mm: 0        # 金属下方的介质里（z=0 是基板顶面=金属底面）
-                          # **不能填 0.0**：吸附过去会落进金属体内
-                          # （PEC 里 E/H≈0，δp 恒为 0 且不报错）
-  # --- intersection 方案参数 ---
-  # 采样位置照论文 p.501 原文：在边缘上取场有奇异性（"sampling at the edge
-  # of metallization layer is infeasible due to the singular"），要**贴着
-  # 边缘、在金属内侧**沿一条平行线采样。δz = 0.3 mm（论文只给了这个符号、
-  # 没给数值；本算例场导出步长 0.2 mm → 1.5 格）。不做薄结构钳制：特征薄于
-  # 2δz 时采样点会落到金属对侧，这是"严格照论文用常数 δz"的已知代价。
+  field_z_mm: 0
   intersection_offset_mm: 0.3
-  wls_radius_cells: 2.0   # WLS 邻域半径（单位 = 场导出网格步长 0.2 mm → 0.4 mm）
-                          # 场导出放到 0.2 后这个半径不能再小：单侧拟合至少要
-                          # 凑满线性模板（半径 1 格时只剩 1~2 个点）
-  wls_order: 1
-  scatter_max_cells: 1.0  # 速度回写作用半径（φ 网格格数 = 0.1 mm）；
-                          # 回写点在**未偏移的**交点上，与 δz 无关（见 pipeline）
-  sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
+  sample_side: inside
 
 optimizer:
-  pseudo_time_step: 1.0e-8  # 初始伪时间步；FoM 不改善时回溯减半
-  step_cells: 4.0      # 初始每轮最大法向位移 = 4 个网格 = 0.4 mm
-  step_min_cells: 1.0
-  step_decay_factor: 0.5
-  step_plateau_patience: 2
-  step_relative_threshold: 1.0e-3
-  cfl: 0.5             # HJ 子步每次最多移动 0.5 格；4 格总位移约需 8 个子步
-  velocity_sign: 1.0   # 形状导数→速度的符号开关（±1）；mock 世界已确认 +1，
-                       # **CST 端尚未做过 FD 裁决**（耦合器同样没裁决过）：
-                       # 头 5~8 轮盯 FoM 单调性，符号错会让优化反向跑且不报错
-  max_iterations: 50   # 论文：50 次迭代 ≈ 3 h 24 min
-  fom_tolerance: 1.0e-4
-  convergence_window: 5
-
+  pseudo_time_step: 1.0e-8
+  cfl: 0.5
+  velocity_sign: 1.0
+  max_iterations: 50
 level_set:
-  reinit_every: 3      # 每轮走 1 格，重初始化要更勤
   extension_band_mm: 0.5
-  extension_method: auto   # auto（有 scikit-fmm 就用，缺库打印告警后回退 PDE）|
-                           # skfmm（缺库直接报错，正式跑用这个更明确）| pde（对照）
-
 output:
   dir: E:/zouyi/efficient_adjoint/results/divider_multifreq

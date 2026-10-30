@@ -29,7 +29,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/coupler.yaml")
     parser.add_argument("--output-dir", help="run directory; defaults to <output.dir>/adjoint_levelset")
-    parser.add_argument("--only", choices=("all", "states", "sparams"), default="all")
+    parser.add_argument("--only", choices=("all", "states", "sparams", "evaluations"), default="all")
     args = parser.parse_args()
 
     config_path = Path(args.config).expanduser()
@@ -51,13 +51,13 @@ def main() -> None:
         layout = model.layout_view()
         fixed_metal_polygons = model.fixed_metal_polygons()
         snapshots = sorted(outdir.glob("adjoint_levelset_state_*.npz"))
-        current_states = ({int(row["iteration"]) for row in history}
+        current_states = ({(int(row["iteration"]), int(row["cst_eval_id"])) for row in history}
                           if history is not None else None)
         rendered = 0
         for snapshot in snapshots:
             with np.load(snapshot, allow_pickle=False) as data:
                 iteration = int(data["iteration"])
-                if current_states is not None and iteration not in current_states:
+                if current_states is not None and (iteration, int(data["cst_eval_id"])) not in current_states:
                     continue
                 plotting.adjoint_levelset_state_figure(
                     cfg,
@@ -77,6 +77,29 @@ def main() -> None:
             print(f"Rendered S-parameter plot: {target}")
         else:
             print(f"No S-parameter history found at {history_path}")
+
+    if args.only in ("all", "evaluations"):
+        evaluations_path = outdir / "optimization_evaluations.jsonl"
+        if evaluations_path.is_file():
+            evaluations = [json.loads(line) for line in
+                           evaluations_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            for row in evaluations:
+                snapshot = outdir / row["snapshot"]
+                if not snapshot.is_file():
+                    print(f"No field snapshot for evaluation {row['cst_eval_id']}: {snapshot}")
+                    continue
+                with np.load(snapshot, allow_pickle=False) as data:
+                    plotting.adjoint_levelset_state_figure(
+                        cfg, data["phi"], data["x"], data["y"],
+                        data["e_x"], data["e_y"], data["e_mag"],
+                        iteration=row["it"], evaluation_id=int(row["cst_eval_id"]),
+                        z_used=float(data["z_mm"]), path=outdir / row["figure"])
+            plotting.adjoint_levelset_sparams_figure(
+                cfg, evaluations, outdir / "fig7_sparams_vs_evaluation.png",
+                x_key="cst_eval_id")
+            print(f"Rendered {len(evaluations)} evaluation record(s) in {outdir}")
+        else:
+            print(f"No evaluation history found at {evaluations_path}")
 
 
 if __name__ == "__main__":

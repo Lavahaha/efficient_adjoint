@@ -4,7 +4,7 @@
   - Solution: 一次仿真的完整结果（S 参数、场、入射功率）；
   - SolverInterface: build_model / solve_forward / solve_backward。
 
-求解器无关性是论文方法的核心卖点：pipeline 只依赖本模块的接口；
+求解器无关性是论文方法的核心卖点：runner 只依赖本模块的接口；
 本仓库的求解器实现是 ``cst.CstSolver``（CST 官方 Python API）。
 """
 
@@ -75,6 +75,6 @@ class SolverInterface(ABC):
     def close(self) -> None:
         """释放资源（CST 会话、打开的工程）。默认不做任何事。
 
-        pipeline 在 finally 里调用——异常退出也必须收尾，否则下一次运行
+        runner 在 finally 里调用——异常退出也必须收尾，否则下一次运行
         会附接到一个状态不明的 CST 实例上。
         """

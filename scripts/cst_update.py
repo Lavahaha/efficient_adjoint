@@ -4,7 +4,7 @@
     # 用一个手写的形状文件（iter_NNN/shape.json 或 [[x,y],...] / [[[x,y],...],...]）
     python scripts/cst_update.py configs/coupler.yaml --shape my_shape.json
 
-    # 用最近一轮 pipeline 留下的 φ 快照（iter_NNN/ls_phi.npz）重算轮廓
+    # 用最近一轮 runner 留下的 φ 快照（iter_NNN/ls_phi.npz）重算轮廓
     python scripts/cst_update.py configs/coupler.yaml --from-ls
 
     # 指定写到哪一轮（缺省 = 已有最新轮次 + 1）；附接 GUI 看模型变化
@@ -363,7 +363,7 @@ def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
     """``--shape`` 与 ``--from-ls`` 必须且只能给一个。
 
     返回**可直接施加**的多边形：开放路径（金属穿出设计区两端）先按设计区
-    闭合——Extrude 需要一个闭合截面，且 pipeline（``CstSolver.build_model``）
+    闭合——Extrude 需要一个闭合截面，且 runner（``CstSolver.build_model``）
     走的是同一条规则。两处不一致的话，同一份 φ 会得到两种几何。
     """
     if bool(args.shape) == bool(args.from_ls):
@@ -379,7 +379,7 @@ def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
                              "给一个形状文件")
         npz = artifacts.iteration_dir(cfg.output.dir, last) / "ls_phi.npz"
         if not npz.is_file():
-            raise SystemExit(f"缺少 φ 快照 {npz}（只有 pipeline 跑过的轮次才有）")
+            raise SystemExit(f"缺少 φ 快照 {npz}（只有 runner 跑过的轮次才有）")
         polys = _contours_from_phi(cfg, artifacts.load_ls_phi(npz), log=log)
     # 与 CstSolver.build_model 同一套参数：网格描线不简化就送 CST 会撞上
     # Extrude 的点表容量（2026-10-09 功分器实测），容差 = 0.2 格。
@@ -395,9 +395,9 @@ def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
 
 
 def _contours_from_phi(cfg: CaseConfig, snap: dict, *, log=print):
-    """由 φ 快照提取可动轮廓（与 pipeline 同一套提取 + 重采样）。"""
+    """由 φ 快照提取可动轮廓（与 runner 同一套提取 + 重采样）。"""
     from eaopt.geometry.levelset import LevelSet2D
-    from eaopt.pipeline import movable_contours
+    import adjoint_levelset as als
 
     ls = LevelSet2D(cfg.design_region.box, cfg.design_region.grid_step_mm)
     if snap["phi"].shape != (ls.nx, ls.ny):
@@ -406,7 +406,8 @@ def _contours_from_phi(cfg: CaseConfig, snap: dict, *, log=print):
             f"{(ls.nx, ls.ny)} 不符——配置改过了？删掉旧的 iter_*/ 再跑。")
     ls.phi = snap["phi"]
     log(f"[OK] 形状来自 φ 快照（{ls.nx}×{ls.ny}）")
-    return movable_contours(ls, cfg)
+    grid = als.Grid2D(ls.nx, ls.ny, ls.dx, float(ls.xs[0]), float(ls.ys[0]))
+    return als.boundary_polygons(als.LevelSet(grid, ls.phi))
 
 
 if __name__ == "__main__":

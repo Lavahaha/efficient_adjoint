@@ -32,7 +32,6 @@ design_region:
                         #   写成盒子就是这条边界（速度掩膜另留 0.2 mm 余量）
                         # 下界 -2.6 = 内圆角最低点 -2.0 再留 0.6 mm 向下生长余量
                         # 注意：CST 模板的腿内边缘必须与此 x 范围一致，
-                        # 由 tests/test_cst_model.py::test_config_design_box_agrees_with_template 锁定
   grid_step_mm: 0.1   # **统一网格**：水准集 φ / 采样点 / CST 场导出步长都用它
                       # （论文点距经验 0.1~0.5 mm）。设计区 x 0/12、y -2.6/0.9
                       # 都落在这张格子线上（导出网格原点 x-5.6/y-6.9，实测对齐）。
@@ -44,7 +43,6 @@ initial_metal:
   # 中心线半径 1.2，内缘 R=0.4、外缘 R=2.0 同心）。切点落在设计区边角：
   # 左 (0,-2.0)->(0.4,-1.6)，右 (12,-2.0)->(11.6,-1.6)。
   # **必须与 eaopt/solver/cst_model.py::_arm_design_polygon() 一致**
-  # （tests/test_cst_model.py::test_config_initial_metal_matches_template 锁定）。
   # 直通线不在列：它在设计区之外（y>=1.0 > 上界 0.9），不属于水准集域，
   # 作为固定金属见 fixed_region。
   - vertices: [
@@ -71,47 +69,15 @@ constraints:
   taper_edges: none
 
 sampling:
-  # 交点方案：边界点 = marching 在网格线上的交点（两端节点 φ 线性插值，
-  # 亚格点；交给 CST 的几何与做灵敏度分析的采样点是同一份离散）；
-  # 场值按坐标用加权最小二乘从 CST 导出网格取（导出网格原点由 CST 包围盒
-  # 定，**不要求与 φ 网格对齐**）；速度回写 = 最近节点 + 四邻居反距离平方。
-  field_z_mm: 0.0         # 金属底面；若导出网格没有精确 z=0，代码优先选最近的 z>=0 面
-  # --- intersection 方案参数 ---
-  # 采样位置照论文 p.501：边缘上取场奇异，要**贴着边缘、在金属内侧**采样。
-  # δz = 0.3 mm（论文只给符号不给数值；本算例场导出 0.1 mm → 3 格）。
-  # 不做薄结构钳制：特征薄于 2δz 时采样点会落到金属对侧（已知代价）。
+  field_z_mm: 0.0
   intersection_offset_mm: 0.3
-  wls_radius_cells: 2.0   # WLS 邻域半径（单位 = 场导出网格步长）；单侧（金属侧）
-                          # 拟合，半径要够大才凑得满模板
-  wls_order: 1            # 1=局部线性（默认）| 2=局部二次
-  scatter_max_cells: 1.0  # 速度回写作用半径（φ 网格格数）；回写点在**未偏移的**
-                          # 交点上，与 δz 无关（否则 skfmm 延拓没种子，见 pipeline）
-  sample_side: inside     # 金属内侧（论文）；WLS 节点掩膜随之取 φ<0 一侧
+  sample_side: inside
 optimizer:
-  pseudo_time_step: 1.0e-8  # 初始伪时间步；FoM 不改善时回溯减半
-  step_cells: 8.0      # 仅旧 pipeline 使用；adjoint-levelset runner 使用 pseudo_time_step
-  step_min_cells: 1.0
-  step_decay_factor: 0.5
-  step_plateau_patience: 2
-  step_relative_threshold: 1.0e-3
-                       # normalize=none 时语义变为：|δp| 的 step_ref_quantile
-                       # 分位点每轮位移 = 0.8 mm，其余点按自身 δp 比例
-  cfl: 0.5             # 保持稳定子步长；每步最多 0.05 mm（子步数由规划器定）
-  velocity_sign: 1.0   # 局部 CST 有限差分验证支持 +1；完整迭代仍需监控 FoM
-  # 2026-10-18 试验：去掉"一点独享 |V|=1、其余按 max|δp| 比例缩"的归一化。
-  # 各点按自身 δp 大小比例移动（论文式 (25) 直接用 δp 作位移的精神）。
-  # 注意：max 归一化路径仍可回退（normalize: max）。
-  normalize: none
-  step_ref_quantile: 0.9   # 参考分位（normalize=none 时生效）
+  pseudo_time_step: 1.0e-8
+  cfl: 0.5
+  velocity_sign: 1.0
   max_iterations: 30
-  fom_tolerance: 1.0e-4
-  convergence_window: 5
-
 level_set:
-  reinit_every: 1      # 0.8 mm 大步长后每轮重初始化，控制距离函数质量
-  extension_band_mm: 1.0  # 大于单轮最大位移 0.8 mm，避免速度窄带截断更新
-  extension_method: auto   # auto（有 scikit-fmm 就用，缺库打印告警后回退 PDE）|
-                           # skfmm（缺库直接报错，正式跑用这个更明确）| pde（对照）
-
+  extension_band_mm: 1.0
 output:
   dir: E:/zouyi/efficient_adjoint/results/coupler

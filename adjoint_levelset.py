@@ -18,8 +18,8 @@ What this module does (paper section in brackets)
 6. The outer loop with fixed pseudo-time and FoM backtracking
 
 What it does NOT do: run the Maxwell solver. You plug that in through the small
-`Problem` interface (forward(), adjoint()). See demo_fdfd_check.py for a runnable
-example and CST-side notes at the bottom of this file.
+`Problem` interface (forward(), adjoint()). See
+`scripts/run_coupler_adjoint_levelset.py` for the CST adapter and the notes below.
 
 Conventions (read these once, they matter)
 ------------------------------------------
@@ -409,12 +409,8 @@ class AdjointLevelSetOptimizer:
     # one boundary velocity from one forward + one adjoint solve
     def velocity(self, ls: LevelSet, fwd: ForwardResult):
         bnd = extract_boundary(ls, self.design_mask)
-        adj = self.p.adjoint(ls, fwd)
-        g_c = shape_derivative_complex(bnd, fwd.fields, adj, self.p.prefactor,
-                                       self.p.sample_offset,
-                                       getattr(self.p, "eps", EPS0), getattr(self.p, "mu", MU0))
-        f, c = fom_value_and_weight(fwd.s, self.p.fom_kind)
-        g = np.real(g_c)
+        g = problem_gradient(self.p, ls, fwd, bnd)
+        f = problem_value(self.p, fwd)
         if not self.cfg.maximize:
             g = -g
         V = boundary_to_grid_velocity(ls, bnd, g, self.design_mask,
@@ -424,7 +420,8 @@ class AdjointLevelSetOptimizer:
 
     def run(self, ls: LevelSet, n_iter: int = 30,
             callback: Optional[Callable[[int, LevelSet, LevelSet, dict], None]] = None,
-            state_callback: Optional[Callable[[int, LevelSet, ForwardResult], None]] = None):
+            state_callback: Optional[Callable[[int, LevelSet, ForwardResult], None]] = None,
+            evaluation_callback: Optional[Callable[[LevelSet, ForwardResult, dict], None]] = None):
         """Evolve with a fixed pseudo-time step and backtrack non-improving trials.
 
         The configured time step is independent of the current velocity
@@ -433,6 +430,8 @@ class AdjointLevelSetOptimizer:
         place for numerical stability. A trial is committed only when its FoM
         improves; otherwise the same direction is retried with half the time
         step. ``state_callback`` receives state 0 and every accepted state.
+        ``evaluation_callback`` receives every solved candidate, including
+        rejected trials and the final restore, before another solve starts.
         """
         cfg, dx = self.cfg, ls.grid.dx
         if not np.isfinite(cfg.pseudo_time_step) or cfg.pseudo_time_step <= 0.0:
@@ -441,7 +440,10 @@ class AdjointLevelSetOptimizer:
         backtrack_factor = 0.5
         displacement_tolerance = 1e-3 * dx
         fwd = self.p.forward(ls)
-        f_cur = fom_value_and_weight(fwd.s, self.p.fom_kind)[0]
+        f_cur = problem_value(self.p, fwd)
+        if evaluation_callback:
+            evaluation_callback(ls, fwd, dict(
+                phase="initial", it=None, accepted=None, reason="initial"))
         if state_callback:
             state_callback(0, ls, fwd)
         pseudo_time_step = cfg.pseudo_time_step
@@ -506,12 +508,20 @@ class AdjointLevelSetOptimizer:
                     self.geometry_projector(trial)
                 if np.max(np.abs(trial.phi - ls.phi)) > 1e-12 * max(dx, 1.0):
                     trial_fwd = self.p.forward(trial)
-                    trial_f = fom_value_and_weight(
-                        trial_fwd.s, self.p.fom_kind)[0]
+                    trial_f = problem_value(self.p, trial_fwd)
                     delta_f = trial_f - f_before
                     objective_gain = delta_f if cfg.maximize else -delta_f
-                    if np.isfinite(objective_gain) and objective_gain > 0.0:
-                        accepted = True
+                    accepted = bool(np.isfinite(objective_gain) and objective_gain > 0.0)
+                    if evaluation_callback:
+                        evaluation_callback(trial, trial_fwd, dict(
+                            phase="trial", it=it, backtracks=backtracks,
+                            pseudo_time_step_used=trial_tau,
+                            predicted_displacement=trial_tau * vmax,
+                            eval_id_before=eval_id_before, f_before=f_before,
+                            delta_f=delta_f, objective_gain=objective_gain,
+                            accepted=accepted,
+                            reason=("committed" if accepted else "no_improvement")))
+                    if accepted:
                         break
                 if backtracks < max_backtracks:
                     trial_tau *= backtrack_factor
@@ -520,6 +530,11 @@ class AdjointLevelSetOptimizer:
                 # A rejected trial may have replaced the solver's active
                 # geometry. Restore the last accepted shape before returning.
                 fwd = self.p.forward(ls)
+                if evaluation_callback:
+                    evaluation_callback(ls, fwd, dict(
+                        phase="restore", it=it, accepted=None,
+                        eval_id_before=eval_id_before, f_before=f_before,
+                        reason="restore_last_accepted"))
                 restored_eval_id = (fwd.extra.get("eval_id")
                                     if isinstance(fwd.extra, dict) else None)
                 rec = dict(
@@ -537,8 +552,6 @@ class AdjointLevelSetOptimizer:
                 self.history.append(rec)
                 if callback:
                     callback(it, ls_before, ls_before, rec)
-                if state_callback:
-                    state_callback(it, ls, fwd)
                 self.stop_reason = (
                     "converged_small_displacement" if small_step_reached
                     else "line_search_failed")
@@ -576,8 +589,25 @@ class AdjointLevelSetOptimizer:
 # ----------------------------------------------------------------------------
 # Gradient verification (do this FIRST on any new solver adapter)
 # ----------------------------------------------------------------------------
+def problem_value(problem: Problem, fwd: ForwardResult) -> float:
+    """Evaluate the same objective for initial, trial and restored geometries."""
+    if hasattr(problem, "objective_value"):
+        return float(problem.objective_value(fwd))
+    return fom_value_and_weight(fwd.s, problem.fom_kind)[0]
+
+
+def problem_gradient(problem: Problem, ls: LevelSet, fwd: ForwardResult,
+                     boundary: Boundary) -> np.ndarray:
+    if hasattr(problem, "boundary_gradient"):
+        return problem.boundary_gradient(ls, fwd, boundary)
+    adj = problem.adjoint(ls, fwd)
+    return np.real(shape_derivative_complex(
+        boundary, fwd.fields, adj, problem.prefactor, problem.sample_offset,
+        getattr(problem, "eps", EPS0), getattr(problem, "mu", MU0)))
+
+
 def gradient_check(problem: Problem, ls: LevelSet, design_mask=None,
-                   deltas=(0.05, 0.1, 0.2)) -> List[dict]:
+                   deltas=(0.05, 0.1, 0.2), evaluation_callback=None) -> List[dict]:
     """Compare  sum_i g_i * w_i * delta  (adjoint prediction for a uniform outward
     shift of the whole boundary by delta) with a central finite difference of the
     objective obtained by solving with phi -/+ delta.  Requires ls to be a signed
@@ -585,13 +615,11 @@ def gradient_check(problem: Problem, ls: LevelSet, design_mask=None,
     convention is flipped; a constant ratio != 1 means `prefactor` needs rescaling."""
     dx = ls.grid.dx
     fwd = problem.forward(ls)
-    adj = problem.adjoint(ls, fwd)
+    if evaluation_callback:
+        evaluation_callback(ls, fwd, dict(
+            phase="gradient_base", it=None, accepted=None, reason="gradient_check"))
     bnd = extract_boundary(ls, design_mask)
-    g_c = shape_derivative_complex(bnd, fwd.fields, adj, problem.prefactor,
-                                   problem.sample_offset,
-                                   getattr(problem, "eps", EPS0), getattr(problem, "mu", MU0))
-    _, c = fom_value_and_weight(fwd.s, problem.fom_kind)
-    g = real_gradient(g_c, c)
+    g = problem_gradient(problem, ls, fwd, bnd)
     if design_mask is not None:
         g = np.where(bnd.active, g, 0.0)
     slope_adj = float(np.sum(g * bnd.weights))            # d f / d(delta)
@@ -601,11 +629,21 @@ def gradient_check(problem: Problem, ls: LevelSet, design_mask=None,
         lp, lm = ls.copy(), ls.copy()
         lp.phi = ls.phi - dd       # metal grows
         lm.phi = ls.phi + dd       # metal shrinks
-        fp = fom_value_and_weight(problem.forward(lp).s, problem.fom_kind)[0]
-        fm = fom_value_and_weight(problem.forward(lm).s, problem.fom_kind)[0]
+        fwd_p = problem.forward(lp)
+        fp = problem_value(problem, fwd_p)
+        if evaluation_callback:
+            evaluation_callback(lp, fwd_p, dict(
+                phase="gradient_plus", it=None, accepted=None,
+                delta_cells=d, reason="gradient_check"))
+        fwd_m = problem.forward(lm)
+        fm = problem_value(problem, fwd_m)
+        if evaluation_callback:
+            evaluation_callback(lm, fwd_m, dict(
+                phase="gradient_minus", it=None, accepted=None,
+                delta_cells=d, reason="gradient_check"))
         slope_fd = (fp - fm) / (2 * dd)
         rows.append(dict(delta_cells=d, slope_adjoint=slope_adj, slope_fd=slope_fd,
-                         ratio=slope_adj / slope_fd))
+                         ratio=slope_adj / slope_fd if slope_fd else float("nan")))
     return rows
 
 

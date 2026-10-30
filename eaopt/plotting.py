@@ -303,7 +303,8 @@ def efield_evolution_figure(cfg, outdir, path, *, max_panels: int = 6):
 
 def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
                                   iteration: int, z_used: float, path, layout=None,
-                                  fixed_metal_polygons=None, dpi: int = 140):
+                                  fixed_metal_polygons=None, dpi: int = 140,
+                                  evaluation_id: int | None = None):
     """Full case layout with the updated level set and its forward |E| map."""
     import matplotlib
     matplotlib.use("Agg")
@@ -394,8 +395,10 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     ax.set_xlabel("x (mm)", fontsize=14)
     ax.set_ylabel("y (mm)", fontsize=14)
     ax.tick_params(axis="both", labelsize=12)
+    label = (f"evaluation {evaluation_id}" if evaluation_id is not None
+             else f"iteration {iteration}")
     ax.set_title(
-        f"{cfg.name}: shape and forward electric field, iteration {iteration} "
+        f"{cfg.name}: shape and forward electric field, {label} "
         f"(z={z_used:g} mm)", fontsize=16, pad=12)
     colorbar = fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02)
     colorbar.set_label("|E| (V/m), 99.5th percentile scale", fontsize=12)
@@ -413,7 +416,8 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     return path
 
 
-def adjoint_levelset_sparams_figure(cfg, history, path, *, dpi: int = 140):
+def adjoint_levelset_sparams_figure(cfg, history, path, *, dpi: int = 140,
+                                   x_key: str = "iteration"):
     """Plot forward |S_i,j| in dB at every requested iteration state."""
     import matplotlib
     matplotlib.use("Agg")
@@ -422,7 +426,7 @@ def adjoint_levelset_sparams_figure(cfg, history, path, *, dpi: int = 140):
     rows = list(history)
     if not rows:
         return None
-    iterations = [int(row["iteration"]) for row in rows]
+    iterations = [int(row[x_key]) for row in rows]
     keys = sorted({key for row in rows for key in row.get("s_params_db", {})})
     if not keys:
         return None
@@ -432,15 +436,16 @@ def adjoint_levelset_sparams_figure(cfg, history, path, *, dpi: int = 140):
     for key in keys:
         values = [row.get("s_params_db", {}).get(key) for row in rows]
         values = [np.nan if value is None else float(value) for value in values]
-        is_fom = key == fom_key
+        is_fom = key.split("@")[0] == fom_key
         ax.plot(iterations, values,
                 marker="o" if is_fom else "s", markersize=4 if is_fom else 3,
                 linewidth=2.2 if is_fom else 1.2,
                 label=(f"FoM: |{key}|" if is_fom else f"|{key}|"))
-    ax.set_xlabel("Iteration", fontsize=14)
+    label = "Evaluation" if x_key == "cst_eval_id" else "Iteration"
+    ax.set_xlabel(label, fontsize=14)
     ax.set_ylabel("S parameter (dB)", fontsize=14)
     ax.tick_params(axis="both", labelsize=12)
-    ax.set_title(f"{cfg.name}: S parameters vs iteration", fontsize=16, pad=12)
+    ax.set_title(f"{cfg.name}: S parameters vs {label.lower()}", fontsize=16, pad=12)
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=10)
     if len(iterations) <= 25:

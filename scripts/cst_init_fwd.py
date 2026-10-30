@@ -3,7 +3,6 @@
 
 本文件是一个**完整、自包含**的程序；``cst_init_fwd.py`` 与
 ``cst_init_bwd.py`` **逐字相同，只有下面 TAG 常量那一块不同**
-（tests/test_cst_init_scripts.py 锁定这一点，防止两份悄悄漂移）。
 
     python scripts/cst_init_fwd.py configs/coupler.yaml
     python scripts/cst_init_fwd.py configs/coupler.yaml --attach   # 附接 GUI
@@ -81,7 +80,7 @@ def main(argv=None) -> int:
         return 1
     report_solution(log, cfg, sol, TAG, 0, path)
     log("[OK] 完成。另一个工程跑同目录下的另一个 cst_init 脚本；之后用 "
-        "scripts/cst_update.py 做形状迭代，或直接跑 scripts/run_coupler.py "
+        "scripts/cst_update.py 做形状迭代，或直接跑 scripts/run_coupler_adjoint_levelset.py "
         "一条命令跑完整个循环。")
     return 0
 

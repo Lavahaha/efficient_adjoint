@@ -22,21 +22,11 @@ from matplotlib.path import Path
 from eaopt.config import CaseConfig
 from eaopt.geometry.levelset import LevelSet2D
 
-__all__ = ["build_velocity_mask", "apply_min_gap", "interp_mask_at",
-           "anchor_runs", "ConnectivityGuard"]
+__all__ = ["build_velocity_mask", "apply_min_gap", "anchor_runs", "ConnectivityGuard"]
 
 #: 4-连通结构元。**不用 8-连通**：对角相接的两块金属在 CST 里挤出后只是
 #: 点接触，桥接时容易塌成尖角；用 4-连通判据可以早一步补出实心的桥。
 _STRUCT4 = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
-
-
-def interp_mask_at(ls: LevelSet2D, points: np.ndarray, mask_grid: np.ndarray) -> np.ndarray:
-    """网格掩膜双线性插值到采样点（界外为 0）。"""
-    from scipy.interpolate import RegularGridInterpolator
-
-    interp = RegularGridInterpolator((ls.xs, ls.ys), mask_grid,
-                                     bounds_error=False, fill_value=0.0)
-    return interp(np.asarray(points, dtype=float))
 
 
 def build_velocity_mask(

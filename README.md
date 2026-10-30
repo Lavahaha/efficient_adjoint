@@ -1,203 +1,154 @@
-# eaopt — 基于伴随法的微波器件形状优化（论文复现）
+# eaopt：基于伴随法的微波器件形状优化
 
-复现论文：
+复现论文 *Efficient Adjoint-Based Shape Optimization Method for the Inverse Design
+of Microwave Components*，IEEE TMTT 73(1), 494–503, 2025，
+DOI: 10.1109/TMTT.2024.3421558。
 
-> J. Ji, S. HuYan, L. Du, X. Xu, J. Zhao, "Efficient Adjoint-Based Shape
-> Optimization Method for the Inverse Design of Microwave Components,"
-> *IEEE Trans. Microwave Theory and Techniques*, vol. 73, no. 1, pp. 494–503, 2025.
-> DOI: 10.1109/TMTT.2024.3421558
+所有优化案例统一使用根目录的 `adjoint_levelset.py`。`eaopt/runner.py` 提供
+公共 CST 适配器与运行流程，各案例脚本只负责选择配置和优化方向。
 
-## 方法概述
+## 安装
 
-论文方法的核心：把"伴随仿真"实现为**换端口激励的第二次正常仿真**（后向场），
-从而只依赖商业求解器的场解（E/H 场监视器导出），不依赖系统矩阵与网格信息。
+需要 Python 3.10 或更新版本；实际运行 CST 时还须满足所安装 CST 官方
+Python 库的版本要求。
 
-每轮迭代（论文 Fig. 4）：
+```bash
+pip install -e .
 
-```
-正向仿真（input 端口激励）      → E, H, S 参数, P_in
-后向仿真（observation 端口激励）→ E_back, H_back
-形状导数 δp_i = Re[(−2jω/P_in)·(ε E_n·E_n^back + μ0 H_τ·H_τ^back)]
-    xy 轮廓：E_n = n_x E_x+n_y E_y；H_τ = −n_y H_x+n_x H_y（单 z 截面）
-    相位因子 e^{−j·arg S}：FoM = |S| 的链式法则（式 (5)），缺它 = 在优化 Re[S]
-梯度下降（固定步长 + 符号开关）→ 水准集 HJ 演化 → 最小间距投影 → 重建几何
+# CST 官方库随 CST 安装包提供，不从 PyPI 下载；路径按实际安装目录修改。
+pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" cst-studio-suite-link
 ```
 
-形状导数只定义在边界采样点上，经**速度延拓**（窄带内 ∇V·∇φ = 0，
-优先用 scikit-fmm，缺库回退 PDE 上风格式）铺满窄带后驱动
-Hamilton–Jacobi 方程 ∂φ/∂t + V|∇φ| = 0（Godunov 一阶上风格式）。
+`scikit-fmm` 用于符号距离重初始化；未安装时回退到 SciPy 距离变换。
+Python 3.14 环境默认跳过该依赖。仓库根目录不要创建 `cst/`，以免遮蔽官方库。
 
-边界采样：
-**marching 在网格线上的交点**（两端节点 φ 线性插值，亚格点）既是交给 CST
-重建的几何、也是做灵敏度分析的采样点；取场点再沿法向**内移 δz**
-（`sample_side: inside` + `intersection_offset_mm: 0.3`）——论文 p.501：边缘上
-取场有奇异性，要贴着边缘、**在金属内侧**采样；场值按**坐标**用加权最小二乘
-从 CST 导出网格取得（导出网格原点由包围盒定，与 φ 网格不必对齐——`nodes`
-方案要求逐点重合，在服务器上做不到，已删除）；速度按反距离平方回写到
-**未偏移的**交点（最近节点 + 四邻居），再延拓到窄带。
+## 运行案例
+
+从项目根目录执行：
+
+| 案例 | 命令 | 优化目标 |
+|---|---|---|
+| 耦合器 | `python scripts/run_coupler_adjoint_levelset.py` | 最大化单频 \|S31\| |
+| 功分器 | `python scripts/run_divider_adjoint_levelset.py` | 最大化单频 \|S21\| |
+| 天线 | `python scripts/run_antenna_adjoint_levelset.py` | 最小化单频 \|S11\| |
+| 双频功分器 | `python scripts/run_divider_multifreq.py` | 最大化 4/6 GHz 相对 −3 dB 门槛的 dB 余量 soft-min |
+
+四个入口均调用 `eaopt.runner.main`，再使用 `adjoint_levelset.AdjointLevelSetOptimizer`。
+旧入口 `scripts/run_coupler.py` 及旧的 `eaopt.pipeline` 已删除。
+
+```bash
+# 指定小规模运行、独立输出目录和日志
+python scripts/run_divider_adjoint_levelset.py --iterations 2 --output-dir results/divider_smoke --log results/divider_smoke.log
+
+# 有限差分梯度检查：会额外运行 CST，随后继续优化
+python scripts/run_divider_multifreq.py --gradient-check --iterations 1
+
+# 查看完整命令参数；此操作无需导入 CST 官方库
+python scripts/run_antenna_adjoint_levelset.py --help
+```
+
+工程缺失时自动初始化。默认创建无界面的 CST 实例；`--attach` 附接已运行实例，
+`--new` 强制创建新实例。`--save-fields` / `--no-save-fields` 控制完整场快照保存。
+程序不支持断点续跑。输出目录非空时自动创建 `run_<UTC时间戳>/` 子目录，
+保留此前的日志、快照和 CST 工程；控制台会打印本次实际输出目录。
+默认保存 `run.log`；指定的 `--log` 文件已存在时，本次日志保存在新运行目录中。
+
+## 优化流程与参数
+
+每轮在同一几何上获得前向与伴随 E/H 场，沿金属轮廓法向计算形状灵敏度，
+将边界速度延拓到网格后，通过 Hamilton–Jacobi 方程演化水平集。
+金属内 φ < 0，外部 φ > 0，正法向速度使金属扩张。几何约束包括最小间距、
+最小特征尺寸以及按案例启用的连通性修复。
+
+优化器使用 `optimizer.pseudo_time_step` 作为初始伪时间步，按 CFL 划分演化子步。
+候选形状只有在目标改善时才接受，否则减半时间步并回溯；每次更新都重初始化
+符号距离。`optimizer.max_iterations` 控制最大迭代次数。
+
+单频路径保留原有的实部形状灵敏度约定，不额外乘 S 参数相位因子。
+双频路径按各频点的角频率计算灵敏度，通过 dB 目标的复数链式因子和 soft-min
+动态权重汇总梯度；初始评估、候选接受和有限差分检查均使用相同的双频目标。
+双频目标的值以 dB 余量表示，不等于单个频点的 S 参数幅值。
+
+YAML 中保留当前优化器实际使用的参数：
+
+- `objective`：端口；双频还包括 `frequencies_ghz`、`target_db`、`beta_per_db`。
+- `design_region`、`initial_metal`、`fixed_region`、`constraints`：初始几何与约束。
+- `sampling`：`sample_side`、`intersection_offset_mm`、`field_z_mm`。
+- `optimizer`：`pseudo_time_step`、`cfl`、`velocity_sign`、`max_iterations`。
+- `level_set.extension_band_mm`：速度作用带宽。
+- `output.dir`：输出根目录；运行前检查配置中的路径是否适用于当前机器。
+
+PEC 默认在边界外侧一个网格处取场；可通过 `--sample-offset-mm` 显式覆盖。
+CST 的材料、频率、场导出步长、端口、求解设置和工程路径规则由
+`eaopt/solver/cst_setup.py` 与对应 `cst_model*.py` 管理。
 
 ## 项目结构
 
-```
+```text
+adjoint_levelset.py       # 唯一优化核心、水平集演化、回溯与梯度检查
 eaopt/
-├── config.py            # 算例配置（一个算例 = 一份 YAML，**只描述优化问题**）
-├── pipeline.py          # 优化主循环（Fig. 4）+ 日志/快照/φ 快照
-├── artifacts.py         # iter_NNN/ 产物读写（shape / s_params / meta / ls_phi / efield 切片）
-├── plotting.py          # 图约定（区域框 / 金属）+ 快照两栏 / S 参数曲线 / 电场演化
-├── geometry/
-│   ├── levelset.py      # 水准集：SDF 初始化、HJ 演化、重初始化、PDE 速度延拓、法向
-│   ├── contour.py       # 零等值面提取（marching，亚格点交点）+ CST 几何简化
-│   └── extension.py     # 窄带速度延拓：scikit-fmm 优先，缺库回退 PDE
-├── adjoint/
-│   ├── fields.py        # FieldGrid（规则网格复矢量场）+ 三线性插值 + WLS 取场 + 法/切分解
-│   ├── derivative.py    # 形状导数（xy 轮廓 E_n 与面内 H_τ 配对）
-│   └── sampling.py      # 边界点（交点/轮廓）+ 固定金属剔除 + 反距离平方回写
-├── optimize/
-│   ├── objective.py     # FoM 工厂（transmission 型 = |S_ij|）
-│   ├── step.py          # 固定步长 + 归一化 + active 掩膜
-│   └── constraints.py   # 速度掩膜（固定区边距/允许区/边缘 taper，作用边可配）、最小间距投影
-├── solver/              # 6 个文件；**不再封装官方库**
-│   ├── base.py          # Solution / SolverInterface（pipeline 只认这个契约）
-│   ├── cst_setup.py     # **CST 侧单一事实来源**：布局/频点/材料/端口/工程路径
-│   ├── cst_model.py     # 模板命令块（VBA 文本 + 几何常量；纯文本，不 import cst）
-│   ├── cst_results.py   # S 参数 + 场条目定位/导出/解析/裁剪（顶层 import）
-│   └── cst.py           # CstSolver：pipeline ↔ 两个工程的适配器（顶层 import）
-
-configs/coupler.yaml     # 算例配置（论文 III-A 耦合器）
-configs/divider_multifreq.yaml # divider 双频探索（S21@4/6 GHz 均达 -3 dB）
-scripts/cst_init_fwd.py  # 建前向工程（端口 1 激励）+ 首次仿真 → iter_000/
-scripts/cst_init_bwd.py  # 建反向工程（端口 3 激励）+ 首次仿真
-scripts/cst_update.py    # 改形状 → 两个工程各求解一次 → 写 iter_NNN/
-scripts/run_coupler.py   # 一条命令跑完整优化（缺工程时自动初始化）
-scripts/run_divider_multifreq.py # 运行 divider 双频探索案例
-scripts/plot_layout.py   # 渲染 CST 侧布局参考图（docs/layout_reference.png）
-scripts/plot_results.py  # 事后重画结果图（S 参数曲线 / 电场演化 / 快照），不跑仿真
-docs/server_runbook.md   # 服务器逐步操作手册（含判据与常见故障）
-tests/                   # 292 项测试（不装 CST 也全绿：含假 CST 库的端到端）
+  runner.py              # 公共案例运行器、单频/双频 CST 适配
+  config.py              # YAML 配置与校验
+  artifacts.py           # CST 求解产物读写
+  plotting.py            # 布局、场与 S 参数绘图
+  cli.py                 # 公共参数、日志和控制台输出
+  adjoint/fields.py      # CST 导出复矢量场的网格容器
+  geometry/              # 初始符号距离、轮廓与几何处理
+  optimize/              # 几何约束与双频目标
+  solver/                # CST 接口、结果读取和各案例建模
+configs/                 # 耦合器、功分器、天线、双频功分器
+scripts/                 # 案例入口、CST 手工操作及绘图工具
+docs/server_runbook.md   # 服务器操作说明
 ```
 
-三个 `scripts/cst_*.py` 是**完整、自包含**的程序：各自在顶层
-`import cst.interface`，自己连实例/开工程/写历史表/求解/取数，中间没有封装层
-（流程代码重复几份是这条路的代价）。`cst_init_fwd.py` 与 `cst_init_bwd.py`
-逐字相同，只有文件顶部 `TAG` 常量区不同（`tests/test_cst_contract.py` 锁定，
-防两份悄悄漂移）。
+旧的导数、边界采样、步长和速度延拓模块已删除；仍被运行器调用的场网格、
+几何及约束代码保留。`tests/`、假 CST 库和 pytest 开发依赖已按要求移除。
+原来只服务旧流程的 WLS、旧水平集演化与未使用辅助函数也已清理。
 
-## 安装与使用
+## 输出与绘图
+
+默认写入 `<output.dir>/adjoint_levelset/`，`--output-dir` 可直接指定运行目录。
+
+- `iter_NNN/`：一次 CST 求解评估的几何、S 参数与可选场数据；编号是评估编号，
+  包括回溯和梯度检查产生的求解，不等同于已接受的优化迭代编号。
+- 每个 `iter_NNN/` 还保存输入水平集 `levelset.npz`、本次评估的
+  `evaluation.json`（目标值、接受/拒绝原因、回溯次数和时间步）、
+  `evaluation_state.npz`（形状、前向采样面 E/H 和整板电场幅值）及 `evaluation.png`。
+  不改善目标的候选也全部保存；恢复求解和有限差分检查单独编号。
+  输入水平集在建模前保存，因此建模或求解失败时仍能定位候选形状。
+- `optimization_evaluations.jsonl`：逐次评估记录，包含初始、接受、拒绝、恢复与梯度检查；
+  每次求解完成即追加写入，`accepted` 仅对优化候选为 true/false，其他类型为 null。
+- `adjoint_levelset_history.jsonl`：每次更新的目标变化、时间步、回溯次数及接受状态。
+- `cst_evaluations.jsonl`：CST 评估日志。
+- `run_config.json`：本次生效的优化配置、CST 设置与命令行参数。
+- `adjoint_levelset_state_NNN.npz`、`phi_before_iter_NNN.npz`、`phi_after_iter_NNN.npz`：状态快照。
+- `fig6b_iter_NNN.png`、`fig7_sparams_vs_iteration.png`：布局/场图与 S 参数曲线；
+  双频曲线带有频点标签，场图显示配置中的第一个目标频点。
+- `sparams_history.json` 及 `fig7_sparams_vs_iteration.png` 只包含初始和已接受状态，
+  恢复求解不会重写已接受状态的快照；`fig7_sparams_vs_evaluation.png` 展示全部评估。
+- `phi_final.npz`、`final_shape.json`、`adjoint_levelset_summary.json`：最终形状和运行摘要。
 
 ```bash
-pip install -e .            # 本地（numpy/scipy/pyyaml/matplotlib）
-pip install -e .[dev]       # + pytest
+# 重绘统一优化器的结果
+python scripts/plot_coupler_adjoint_levelset.py --help
 
-# CST 官方 Python 库（cst.interface / cst.results）不在 PyPI 上，由 CST
-# 安装包自带；服务器上装（路径按实际安装目录）：
-pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" \
-    cst-studio-suite-link
+# 重绘所有候选（含拒绝/恢复/梯度检查），output-dir 使用本次实际运行目录
+python scripts/plot_coupler_adjoint_levelset.py --output-dir results/coupler/adjoint_levelset --only evaluations
 
-python scripts/run_coupler.py          # 跑优化（缺工程会自动初始化，约 20 轮）
-python scripts/run_divider_multifreq.py # divider 双频优化：S21@4/6 GHz，目标均为 -3 dB
-python scripts/plot_layout.py          # 渲染布局参考图（核对 CST 模型用）
-python -m pytest tests/ -q             # 测试（不需要 CST）
+# 渲染模型布局参考图
+python scripts/plot_layout.py configs/divider.yaml
 ```
 
-## CST 侧参数在哪（`eaopt/solver/cst_setup.py`）
+`plot_results.py` 保留用于读取已有 `iter_NNN/` 格式的历史产物。
+`cst_init_fwd.py`、`cst_init_bwd.py` 和 `cst_update.py` 保留为手工建模与求解工具。
 
-YAML 只管优化问题（设计区、初始/固定金属、采样、约束、优化器、水准集、
-目标、输出目录）——CST 侧要用的信息**不在 YAML 里**，而在
-`eaopt/solver/cst_setup.py` 的 `COUPLER = CstSetup(...)`：
+## 验证
 
-- 物理/材料（论文 III-A）：频点 5 GHz（= 监视器 = 扫频 = S 参数读取）、
-  εr = 3.66、tanδ = 0.0037、基板 0.762 mm、金属 35 µm PEC、端口表 (1,2,3,4)；
-- 会话/运行：`attach_gui`、`port_power_w`、`export_step_mm`（缺省跟随
-  `CaseConfig.field_export_step_mm`：intersection 采样 = 设计区网格步长、
-  contour = 采样点距）、`save_fields`、`project_dir`（缺省 `<output.dir>/cst`）；
-- 无人值守：`quiet_mode`（连上就 `set_quiet_mode(True)`，模态框不再弹）、
-  `clear_results`（每轮改形状前先 `DeleteResults`）——CST 在**已有结果**的
-  工程上重跑仿真会弹确认框问要不要删旧结果，`run_solver()` 是同步的，GUI
-  模式下脚本就停在那行等人点。两道闸各自独立，缺省都开；详见
-  `docs/server_runbook.md` 常见问题；
-- 规则：`project_path()`、`stimulus()`（fwd=from_port / bwd=to_port）、
-  `validate_objective()`。
+```bash
+# 无需 CST 和 pytest 的记录逻辑回归检查
+python scripts/check_evaluation_recording.py
+```
 
-模板命令块（`cst_model.py`）与 pipeline 的 ω、εr 都从这里取值：
-**改 `frequency_ghz` 时监视器频点、扫频带、S 参数读取与形状导数同时跟着变**。
-算例数据（几何布局说明）也写在那个模块的 docstring 里。
-
-## 关键约定（错了不会报错，只出错数据）
-
-- **激励"烤死"在模板里**：fwd 工程激励端口 1、bwd 激励端口 3，建工程时
-  写死（`Solver.StimulationPort` + `StimulationMode` 成对设置），pipeline
-  全程不触碰激励 API——多激励叠加的场会让伴随梯度静默失效而 S 参数照常出数；
-- **建模必走历史表**：所有几何改动都经 `model3d.add_to_history(标题, 命令)`
-  （每轮每工程一条记录：删 `design_region` + 重建）。直接调对象模型只改当前
-  会话，重放历史时旧形状会复活；
-- **先存盘再读结果**：`cst.results` 读的是磁盘结果文件，顺序反了会一直读到
-  上一轮的值；
-- **场条目到活结果树上按叶子名认领**（`cst_results.resolve_field_item`），
-  不硬拼路径：条目名由 CST 起（带 ` [AC]` 之类后缀），而 `SelectTreeItem`
-  对不存在的路径**不抛错、只是不生效**（返回 False），拼错的名字要到
-  `ASCIIExport.Execute` 才以一句 "not available for the current view" 收场；
-- **读不到就抛**：S 参数/场读失败一律报错，绝不把 0 塞进伴随法；
-- **设计区 = `design_region.box` = 可动金属的活动范围**（论文只有一个域：
-  Fig.5 的红虚线框就是设计区）：φ 网格、采样点、场导出裁剪、速度掩膜全按
-  它来。本算例的盒子 x∈[0,12]（两腿内边缘 = 耦合段 d）、y∈[−2.6,0.9]，
-  上界就是论文那条"臂上边缘不得超过直通线、最小间距 0.1 mm"的约束
-  （1.0 − 0.1）。`constraints.allowed_region` 只在"盒子比活动范围大"的
-  算例里才用，本算例留空；
-- **边缘 taper 作用在哪些边要选**（`constraints.taper_edges`）：taper 是让
-  可动金属在**穿出设计区**的边上与区外固定馈线平滑衔接（本算例 = x 两端
-  接腿），所以取 `x`。设计区自身那条边（臂顶）是可动金属的生长边界，
-  在那里 taper 等于把优化目标削掉——盒子 y 上界离直通线只有 0.1 mm，
-  四边全 taper 会把整个耦合间隙的速度压掉（不报错，只是优化推不动）；
-- **场要裁到设计区** ± `design_region.field_margin_mm`（监视器导出的是整个
-  计算域）；导出的 ASCII 是"表头 + 每点一行 9 列 `x y z Re1 Im1 …`"
-  （`Mode "FixedWidth"`，服务器实测），解析按坐标归位、列数不对即报错；
-- **导出网格原点由 CST 包围盒定，取场必须按坐标**：`ASCIIExport` 没有
-  原点/范围属性（只有 Reset/FileName/Mode/StepX/Y/Z/Execute），服务器实测
-  原点 x −5.6 / y −3.55——设计区 y=−2.6 相对它差**半格**。所以旧 `nodes`
-  方案（要求采样点与导出节点逐点重合）结构性不可满足，已删除；现在交点用
-  WLS 按坐标取场，**不要求任何对齐**（`field_export_step_mm` 只决定拟合
-  分辨率，调粗它要同步放大 `wls_radius_cells`）；
-- **交给 CST 的几何 = 做灵敏度分析的采样点**（`movable_contours` 与
-  `boundary_samples` 吃同一份交点折线）：两处若各提一次轮廓，会静默漂移成
-  "仿真的是 A 形状、梯度作用在 B 形状"；
-- **四个场必须导出在同一张 (x,y) 网格上**（fwd/bwd 的 E/H；z 面各自按
-  `sampling.field_z_mm` 吸附）：按坐标取场时不一致既不报错、结果又是错的，
-  pipeline 开头显式查（`_check_field_grids`）；
-- **`shape.json` = 真正施加的形状**：两个工程都改成功后才写、每次覆盖写，
-  它是事后复盘"第 N 轮模型长什么样"的唯一依据；
-- **`iter_NNN/` 只有一个写入口**：脚本链与 pipeline 都走 `eaopt.artifacts`
-  （脚本在轮次已知时调它，pipeline 经 `CstSolver.begin_iteration(n)` 告诉
-  求解器本轮号）。
-
-判定模板是否建对：**History List 非空** → 关掉工程再重开 → 几何与 4 个
-端口还在。几何布局按论文 Fig. 5（直通线横贯整板 + "⊓"形耦合臂、设计区
-两端为四分之一圆过渡、腿下到板底、端口 1/2 在线两端 / 3/4 在腿底；参考图
-见 `docs/layout_reference.png`）。逐步操作、判据与常见故障见
-`docs/server_runbook.md`。
-
-## 已验证的性质（本地，不装 CST）
-
-- **端到端**：用假 CST 库（照官方 API 形状搭）跑通"初始化 → 形状更新 →
-  求解 → 读 S 参数/导场裁剪"整条链，以及一轮完整 pipeline（`iter_000/` 落下
-  `shape.json`、`s_params_{fwd,bwd}.json`、`meta.json`、`ls_phi.npz`）；
-- 水准集：SDF 初始化误差 <1e-10；均匀速度平移精确；Godunov 上风重初始化稳定
-  （中心差分方案会振荡，勿用）；凸角附近收敛慢是 PDE 法固有特性；
-- 配置系统：未知键（旧 YAML 的 `solver`/`substrate`/`ports` 等）**报错而非
-  静默丢弃**——迁移期的护栏；
-- 仓库合同（`tests/test_cst_contract.py`）：仓库根没有遮蔽官方库的 `cst/`；
-  `cst_setup`/`cst_model`/`pipeline` 等模块导入后 `sys.modules` 里没有
-  `cst`（没装 CST 的机器也能用它们）；两个 init 脚本除 `TAG` 常量区外逐字节
-  相同。
-
-## 路线图
-
-- [x] 第 1 步：项目骨架 + 配置系统
-- [x] 第 2 步：几何核心（水准集 + 轮廓）
-- [x] 第 3 步：场与导数（FieldGrid + 式 54–55）
-- [x] 第 4 步：优化闭环
-- [x] 第 5 步：CST 交互（官方 Python API：两个 init / 形状更新 /
-      CstSolver 适配器；CST 侧常量收敛到 `cst_setup`）
-- [ ] 第 6 步：服务器验收（init → run_coupler → 按 runbook 清单核对，
-      对齐论文 Fig. 6–8）
-- [ ] 待办：`optimizer.velocity_sign` 未经 CST 有限差分裁决（见 runbook
-      第 1 节）；`run_coupler.py --resume`（断点续跑）尚未实现。
+使用四个案例入口的 `--help` 检查参数和导入，使用 `--gradient-check` 在配置好
+CST 的环境中检查目标变化与伴随梯度，并先做 1–2 轮小规模运行确认几何、场数据
+和目标趋势。代码清理后的静态检查与离线数值检查不能代替实际 CST 验收。

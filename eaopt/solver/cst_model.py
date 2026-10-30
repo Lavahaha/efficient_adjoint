@@ -532,7 +532,7 @@ def _fixed_metal_parts() -> list[str]:
 
 
 def _arm_design_part() -> str:
-    """设计区初始金属（耦合臂横段 + 两端内侧圆角，pipeline 每轮重建）。
+    """设计区初始金属（耦合臂横段 + 两端内侧圆角，runner 每轮重建）。
 
     轮廓与 configs/coupler.yaml 的 initial_metal 一致（由测试锁定）。
     圆弧用折线近似（Extrude "Pointlist" 生成的是直边多边形）；弦高误差

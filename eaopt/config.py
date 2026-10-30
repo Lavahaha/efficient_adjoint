@@ -3,7 +3,7 @@
 分工：本模块管优化侧——设计区、初始/固定金属、采样、约束、优化器、水准集、
 目标函数与输出目录；**CST 侧的一切**（模板布局、频点、基板/金属材料、端口、
 求解设置、场导出步长）在 ``eaopt/solver/cst_setup.py``，不在这里出现。
-两者共享的物理量（频点、εr）以 cst_setup 为单一来源，pipeline 从那取值。
+两者共享的物理量（频点、εr）以 cst_setup 为单一来源，runner 从那取值。
 
 一个算例 = 一份 YAML（优化配置）+ 一个 ``CstSetup``（CST 配置）。
 
@@ -87,52 +87,22 @@ class DesignRegionSpec:
 
 @dataclass
 class SamplingSpec:
-    # 采样侧：outside=设计金属外侧 | inside=设计金属内侧
     sample_side: str = "outside"
     intersection_offset_mm: float = 0.0
-    # 交点沿外法向的额外偏移：0 = 场就取在交点（边界）上，用介质侧节点做**单侧**
-    # 拟合得到空气侧极限；调成半格（如 0.05）可把外推变内插，对 CST 近金属场
-    # 的阶梯噪声更鲁棒（代价是采样点与边界错开半格）。
-    wls_radius_cells: float = 2.0   # WLS 邻域半径（单位 = 场导出网格步长）
-    wls_order: int = 1              # 1=局部线性 | 2=局部二次
-    scatter_max_cells: float = 1.0  # 速度回写的作用半径（φ 网格格数）
-    field_z_mm: float = 0.0   # 场采样高度（mm）；请求 0 时优先选 z>=0 的导出面
+    field_z_mm: float = 0.0
 
 
 @dataclass
 class OptimizerSpec:
-    # Standalone adjoint-level-set pseudo-time step applied to raw velocity.
     pseudo_time_step: float = 1.0e-8
-    # 每轮迭代的**最大边界位移** = step_cells × 网格步长（论文 Fig.3b ≈ 1 格）。
-    # 由 HJ 演化 steps = round(step_cells/cfl) 个子步实现，每子步位移 = cfl·dx。
-    # normalize="none" 时语义变为：|δp| 的 step_ref_quantile 分位点每轮位移
-    # = step_cells 格，其余点按 δp 比例（见 optimize/step.py）。
-    step_cells: float = 1.0
-    cfl: float = 0.5  # 子步长系数（HJ 一阶 Godunov 的稳定上界约 0.707＝1/√2）
-    velocity_sign: float = 1.0  # 形状导数→速度的符号开关（±1），FD 验证定号
-    # 速度归一化模式："max"（旧行为：一点独享 |V|=1，其余按 max|δp| 比例缩）
-    # | "none"（去掉归一化：V = sign·δp，各点按自身 δp 比例移动，尺度由
-    # step_ref_quantile 决定）。缺省 "max" 保持旧算例不变，新算例显式开 "none"。
-    normalize: str = "max"
-    # normalize="none" 的参考分位：|δp| 的该分位点每轮位移 = step_cells 格。
-    step_ref_quantile: float = 0.9
-    # Standalone adjoint-level-set runner: decay the next step after a plateau.
-    step_min_cells: float = 1.0
-    step_decay_factor: float = 0.5
-    step_plateau_patience: int = 2
-    step_relative_threshold: float = 1e-3
+    cfl: float = 0.5
+    velocity_sign: float = 1.0
     max_iterations: int = 30
-    fom_tolerance: float = 1e-4
-    convergence_window: int = 5  # 连续 N 次迭代 FoM 变化小于容差则收敛
 
 
 @dataclass
 class LevelSetSpec:
-    reinit_every: int = 5  # 每 N 次迭代重初始化一次
-    extension_band_mm: float = 0.5  # 速度延拓带宽（mm）
-    # 速度窄带延拓的实现：auto（有 scikit-fmm 就用，缺库打印一行告警后退回
-    # PDE 上风延拓）| skfmm（缺库直接报错）| pde（旧实现，留作对照）
-    extension_method: str = "auto"
+    extension_band_mm: float = 0.5
 
 
 @dataclass
@@ -218,7 +188,7 @@ class CaseConfig:
             raise ValueError("design_region.grid_step_mm 必须为正")
         # 步长必须整除设计区：LevelSet2D 用 linspace 铺格，除不尽时**实际格距
         # ≠ grid_step_mm 而没有任何报错**——φ 网格被悄悄拉伸，所有按格数
-        # 换算的量（WLS 半径、scatter 半径、步长格数）都会跟着偏。
+        # 几何距离与网格坐标的换算也会随之偏移。
         for axis in ("width", "height"):
             k = getattr(self.design_region.box, axis) / self.design_region.grid_step_mm
             if abs(k - round(k)) > 1e-9:
@@ -255,42 +225,15 @@ class CaseConfig:
             raise ValueError(f"未知采样侧 {self.sampling.sample_side}")
         if self.sampling.intersection_offset_mm < 0:
             raise ValueError("sampling.intersection_offset_mm 不能为负")
-        if self.sampling.wls_radius_cells <= 0:
-            raise ValueError("sampling.wls_radius_cells 必须为正")
-        if self.sampling.wls_order not in (1, 2):
-            raise ValueError("sampling.wls_order 只支持 1（局部线性）或 2（局部二次）")
-        if self.sampling.scatter_max_cells <= 0:
-            raise ValueError("sampling.scatter_max_cells 必须为正")
-        if self.optimizer.step_cells <= 0:
-            raise ValueError("optimizer.step_cells 必须为正")
         if (not math.isfinite(self.optimizer.pseudo_time_step) or
                 self.optimizer.pseudo_time_step <= 0.0):
             raise ValueError("optimizer.pseudo_time_step 必须为有限正数")
-        if self.optimizer.step_min_cells <= 0 or self.optimizer.step_min_cells > self.optimizer.step_cells:
-            raise ValueError("optimizer.step_min_cells 必须为正且不大于 step_cells")
-        if not 0.0 < self.optimizer.step_decay_factor < 1.0:
-            raise ValueError("optimizer.step_decay_factor 必须在 (0, 1) 内")
-        if self.optimizer.step_plateau_patience < 1:
-            raise ValueError("optimizer.step_plateau_patience 必须至少为 1")
-        if self.optimizer.step_relative_threshold < 0:
-            raise ValueError("optimizer.step_relative_threshold 不能为负")
         if not 0.0 < self.optimizer.cfl <= 0.5:
             raise ValueError("optimizer.cfl 需在 (0, 0.5]（HJ 一阶格式稳定域）")
         if self.optimizer.velocity_sign not in (1.0, -1.0):
             raise ValueError("optimizer.velocity_sign 必须为 +1.0 或 -1.0")
-        if self.optimizer.normalize not in ("max", "none"):
-            raise ValueError(f'optimizer.normalize={self.optimizer.normalize!r} 未知：'
-                             '只认 "max" / "none"')
-        if not 0.0 < self.optimizer.step_ref_quantile < 1.0:
-            raise ValueError("optimizer.step_ref_quantile 需在 (0, 1) 内")
         if self.optimizer.max_iterations <= 0:
             raise ValueError("optimizer.max_iterations 必须为正")
-        if self.level_set.reinit_every < 1:
-            raise ValueError("level_set.reinit_every 至少为 1")
-        if self.level_set.extension_method not in ("auto", "skfmm", "pde"):
-            raise ValueError(
-                f"level_set.extension_method={self.level_set.extension_method!r} "
-                '未知：只认 "auto" / "skfmm" / "pde"')
 
     @property
     def field_export_step_mm(self) -> float:
@@ -298,36 +241,12 @@ class CaseConfig:
         return float(self.design_region.grid_step_mm)
 
     def summary(self) -> str:
-        """优化侧配置摘要（CST 侧常量见 ``cst_setup.CstSetup``）。"""
-        dr = self.design_region.box
-        s = self.sampling
-        sample = (f"marching 交点（亚格点）{s.sample_side}, "
-                  f"偏移 {s.intersection_offset_mm} mm, "
-                  f"WLS {s.wls_order} 阶 R={s.wls_radius_cells} 格, "
-                  f"z={s.field_z_mm} mm（边界请求 0 时优先取上侧面）")
-        lines = [
-            f"算例        : {self.name} — {self.description}",
-            f"设计区域    : x∈{dr.x} y∈{dr.y} mm, 网格步长 {self.design_region.grid_step_mm} mm",
-            (f"目标函数    : soft-min dB margin of S{self.objective.to_port}"
-             f"{self.objective.from_port} at {self.objective.frequencies_ghz} GHz "
-             f"(target {self.objective.target_db:g} dB, "
-             f"beta {self.objective.beta_per_db:g}/dB)"
-             if self.objective.frequencies_ghz else
-             f"目标函数    : max |S{self.objective.to_port}{self.objective.from_port}|"),
-            f"边界采样    : intersection — {sample}",
-            f"场导出步长  : {self.field_export_step_mm} mm",
-            f"速度延拓    : {self.level_set.extension_method}"
-            f"（带宽 {self.level_set.extension_band_mm} mm）",
-            f"约束        : 最小间距 {self.constraints.min_gap_mm} mm, "
-            f"最小特征 {self.constraints.min_feature_mm} mm, "
-            f"边缘 taper 作用于 {self.constraints.taper_edges} 边"
-            + (f", 活动范围 {self.constraints.allowed_region}" if self.constraints.allowed_region else ""),
-            f"优化        : pseudo_time_step={self.optimizer.pseudo_time_step:g}, "
-            f"legacy step_cells={self.optimizer.step_cells}, "
-            f"cfl {self.optimizer.cfl}, 最大 {self.optimizer.max_iterations} 次迭代",
-            f"输出目录    : {self.output.dir}",
-        ]
-        return "\n".join(lines)
+        return (f"Case: {self.name} ({self.description})\n"
+                f"Design box: {self.design_region.box}; dx={self.design_region.grid_step_mm} mm\n"
+                f"Objective frequencies: {self.objective.frequencies_ghz or 'setup frequency'}\n"
+                f"Sampling: {self.sampling.sample_side}, offset={self.sampling.intersection_offset_mm} mm, z={self.sampling.field_z_mm} mm\n"
+                f"Optimizer: adjoint_levelset, pseudo_dt={self.optimizer.pseudo_time_step:g}, CFL={self.optimizer.cfl}, iterations={self.optimizer.max_iterations}\n"
+                f"Output: {self.output.dir}")
 
 
 # ---------------------------------------------------------------------- #

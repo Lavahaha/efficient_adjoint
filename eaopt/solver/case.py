@@ -22,11 +22,11 @@ __all__ = ["load_case", "known_cases", "CASE_INTERFACE"]
 #: 求解器与三个 CST 脚本按这套名字调用模板模块：``cst.py`` 的 ``_initialize``
 #: （``template_blocks``）与 ``_update_design_region``（``design_region_update``
 #: + ``DESIGN_COMPONENT``）、``cst_init_*.py``、``cst_update.py``；
-#: ``model_blocks`` / ``setting_blocks`` / ``layout_view`` 供测试与 layout 脚本用。
+#: ``model_blocks`` / ``setting_blocks`` / ``layout_view`` 供建模与布局脚本用。
 #: **少一个的代价不是"用不了"，而是跑到一半才炸**：功分器漏了
-#: ``design_region_update``，建工程一切正常，直到 pipeline 第一次
+#: ``design_region_update``，建工程一切正常，直到 runner 第一次
 #: ``build_model`` 才在 cst.py 里 AttributeError——中间隔着一次完整的 CST
-#: 建模 + 存盘（`tests/test_case_contract.py` 在本地把它挡掉）。
+#: 建模 + 存盘，因此在加载算例时先检查接口。
 CASE_INTERFACE = ("template_blocks", "model_blocks", "setting_blocks",
                   "DESIGN_COMPONENT", "design_region_update", "layout_view",
                   "fixed_metal_polygons")

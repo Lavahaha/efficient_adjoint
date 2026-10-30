@@ -11,7 +11,7 @@
       efield_fwd.npz      采样面 |E| 图用的单层 E 切片（~0.3 MB，**总是**写）
       ls_phi.npz          φ 快照（水质集），续跑的**关键**文件
       meta.json           轮次、时间戳、耗时、各文件摘要
-    history.jsonl        逐轮 FoM 记录（pipeline 写）
+    history.jsonl        逐轮 FoM 记录（runner 写）
 
 **先写数据文件、最后写 meta.json**：meta 是"这一轮齐了"的标记，
 判断续跑起点时只看 meta。少了这个顺序，中断会留下一半数据却看着像成功。
@@ -33,9 +33,8 @@ __all__ = [
     "TAGS", "iteration_dir", "list_iterations", "latest_iteration",
     "save_json", "load_json", "s_params_to_json", "s_params_from_json",
     "save_shape", "load_shape", "save_solution", "load_s_params",
-    "load_field", "save_field_slice", "load_field_slice",
-    "save_ls_phi", "load_ls_phi", "truncate_history",
-]
+    "load_field", "load_field_slice",
+    "load_ls_phi", ]
 
 #: 两个 CST 工程的标签（fwd = 输入端口激励，bwd = 观测端口激励/伴随仿真）。
 TAGS = ("fwd", "bwd")
@@ -247,19 +246,6 @@ def load_field(path):
                          data=z["data"])
 
 
-def save_field_slice(outdir, n: int, tag: str, grid) -> Path:
-    """采样面**单层** E 场切片 → ``iter_NNN/efield_<tag>.npz``。
-
-    只给图用（每轮电场分布，论文 Fig.10），与 ``save_fields`` 的全量三维场
-    互不影响：切片是 (nx, ny, 1, 3) 复数、~0.3 MB/轮，所以**总是**写。
-    落盘格式与 ``fields_<tag>_<e|h>.npz`` 完全相同（origin/spacing/data），
-    :func:`load_field_slice` 读回的就是 FieldGrid。
-    """
-    d = iteration_dir(outdir, n)
-    d.mkdir(parents=True, exist_ok=True)
-    return _save_field(d / f"efield_{tag}.npz", grid)
-
-
 def load_field_slice(outdir, n: int, tag: str):
     """读回采样面切片（FieldGrid，nz=1）；没有该轮切片时抛 FileNotFoundError。"""
     return load_field(iteration_dir(outdir, n) / f"efield_{tag}.npz")
@@ -268,23 +254,6 @@ def load_field_slice(outdir, n: int, tag: str):
 # --------------------------------------------------------------------------- #
 # 水准集 φ 快照（续跑用）
 # --------------------------------------------------------------------------- #
-def save_ls_phi(outdir, n: int, ls) -> Path:
-    """存 φ 与两个坐标轴。
-
-    φ 才是续跑的**唯一**事实来源：CST 工程随时可以按 ``shape.json`` 重建，
-    而水准集演化是路径相关的（HJ 方程按轮次累积），丢了就接不上。
-    这个文件很小（12×5.5 mm / 0.05 → 241×111 双精度 ≈ 214 KB，压缩后更小）。
-    """
-    path = iteration_dir(outdir, n) / "ls_phi.npz"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "wb") as f:
-        np.savez_compressed(f, phi=np.asarray(ls.phi, dtype=float),
-                            xs=np.asarray(ls.xs, dtype=float),
-                            ys=np.asarray(ls.ys, dtype=float),
-                            dx=float(ls.dx))
-    os.replace(tmp, path)
-    return path
 
 
 def load_ls_phi(path) -> dict:
@@ -296,36 +265,3 @@ def load_ls_phi(path) -> dict:
 # --------------------------------------------------------------------------- #
 # 续跑：history.jsonl 截断
 # --------------------------------------------------------------------------- #
-def truncate_history(history_jsonl, keep_below: int) -> int:
-    """删掉 ``iteration >= keep_below`` 的记录，返回删掉的条数。
-
-    续跑时**必须**做这件事：中断可能发生在"记录已写、下一轮 state 还没写"
-    之间，不截断就会从更早的 φ 接着跑、却把重复轮次的记录又追加一遍，
-    历史里出现两个 iteration=7。文件先写 tmp 再原子替换。
-    """
-    path = Path(history_jsonl)
-    if not path.is_file():
-        return 0
-    kept, dropped = [], 0
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-                it = int(rec.get("iteration"))
-            except (ValueError, TypeError):        # 损坏行：保守保留
-                kept.append(line)
-                continue
-            if it >= keep_below:
-                dropped += 1
-            else:
-                kept.append(line)
-    if dropped:
-        tmp = path.with_name(path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            for line in kept:
-                f.write(line + "\n")
-        os.replace(tmp, path)
-    return dropped

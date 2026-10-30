@@ -37,30 +37,14 @@ constraints:
 sampling:
   field_z_mm: 0.0
   intersection_offset_mm: 0.4
-  wls_radius_cells: 2.0
-  wls_order: 1
-  scatter_max_cells: 1.0
   sample_side: outside
 
 optimizer:
-  pseudo_time_step: 1.0e-8  # 初始伪时间步；FoM 不改善时回溯减半
-  step_cells: 1.0
-  step_min_cells: 0.25
-  step_decay_factor: 0.5
-  step_plateau_patience: 2
-  step_relative_threshold: 1.0e-3
+  pseudo_time_step: 1.0e-8
   cfl: 0.5
   velocity_sign: 1.0
-  normalize: none
-  step_ref_quantile: 0.9
   max_iterations: 30
-  fom_tolerance: 1.0e-4
-  convergence_window: 5
-
 level_set:
-  reinit_every: 1
   extension_band_mm: 1.0
-  extension_method: auto
-
 output:
   dir: results/antenna

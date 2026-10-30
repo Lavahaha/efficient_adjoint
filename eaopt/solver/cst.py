@@ -1,4 +1,4 @@
-"""CST 求解器：pipeline ↔ CST 工程的适配器（顶层直接 ``import cst.interface``）。
+"""CST 求解器：runner ↔ CST 工程的适配器（顶层直接 ``import cst.interface``）。
 
 ``SolverInterface``（``begin_iteration`` / ``build_model`` / ``solve_forward``
 / ``solve_backward`` / ``close``）在这里落到具体动作上。改形状、求解、取结果的
@@ -6,9 +6,9 @@
 官方库"的代价——换来的是没有中间层可以藏状态）。
 
 工程生命周期：两个工程由 ``scripts/cst_init_fwd.py`` / ``cst_init_bwd.py``
-建；``auto_init=True`` 时本类在第一轮就地建（``run_coupler.py`` 走这条，默认
+建；``auto_init=True`` 时本类在第一轮就地建（``run_coupler_adjoint_levelset.py`` 走这条，默认
 False——静默建工程等于在用户可能开着的 GUI 里凭空冒出两个工程）。建工程 =
-模板命令块进历史表，激励端口在那时写死；pipeline 全程**不碰**激励 API。
+模板命令块进历史表，激励端口在那时写死；runner 全程**不碰**激励 API。
 
 ``iter_NNN/`` 产物（shape.json、s_params_*.json、meta.json、可选场）由本类按
 ``begin_iteration`` 给的轮次写，写入口只有 ``artifacts`` 一处。
@@ -106,7 +106,7 @@ class CstSolver(SolverInterface):
             raise FileNotFoundError(
                 f"{tag} 工程不存在：{path}\n"
                 f"  先跑 scripts/cst_init_{tag}.py 初始化（它会建工程并跑"
-                f"第一次仿真）；或让 scripts/run_coupler.py 自动建。")
+                f"第一次仿真）；或让 scripts/run_coupler_adjoint_levelset.py 自动建。")
         prj = _open_or_reuse(self._environment(), path, self.log)
         self.projects[tag] = prj
         return prj
@@ -163,7 +163,7 @@ class CstSolver(SolverInterface):
 
         movable: 可动金属轮廓（世界坐标 mm，开放路径按设计区裁剪闭合）；
         fixed: 固定金属与馈线——**模板里已经有了，这里忽略**（固定几何只在
-        建模板时写一次，pipeline 不重复施加）。
+        建模板时写一次，runner 不重复施加）。
         """
         # 送 CST 前必须简化：网格描线（尤其斜边界）点数可达 800+，超过 CST
         # ``Extrude .Create`` 的点表容量后它只回一句 "Profile is
@@ -236,7 +236,9 @@ class CstSolver(SolverInterface):
         step_xy, step_z = self.setup.resolve_export_steps(self.cfg.field_export_step_mm)
         try:
             return R.export_field_cropped(
-                prj.model3d, "Efield", float(self.setup.frequency_ghz),
+                prj.model3d, "Efield",
+                float((self.cfg.objective.frequencies_ghz or
+                       (self.setup.frequency_ghz,))[0]),
                 step_xy, out, box, 0.0, step_z_mm=step_z, log=self.log)
         finally:
             out.unlink(missing_ok=True)
@@ -244,7 +246,7 @@ class CstSolver(SolverInterface):
     def close(self) -> None:
         """存盘收尾（**不关 CST 实例**：常驻会话供下一次运行复用）。
 
-        pipeline 在 finally 里调用——没连过也要能安全收尾。
+        runner 在 finally 里调用——没连过也要能安全收尾。
         """
         if self.de is None:
             return

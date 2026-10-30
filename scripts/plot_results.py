@@ -1,6 +1,6 @@
 """事后重画结果目录里的过程图（**不用重跑仿真**，服务器上直接跑）。
 
-画三样，与 pipeline 跑完时自动写的那套是同一份代码（``eaopt.plotting``）：
+画三样，与 runner 跑完时自动写的那套是同一份代码（``eaopt.plotting``）：
 
     iter_NNN.png            左 = φ 快照（形状），右 = 采样面 |E|
                             （旧轮次没有 efield_fwd.npz 时只画左栏）
