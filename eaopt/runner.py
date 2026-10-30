@@ -510,8 +510,8 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     log(f"[adjoint_levelset] pseudo_time_step={cfg.optimizer.pseudo_time_step:g}; "
         f"CFL={cfg.optimizer.cfl:g}; "
         f"extension band={cfg.level_set.extension_band_mm:g} mm")
-    log("[adjoint_levelset] a trial is committed only when FoM improves; "
-        "rejected trials halve pseudo_time_step")
+    log("[adjoint_levelset] each valid update is committed with fixed pseudo_time_step; "
+        "FoM changes are recorded without acceptance filtering")
     log("[adjoint_levelset] signed-distance reinitialization runs on every update")
     log("[adjoint_levelset] prefactor is (-2j*omega/Pin) times "
         f"scale={prefactor_scale:g}; validate it with --gradient-check")
@@ -590,10 +590,9 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
                 log(f"[adjoint_levelset] iter={it:03d}: "
                     f"FoM {rec['f_before']:.8g} -> {rec['f_after']:.8g} "
                     f"(Δ={rec['delta_f']:+.4g}), "
-                    f"pseudo_dt={rec['pseudo_time_step_used']:.4g} -> "
-                    f"{rec['pseudo_time_step_next']:.4g}, "
+                    f"pseudo_dt={rec['pseudo_time_step_used']:.4g}, "
                     f"move≈{rec['predicted_displacement']:.4g} mm, "
-                    f"backtracks={rec['backtracks']}, updated={rec['updated']}, "
+                    f"updated={rec['updated']}, "
                     f"reason={rec['reason']}")
 
             def save_state(state_it, state_ls, fwd):

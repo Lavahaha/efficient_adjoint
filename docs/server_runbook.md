@@ -31,12 +31,14 @@ python scripts/run_divider_multifreq.py --iterations 2 --output-dir results/divi
 CST 工程包含 `.cst` 文件及其同名文件夹，复制工程时两者一起复制。
 前向激励为目标输入端口，伴随激励为观测端口；天线 S11 使用同端口场。
 
-检查运行目录的形状快照、场图与目标变化。只有目标改善才接受候选更新，
-失败候选会减半伪时间步并回溯；CST 评估编号不等于已接受的优化迭代编号。
+检查运行目录的形状快照、场图与目标变化。每轮使用配置中的固定伪时间步，
+有效几何直接提交；FoM 下降或不变也会继续记录，不执行 FoM 筛选或回溯减步。
+CFL 演化子步、零速度/极小预测位移停止条件及几何和数值校验继续生效。
+CST 评估编号不等于优化迭代编号。
 双频案例应同时包含 4 GHz、6 GHz 的 S 参数记录，目标值是 soft-min dB 余量。
 每个 `iter_NNN/` 的 `evaluation.json`、`evaluation_state.npz` 和 `evaluation.png`
-记录该次求解，包括被拒绝的候选；`optimization_evaluations.jsonl` 给出全部评估的
-目标值、接受状态、回溯编号和时间步。恢复求解也单独记录，不覆盖已接受状态。
+记录该次求解，包括 FoM 变差或不变的更新；`optimization_evaluations.jsonl` 给出全部评估的
+目标值、提交状态和固定时间步。每轮更新各自留档，不进行拒绝后的恢复求解。
 `run_config.json` 和 `run.log` 保存本次设置与运行日志。
 
 ## 2. 梯度检查
@@ -49,7 +51,7 @@ python scripts/run_divider_multifreq.py --gradient-check --iterations 1 --output
 该选项会先运行额外的中心有限差分求解，写入 `gradient_check.json`，然后继续优化。
 比较伴随斜率与有限差分斜率的方向和量级。单频保留实部灵敏度约定，检查结果可
 暴露它与幅值目标的偏差；双频采用 dB 链式因子及 soft-min 权重。
-检查未通过时应先调查场、端口归一化、采样面和比例因子，不能仅凭回溯接受就
+检查未通过时应先调查场、端口归一化、采样面和比例因子，不能仅凭目标值改善就
 认定伴随梯度正确。`--prefactor-scale` 用于显式调整比例与符号。
 
 ## 3. 正式运行与重绘

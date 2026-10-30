@@ -73,22 +73,31 @@ class RecordingChecks(unittest.TestCase):
             _save_evaluation(problem, ls, fwd, details, problem.cfg.design_region.box)
 
         # Keep this test independent of the installed reinitialization backend.
-        with patch.object(als, "advect_levelset", side_effect=lambda phi, *a, **kw: phi - .01), \
+        with patch.object(als, "advect_levelset", side_effect=lambda phi, *a, **kw: phi - .01) as advect, \
                 patch.object(als, "apply_constraints"), \
                 patch.object(plotting, "adjoint_levelset_state_figure"):
             opt.run(self.ls, iterations, evaluation_callback=record,
                     state_callback=lambda it, ls, fwd: states.append((it, fwd.extra["eval_id"])))
+        self.assertEqual(advect.call_count, iterations)
+        self.assertEqual([call.args[2] for call in advect.call_args_list], [16.] * iterations)
+        for row in opt.history:
+            self.assertEqual(row["pseudo_time_step_used"], 16.)
+            self.assertEqual(row["pseudo_time_step_next"], 16.)
+            self.assertEqual(row["backtracks"], 0)
         rows = [json.loads(line) for line in
                 (self.root / "optimization_evaluations.jsonl").read_text().splitlines()]
         return opt, states, rows
 
-    def test_rejected_trial_is_saved_before_next_solve(self):
-        opt, states, rows = self.run_optimizer([1., .5, 2.], 1)
+    def test_worse_fom_is_committed_and_saved_before_next_solve(self):
+        opt, states, rows = self.run_optimizer([1., .5, .4], 2)
         self.assertEqual([r["cst_eval_id"] for r in rows], [0, 1, 2])
-        self.assertEqual([r["accepted"] for r in rows], [None, False, True])
+        self.assertEqual([r["accepted"] for r in rows], [None, True, True])
         self.assertEqual(rows[1]["f_before"], 1.)
-        self.assertEqual(rows[2]["backtracks"], 1)
-        self.assertEqual(states, [(0, 0), (1, 2)])
+        self.assertEqual(rows[2]["f_before"], .5)
+        self.assertEqual(rows[2]["backtracks"], 0)
+        self.assertEqual(states, [(0, 0), (1, 1), (2, 2)])
+        self.assertEqual(opt.history[-1]["f_after"], .4)
+        self.assertEqual(opt.stop_reason, "max_iterations")
         self.assertTrue(opt.history[0]["updated"])
         for row in rows:
             with np.load(self.root / row["snapshot"]) as data:
@@ -96,27 +105,32 @@ class RecordingChecks(unittest.TestCase):
                 self.assertTrue(np.all(data["e_mag"] == row["cst_eval_id"] + 1))
                 np.testing.assert_array_equal(data["e_forward"], np.ones((3, 3, 3)))
 
-    def test_restore_does_not_overwrite_an_accepted_state(self):
-        # Iteration 0 succeeds; iteration 1 exhausts the backtracking budget.
-        opt, states, rows = self.run_optimizer([1., 2.] + [1.] * 13 + [2.], 2)
-        self.assertEqual(opt.stop_reason, "line_search_failed")
-        self.assertEqual(states, [(0, 0), (1, 1)])
-        self.assertEqual(len(rows), 16)
-        self.assertEqual(sum(r["accepted"] is False for r in rows), 13)
-        self.assertEqual(rows[-1]["phase"], "restore")
-        self.assertEqual(rows[-1]["cst_eval_id"], 15)
-        self.assertEqual(len(list(self.root.glob("iter_*/evaluation_state.npz"))), 16)
-
-    def test_equal_fom_is_recorded_as_rejected(self):
-        _, _, rows = self.run_optimizer([1., 1., 2.], 1)
-        self.assertFalse(rows[1]["accepted"])
+    def test_equal_fom_is_committed_without_restore_solves(self):
+        opt, states, rows = self.run_optimizer([1., 1., 1.], 2)
+        self.assertTrue(rows[1]["accepted"])
         self.assertEqual(rows[1]["delta_f"], 0.)
+        self.assertEqual(states, [(0, 0), (1, 1), (2, 2)])
+        self.assertEqual([r["phase"] for r in rows], ["initial", "trial", "trial"])
+        self.assertEqual(len(list(self.root.glob("iter_*/evaluation_state.npz"))), 3)
+        self.assertTrue(all(r["updated"] for r in opt.history))
 
     def test_minimization_records_the_right_decision(self):
-        _, _, rows = self.run_optimizer([1., 1.5, .5], 1, maximize=False)
-        self.assertFalse(rows[1]["accepted"])
+        _, _, rows = self.run_optimizer([1., 1.5, .5], 2, maximize=False)
+        self.assertTrue(rows[1]["accepted"])
         self.assertTrue(rows[2]["accepted"])
-        self.assertEqual(rows[2]["objective_gain"], .5)
+        self.assertEqual(rows[1]["objective_gain"], -.5)
+        self.assertEqual(rows[2]["objective_gain"], 1.)
+
+    def test_non_finite_objective_still_aborts(self):
+        problem = Problem(self.root, [1., float("nan")])
+        opt = als.AdjointLevelSetOptimizer(problem, np.ones((3, 3)),
+                                           als.OptimizerConfig(pseudo_time_step=16.))
+        opt.velocity = lambda ls, fwd: (np.ones((3, 3)), abs(fwd.s), None, None)
+        with patch.object(als, "advect_levelset", return_value=self.ls.phi - .01), \
+                patch.object(als, "apply_constraints"):
+            with self.assertRaisesRegex(RuntimeError, "non-finite objective"):
+                opt.run(self.ls, 1)
+        self.assertEqual(opt.history, [])
 
     def test_multifrequency_samples_survive_later_solves(self):
         problem = Problem(self.root, [1.])

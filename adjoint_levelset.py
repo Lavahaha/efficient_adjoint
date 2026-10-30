@@ -15,7 +15,7 @@ What this module does (paper section in brackets)
 4. Level-set evolution  phi_t + V|grad phi| = 0 (upwind HJ, RK2)    [II-C, Eq. 26-31]
 5. Signed-distance reinitialisation, design-region / keep-metal /
    keep-air masks, connectivity constraint                         [III-A/B constraints]
-6. The outer loop with fixed pseudo-time and FoM backtracking
+6. The outer loop with a fixed pseudo-time step
 
 What it does NOT do: run the Maxwell solver. You plug that in through the small
 `Problem` interface (forward(), adjoint()). See
@@ -422,25 +422,24 @@ class AdjointLevelSetOptimizer:
             callback: Optional[Callable[[int, LevelSet, LevelSet, dict], None]] = None,
             state_callback: Optional[Callable[[int, LevelSet, ForwardResult], None]] = None,
             evaluation_callback: Optional[Callable[[LevelSet, ForwardResult, dict], None]] = None):
-        """Evolve with a fixed pseudo-time step and backtrack non-improving trials.
+        """Commit each valid update with the configured fixed pseudo-time step.
 
         The configured time step is independent of the current velocity
         magnitude, so a small shape derivative produces a proportionally small
         geometry update. CFL sub-stepping in :func:`advect_levelset` remains in
-        place for numerical stability. A trial is committed only when its FoM
-        improves; otherwise the same direction is retried with half the time
-        step. ``state_callback`` receives state 0 and every accepted state.
-        ``evaluation_callback`` receives every solved candidate, including
-        rejected trials and the final restore, before another solve starts.
+        place for numerical stability. FoM changes are recorded and do not
+        control geometry acceptance or the time step. ``state_callback`` receives
+        state 0 and every committed state. ``evaluation_callback`` receives each
+        solve before another solve starts.
         """
         cfg, dx = self.cfg, ls.grid.dx
         if not np.isfinite(cfg.pseudo_time_step) or cfg.pseudo_time_step <= 0.0:
             raise ValueError("pseudo_time_step must be finite and positive")
-        max_backtracks = 12
-        backtrack_factor = 0.5
         displacement_tolerance = 1e-3 * dx
         fwd = self.p.forward(ls)
         f_cur = problem_value(self.p, fwd)
+        if not np.isfinite(f_cur):
+            raise RuntimeError("Initial geometry produced a non-finite objective")
         if evaluation_callback:
             evaluation_callback(ls, fwd, dict(
                 phase="initial", it=None, accepted=None, reason="initial"))
@@ -489,80 +488,27 @@ class AdjointLevelSetOptimizer:
             ls_before, fwd_before, f_before = ls, fwd, f_cur
             eval_id_before = (fwd_before.extra.get("eval_id")
                               if isinstance(fwd_before.extra, dict) else None)
-            accepted = False
-            backtracks = 0
-            trial_fwd = None
-            trial = None
-            trial_f = f_before
-            trial_tau = pseudo_time_step
-            small_step_reached = False
-            for backtracks in range(max_backtracks + 1):
-                if trial_tau * vmax <= displacement_tolerance:
-                    small_step_reached = True
-                    break
-                trial = ls.copy()
-                trial.phi = advect_levelset(
-                    trial.phi, V, trial_tau, dx, cfl=cfg.cfl)
-                apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
-                if self.geometry_projector is not None:
-                    self.geometry_projector(trial)
-                if np.max(np.abs(trial.phi - ls.phi)) > 1e-12 * max(dx, 1.0):
-                    trial_fwd = self.p.forward(trial)
-                    trial_f = problem_value(self.p, trial_fwd)
-                    delta_f = trial_f - f_before
-                    objective_gain = delta_f if cfg.maximize else -delta_f
-                    accepted = bool(np.isfinite(objective_gain) and objective_gain > 0.0)
-                    if evaluation_callback:
-                        evaluation_callback(trial, trial_fwd, dict(
-                            phase="trial", it=it, backtracks=backtracks,
-                            pseudo_time_step_used=trial_tau,
-                            predicted_displacement=trial_tau * vmax,
-                            eval_id_before=eval_id_before, f_before=f_before,
-                            delta_f=delta_f, objective_gain=objective_gain,
-                            accepted=accepted,
-                            reason=("committed" if accepted else "no_improvement")))
-                    if accepted:
-                        break
-                if backtracks < max_backtracks:
-                    trial_tau *= backtrack_factor
-
-            if not accepted:
-                # A rejected trial may have replaced the solver's active
-                # geometry. Restore the last accepted shape before returning.
-                fwd = self.p.forward(ls)
-                if evaluation_callback:
-                    evaluation_callback(ls, fwd, dict(
-                        phase="restore", it=it, accepted=None,
-                        eval_id_before=eval_id_before, f_before=f_before,
-                        reason="restore_last_accepted"))
-                restored_eval_id = (fwd.extra.get("eval_id")
-                                    if isinstance(fwd.extra, dict) else None)
-                rec = dict(
-                    it=it, f_before=f_before, f_after=f_before, delta_f=0.0,
-                    objective_gain=0.0, relative_gain=0.0,
-                    pseudo_time_step_used=trial_tau,
-                    pseudo_time_step_next=trial_tau,
-                    predicted_displacement=trial_tau * vmax,
-                    updated=False, area=ls.area(), vmax=vmax,
-                    backtracks=backtracks, eval_id_before=eval_id_before,
-                    eval_id_after=restored_eval_id,
-                    reason=("converged_small_displacement" if small_step_reached
-                            else "line_search_failed"),
-                )
-                self.history.append(rec)
-                if callback:
-                    callback(it, ls_before, ls_before, rec)
-                self.stop_reason = (
-                    "converged_small_displacement" if small_step_reached
-                    else "line_search_failed")
-                break
-
-            fwd = trial_fwd
-            f_cur = trial_f
+            trial = ls.copy()
+            trial.phi = advect_levelset(
+                trial.phi, V, pseudo_time_step, dx, cfl=cfg.cfl)
+            apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
+            if self.geometry_projector is not None:
+                self.geometry_projector(trial)
+            fwd = self.p.forward(trial)
+            f_cur = problem_value(self.p, fwd)
+            if not np.isfinite(f_cur):
+                raise RuntimeError(f"Iteration {it} produced a non-finite objective")
             delta_f = f_cur - f_before
             objective_gain = delta_f if cfg.maximize else -delta_f
             relative_gain = objective_gain / max(abs(f_before), 1e-12)
-            pseudo_time_step = trial_tau
+            if evaluation_callback:
+                evaluation_callback(trial, fwd, dict(
+                    phase="trial", it=it, backtracks=0,
+                    pseudo_time_step_used=pseudo_time_step,
+                    predicted_displacement=predicted_displacement,
+                    eval_id_before=eval_id_before, f_before=f_before,
+                    delta_f=delta_f, objective_gain=objective_gain,
+                    accepted=True, reason="committed"))
             eval_id_after = (fwd.extra.get("eval_id")
                              if isinstance(fwd.extra, dict) else None)
             rec = dict(
@@ -573,7 +519,7 @@ class AdjointLevelSetOptimizer:
                 pseudo_time_step_next=pseudo_time_step,
                 predicted_displacement=pseudo_time_step * vmax,
                 updated=True, area=trial.area(), vmax=vmax,
-                backtracks=backtracks,
+                backtracks=0,
                 eval_id_before=eval_id_before, eval_id_after=eval_id_after,
                 reason="committed",
             )
@@ -590,7 +536,7 @@ class AdjointLevelSetOptimizer:
 # Gradient verification (do this FIRST on any new solver adapter)
 # ----------------------------------------------------------------------------
 def problem_value(problem: Problem, fwd: ForwardResult) -> float:
-    """Evaluate the same objective for initial, trial and restored geometries."""
+    """Evaluate the same objective for initial and updated geometries."""
     if hasattr(problem, "objective_value"):
         return float(problem.objective_value(fwd))
     return fom_value_and_weight(fwd.s, problem.fom_kind)[0]

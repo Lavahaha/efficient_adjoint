@@ -60,13 +60,14 @@ python scripts/run_antenna_adjoint_levelset.py --help
 金属内 φ < 0，外部 φ > 0，正法向速度使金属扩张。几何约束包括最小间距、
 最小特征尺寸以及按案例启用的连通性修复。
 
-优化器使用 `optimizer.pseudo_time_step` 作为初始伪时间步，按 CFL 划分演化子步。
-候选形状只有在目标改善时才接受，否则减半时间步并回溯；每次更新都重初始化
-符号距离。`optimizer.max_iterations` 控制最大迭代次数。
+优化器每轮使用配置中的固定 `optimizer.pseudo_time_step`，按 CFL 划分演化子步。
+每轮有效几何直接提交并记录，FoM 上升、下降或不变均不影响提交，也不改变时间步。
+每次更新都重初始化符号距离；保留零速度、极小预测位移的停止条件及几何和数值校验。
+`optimizer.max_iterations` 控制最大迭代次数。
 
 单频路径保留原有的实部形状灵敏度约定，不额外乘 S 参数相位因子。
 双频路径按各频点的角频率计算灵敏度，通过 dB 目标的复数链式因子和 soft-min
-动态权重汇总梯度；初始评估、候选接受和有限差分检查均使用相同的双频目标。
+动态权重汇总梯度；初始评估、迭代记录和有限差分检查均使用相同的双频目标。
 双频目标的值以 dB 余量表示，不等于单个频点的 S 参数幅值。
 
 YAML 中保留当前优化器实际使用的参数：
@@ -85,7 +86,7 @@ CST 的材料、频率、场导出步长、端口、求解设置和工程路径�
 ## 项目结构
 
 ```text
-adjoint_levelset.py       # 唯一优化核心、水平集演化、回溯与梯度检查
+adjoint_levelset.py       # 唯一优化核心、固定时间步水平集演化与梯度检查
 eaopt/
   runner.py              # 公共案例运行器、单频/双频 CST 适配
   config.py              # YAML 配置与校验
@@ -110,29 +111,30 @@ docs/server_runbook.md   # 服务器操作说明
 默认写入 `<output.dir>/adjoint_levelset/`，`--output-dir` 可直接指定运行目录。
 
 - `iter_NNN/`：一次 CST 求解评估的几何、S 参数与可选场数据；编号是评估编号，
-  包括回溯和梯度检查产生的求解，不等同于已接受的优化迭代编号。
+  包括初始评估、每轮更新和梯度检查产生的求解，不等同于优化迭代编号。
 - 每个 `iter_NNN/` 还保存输入水平集 `levelset.npz`、本次评估的
-  `evaluation.json`（目标值、接受/拒绝原因、回溯次数和时间步）、
+  `evaluation.json`（目标值、更新状态和固定时间步）、
   `evaluation_state.npz`（形状、前向采样面 E/H 和整板电场幅值）及 `evaluation.png`。
-  不改善目标的候选也全部保存；恢复求解和有限差分检查单独编号。
+  FoM 下降或不变的更新也全部保存；有限差分检查单独编号。
   输入水平集在建模前保存，因此建模或求解失败时仍能定位候选形状。
-- `optimization_evaluations.jsonl`：逐次评估记录，包含初始、接受、拒绝、恢复与梯度检查；
-  每次求解完成即追加写入，`accepted` 仅对优化候选为 true/false，其他类型为 null。
-- `adjoint_levelset_history.jsonl`：每次更新的目标变化、时间步、回溯次数及接受状态。
+- `optimization_evaluations.jsonl`：逐次评估记录，包含初始、每轮提交与梯度检查；
+  每次求解完成即追加写入，每轮提交的 `accepted` 为 true，初始和梯度检查为 null。
+- `adjoint_levelset_history.jsonl`：每次更新的目标变化、固定时间步及更新状态。
+  为兼容旧记录读取代码，`backtracks` 保留为 0，`pseudo_time_step_next` 等于固定时间步。
 - `cst_evaluations.jsonl`：CST 评估日志。
 - `run_config.json`：本次生效的优化配置、CST 设置与命令行参数。
 - `adjoint_levelset_state_NNN.npz`、`phi_before_iter_NNN.npz`、`phi_after_iter_NNN.npz`：状态快照。
 - `fig6b_iter_NNN.png`、`fig7_sparams_vs_iteration.png`：布局/场图与 S 参数曲线；
   双频曲线带有频点标签，场图显示配置中的第一个目标频点。
-- `sparams_history.json` 及 `fig7_sparams_vs_iteration.png` 只包含初始和已接受状态，
-  恢复求解不会重写已接受状态的快照；`fig7_sparams_vs_evaluation.png` 展示全部评估。
+- `sparams_history.json` 及 `fig7_sparams_vs_iteration.png` 包含初始和每轮提交状态；
+  `fig7_sparams_vs_evaluation.png` 展示全部评估，包括有限差分检查。
 - `phi_final.npz`、`final_shape.json`、`adjoint_levelset_summary.json`：最终形状和运行摘要。
 
 ```bash
 # 重绘统一优化器的结果
 python scripts/plot_coupler_adjoint_levelset.py --help
 
-# 重绘所有候选（含拒绝/恢复/梯度检查），output-dir 使用本次实际运行目录
+# 重绘全部评估（含梯度检查），output-dir 使用本次实际运行目录
 python scripts/plot_coupler_adjoint_levelset.py --output-dir results/coupler/adjoint_levelset --only evaluations
 
 # 渲染模型布局参考图
