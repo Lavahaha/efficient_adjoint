@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
     "scikit-image>=0.22",
+    "shapely>=2.0,<3",
     "pyyaml>=6.0",
     "matplotlib>=3.8",
     "scikit-fmm>=2025.6.23; python_version < '3.14'",

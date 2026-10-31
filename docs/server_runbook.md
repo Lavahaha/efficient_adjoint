@@ -14,6 +14,7 @@ python -c "import cst.interface; import cst.results; print(cst.interface.__file_
 仓库根目录不要创建 `cst/`，否则可能遮蔽官方库。运行前检查 YAML 的
 `output.dir`。非空输出目录会自动生成 `run_<UTC时间戳>/` 子目录，
 以控制台打印的本次路径为准；旧日志、快照和 CST 工程不会被覆盖。当前不支持断点续跑。
+新增 Shapely 几何依赖后须重新执行 `pip install -e .`。
 
 ## 1. 小规模验收
 
@@ -30,6 +31,9 @@ python scripts/run_divider_multifreq.py --iterations 2 --output-dir results/divi
 检查模型 History List 非空，保存并关闭后重新打开 `.cst`，确认几何与端口仍在。
 CST 工程包含 `.cst` 文件及其同名文件夹，复制工程时两者一起复制。
 前向激励为目标输入端口，伴随激励为观测端口；天线 S11 使用同端口场。
+`initial_metal` 是完整初始金属，`design_region.box` 只限定水平集定义域与演化范围。
+缩小设计区不会裁掉区外初始金属；重建和绘图均使用“区外初始金属 + 区内演化金属”。
+改变设计区后检查完整初始形状与馈电连接，不必跟随红框修改初始金属顶点。
 
 检查运行目录的形状快照、场图与目标变化。每轮使用配置中的固定伪时间步，
 有效几何直接提交；FoM 下降或不变也会继续记录，不执行 FoM 筛选或回溯减步。
@@ -82,3 +86,4 @@ python scripts/cst_update.py --help
 旧 pipeline、过期诊断脚本及 `tests/` 已移除。记录逻辑可用
 `python scripts/check_evaluation_recording.py` 离线回归检查；真实计算仍须通过
 有限差分检查和 CST 小规模验收。
+`python scripts/check_design_geometry.py` 覆盖四个案例的区外金属保留、连接边界、孔洞、CST 重建和完整运行记录。

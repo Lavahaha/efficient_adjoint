@@ -142,7 +142,7 @@ class CaseConfig:
     description: str = ""
     objective: ObjectiveSpec = field(default_factory=ObjectiveSpec)
     design_region: Optional[DesignRegionSpec] = None
-    # 设计区内的初始金属多边形（金属在 φ<0 侧）
+    # 完整初始金属多边形；设计区外的部分固定保留，区内用 φ<0 演化。
     initial_metal: list[PolygonSpec] = field(default_factory=list)
     # 固定材料区（速度强制为 0，不参与优化；如直通线、设计区外的馈线段）
     fixed_region: list[PolygonSpec] = field(default_factory=list)

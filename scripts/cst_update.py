@@ -28,6 +28,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 try:                        # CST 官方库只支持 Python 3.6–3.11
     import cst.interface as csti
 except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意义
@@ -43,8 +45,8 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.cli import base_parser, banner, make_log, report_solution, safe_console
-from eaopt.geometry.contour import (SIMPLIFY_TOL_CELLS, classify_metal_regions,
-                                    close_open_contours)
+from eaopt.geometry.contour import SIMPLIFY_MAX_POINTS, classify_metal_regions, close_open_contours
+from eaopt.geometry.design import compose_metal_regions, region_rings
 from eaopt.config import CaseConfig
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution
@@ -65,6 +67,7 @@ def main(argv=None) -> int:
     log = make_log(args.log)
     cfg = CaseConfig.from_yaml(args.config)
     setup, M = load_case(cfg)          # 算例（CstSetup + 模板模块）由 cfg.name 选
+    tags = (("fwd",) if cfg.objective.from_port == cfg.objective.to_port else artifacts.TAGS)
     banner(log, "更新形状", cfg, setup)
 
     try:
@@ -79,7 +82,7 @@ def main(argv=None) -> int:
                       quiet=setup.quiet_mode)
         projects = {tag: _open_or_reuse(
             de, setup.project_path(tag, cfg.output.dir, cfg.name), log)
-            for tag in artifacts.TAGS}
+            for tag in tags}
         # 两个工程都改成功后才落盘形状——半施加状态不留形状记录
         for tag, prj in projects.items():
             if setup.clear_results:
@@ -108,7 +111,7 @@ def main(argv=None) -> int:
     except Exception as e:
         log(f"[FAIL] 形状更新失败：{e}")
         return 1
-    for tag in artifacts.TAGS:
+    for tag in tags:
         report_solution(log, cfg, sols[tag], tag, n,
                         setup.project_path(tag, cfg.output.dir, cfg.name))
     return 0
@@ -362,31 +365,36 @@ def _next_iteration(cfg: CaseConfig, iteration) -> int:
 def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
     """``--shape`` 与 ``--from-ls`` 必须且只能给一个。
 
-    返回**可直接施加**的多边形：开放路径（金属穿出设计区两端）先按设计区
-    闭合——Extrude 需要一个闭合截面，且 runner（``CstSolver.build_model``）
-    走的是同一条规则。两处不一致的话，同一份 φ 会得到两种几何。
+    JSON 提供完整多边形（末点可省略首点）；水平集快照与 runner 使用同一拼合。
     """
     if bool(args.shape) == bool(args.from_ls):
         raise SystemExit("必须且只能给 --shape 或 --from-ls 之一"
                          "（--shape 给文件，--from-ls 用最近一轮的 φ 快照）")
     if args.shape:
         polys = artifacts.load_shape(args.shape)
+        polys = [np.vstack([p, p[0]]) if len(p) and not np.allclose(p[0], p[-1])
+                 else p for p in polys]
         log(f"[OK] 形状来自文件：{args.shape}")
     else:
-        last = artifacts.latest_iteration(cfg.output.dir)
+        last = artifacts.latest_iteration(cfg.output.dir, tags=("fwd",))
         if last is None:
             raise SystemExit("还没有任何轮次，--from-ls 无从取起；先用 --shape "
                              "给一个形状文件")
-        npz = artifacts.iteration_dir(cfg.output.dir, last) / "ls_phi.npz"
+        directory = artifacts.iteration_dir(cfg.output.dir, last)
+        npz = directory / "levelset.npz"
+        if not npz.is_file():
+            npz = directory / "ls_phi.npz"
         if not npz.is_file():
             raise SystemExit(f"缺少 φ 快照 {npz}（只有 runner 跑过的轮次才有）")
-        polys = _contours_from_phi(cfg, artifacts.load_ls_phi(npz), log=log)
-    # 与 CstSolver.build_model 同一套参数：网格描线不简化就送 CST 会撞上
-    # Extrude 的点表容量（2026-10-09 功分器实测），容差 = 0.2 格。
+        with np.load(npz, allow_pickle=False) as data:
+            polys = _contours_from_phi(cfg, dict(data), log=log)
+    if any(len(p) < 4 or not np.allclose(p[0], p[-1]) for p in polys):
+        raise ValueError("--shape 需要完整闭合多边形，不能沿 design_region 猜测封口")
+    if any(len(p) > SIMPLIFY_MAX_POINTS for p in polys):
+        raise ValueError("完整金属轮廓超过 CST 点数上限；请先在设计区内简化")
     closed = close_open_contours(
         polys, cfg.design_region.box,
-        pad_mm=float(getattr(model, "DESIGN_BOUNDARY_PAD_MM", 0.05)),
-        simplify_tol_mm=SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm,
+        pad_mm=0.0, simplify_tol_mm=0.0,
         allow_nested=bool(getattr(model, "SUPPORTS_NESTED_CONTOURS", False)),
     )
     if getattr(model, "SUPPORTS_NESTED_CONTOURS", False):
@@ -397,7 +405,6 @@ def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
 def _contours_from_phi(cfg: CaseConfig, snap: dict, *, log=print):
     """由 φ 快照提取可动轮廓（与 runner 同一套提取 + 重采样）。"""
     from eaopt.geometry.levelset import LevelSet2D
-    import adjoint_levelset as als
 
     ls = LevelSet2D(cfg.design_region.box, cfg.design_region.grid_step_mm)
     if snap["phi"].shape != (ls.nx, ls.ny):
@@ -405,9 +412,12 @@ def _contours_from_phi(cfg: CaseConfig, snap: dict, *, log=print):
             f"φ 快照尺寸 {snap['phi'].shape} 与当前配置的网格 "
             f"{(ls.nx, ls.ny)} 不符——配置改过了？删掉旧的 iter_*/ 再跑。")
     ls.phi = snap["phi"]
+    for key, legacy_key, expected in (("x", "xs", ls.xs), ("y", "ys", ls.ys)):
+        actual = np.asarray(snap.get(key, snap.get(legacy_key)))
+        if actual.shape != expected.shape or not np.allclose(actual, expected, rtol=0., atol=1e-9):
+            raise ValueError("水平集快照坐标与 design_region 不一致；请使用运行时配置")
     log(f"[OK] 形状来自 φ 快照（{ls.nx}×{ls.ny}）")
-    grid = als.Grid2D(ls.nx, ls.ny, ls.dx, float(ls.xs[0]), float(ls.ys[0]))
-    return als.boundary_polygons(als.LevelSet(grid, ls.phi))
+    return region_rings(compose_metal_regions(cfg, ls.phi))
 
 
 if __name__ == "__main__":

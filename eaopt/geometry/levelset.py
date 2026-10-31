@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+from shapely import contains_xy, distance, points
 
 from eaopt.config import BoxSpec, CaseConfig
+from eaopt.geometry.design import polygon_union
 
 __all__ = ["LevelSet2D", "make_level_set"]
 
@@ -29,44 +31,18 @@ class LevelSet2D:
 
         polygons: list of (N,2) 顶点数组。金属内 φ<0。
         """
-        from matplotlib.path import Path
-
         X, Y = np.meshgrid(self.xs, self.ys, indexing="ij")
         pts = np.stack([X.ravel(), Y.ravel()], axis=1)
-        dist = np.full(len(pts), np.inf)
-        inside = np.zeros(len(pts), dtype=bool)
-        for poly in polygons:
-            p = np.asarray(poly, dtype=float)
-            if not np.allclose(p[0], p[-1]):
-                p = np.vstack([p, p[0]])
-            dist = np.minimum(dist, _polygon_distance(pts, p))
-            inside |= Path(p).contains_points(pts)
-        # 边界上的节点算金属。``contains_points`` 对正好落在边上的点是随机
-        # 判的，而本算例的臂顶边 y=0 恰好压着一条节点行——不显式判一下，
-        # 那一行的 φ 就是 ±1e-15 的噪声，画出来是一排假毛刺（几何其实没错：
-        # 轮廓提取在两行之间插值，界面照样正好落在 y=0）。
+        metal = polygon_union(polygons)
+        if metal.is_empty:
+            raise ValueError("至少需要一个初始金属多边形")
+        dist = distance(metal.boundary, points(pts))
+        inside = contains_xy(metal, pts[:, 0], pts[:, 1])
+        # 边界节点统一归金属，避免浮点残差造成符号抖动。
         inside |= dist <= _ON_INTERFACE_MM
         s = np.where(inside, -1.0, 1.0)
         self.phi = (s * dist).reshape(self.nx, self.ny)
         return self
-
-    # ------------------------------------------------------------------ #
-    # HJ 演化
-    # ------------------------------------------------------------------ #
-
-
-    # ------------------------------------------------------------------ #
-    # 重初始化
-    # ------------------------------------------------------------------ #
-
-    # ------------------------------------------------------------------ #
-    # 法向提取
-    # ------------------------------------------------------------------ #
-
-    # ------------------------------------------------------------------ #
-    # 速度延拓
-    # ------------------------------------------------------------------ #
-
 
 # ---------------------------------------------------------------------- #
 # 内部工具
@@ -74,22 +50,6 @@ class LevelSet2D:
 #: 多边形的边界节点归金属的判据（mm）。1e-9 是"浮点残差"量级——线段距离在
 #: 边界点上算出的是 0 或 ~1e-15 的残差，而真实几何的最小间距是 0.1 mm 量级。
 _ON_INTERFACE_MM = 1e-9
-
-
-def _segment_distance(pts: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """pts (N,2) 到线段 ab 的距离。"""
-    ab = b - a
-    t = np.clip((pts - a) @ ab / (ab @ ab), 0.0, 1.0)
-    proj = a + t[:, None] * ab
-    return np.linalg.norm(pts - proj, axis=1)
-
-
-def _polygon_distance(pts: np.ndarray, p: np.ndarray) -> np.ndarray:
-    """pts (N,2) 到多边形 p (M,2，已闭合) 边界的最小距离。"""
-    d = np.full(len(pts), np.inf)
-    for i in range(len(p) - 1):
-        d = np.minimum(d, _segment_distance(pts, p[i], p[i + 1]))
-    return d
 
 
 def make_level_set(cfg: CaseConfig) -> LevelSet2D:

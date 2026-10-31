@@ -359,21 +359,10 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
             zorder=4,
         ))
 
-    if np.min(phi) < 0.0 < np.max(phi):
-        ax.contour(x, y, phi.T, levels=[0.0], colors=["white"],
-                   linewidths=metal_outline_width, zorder=6)
-    elif np.min(phi) < 0.0 and np.max(phi) <= 0.0:
-        # With no air nodes the metal fills the design box, so its boundary is
-        # the box edge rather than an interior zero contour.
-        ax.add_patch(MplPolygon(
-            [(cfg.design_region.box.x[0], cfg.design_region.box.y[0]),
-             (cfg.design_region.box.x[1], cfg.design_region.box.y[0]),
-             (cfg.design_region.box.x[1], cfg.design_region.box.y[1]),
-             (cfg.design_region.box.x[0], cfg.design_region.box.y[1])],
-            closed=True, fill=False, edgecolor="white",
-            linewidth=metal_outline_width,
-            zorder=6,
-        ))
+    from eaopt.geometry.design import compose_metal_regions, region_rings
+    for ring in region_rings(compose_metal_regions(cfg, phi)):
+        ax.plot(ring[:, 0], ring[:, 1], color="white",
+                linewidth=metal_outline_width, zorder=6)
 
     # Mark the substrate edge and the movable design box over the field map.
     sx0, sx1 = float(substrate_pts[:, 0].min()), float(substrate_pts[:, 0].max())

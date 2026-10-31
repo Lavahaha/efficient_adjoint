@@ -21,6 +21,7 @@ pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" cst
 
 `scikit-fmm` 用于符号距离重初始化；未安装时回退到 SciPy 距离变换。
 Python 3.14 环境默认跳过该依赖。仓库根目录不要创建 `cst/`，以免遮蔽官方库。
+Shapely 用于金属多边形的差集、并集与孔洞处理；更新代码后重新执行 `pip install -e .` 安装新增依赖。
 
 ## 运行案例
 
@@ -59,6 +60,13 @@ python scripts/run_antenna_adjoint_levelset.py --help
 将边界速度延拓到网格后，通过 Hamilton–Jacobi 方程演化水平集。
 金属内 φ < 0，外部 φ > 0，正法向速度使金属扩张。几何约束包括最小间距、
 最小特征尺寸以及按案例启用的连通性修复。
+
+水平集只定义在 `design_region.box` 内。`initial_metal` 定义完整初始金属：
+区内部分由水平集演化，区外部分固定保留，每次重建取两者的几何并集，再加上 CST 模板的固定金属。
+例如 coupler 的设计区 x 改为 `[0.5, 11.5]`，初始金属仍覆盖 `[0, 12]`，
+两侧连接段自动保留。初始迭代直接使用原始多边形，避免网格化改变初始形状。
+与区外初始金属或固定馈线接触的设计区边界保持初始水平集值；其他边界仍可生长到设计区边缘。
+几何简化在区内拼合前完成，不移动区外固定金属；图和 `shape.json`/`final_shape.json` 展示并保存完整金属。
 
 优化器每轮使用配置中的固定 `optimizer.pseudo_time_step`，按 CFL 划分演化子步。
 每轮有效几何直接提交并记录，FoM 上升、下降或不变均不影响提交，也不改变时间步。
@@ -149,6 +157,7 @@ python scripts/plot_layout.py configs/divider.yaml
 ```bash
 # 无需 CST 和 pytest 的记录逻辑回归检查
 python scripts/check_evaluation_recording.py
+python scripts/check_design_geometry.py
 ```
 
 使用四个案例入口的 `--help` 检查参数和导入，使用 `--gradient-check` 在配置好

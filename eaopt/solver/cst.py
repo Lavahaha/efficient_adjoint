@@ -23,6 +23,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import numpy as np
+
 try:                        # CST 官方库只支持 Python 3.6–3.11
     import cst.interface as csti
 except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意义
@@ -38,8 +40,7 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.config import CaseConfig
-from eaopt.geometry.contour import (SIMPLIFY_TOL_CELLS, classify_metal_regions,
-                                    close_open_contours)
+from eaopt.geometry.contour import SIMPLIFY_MAX_POINTS, classify_metal_regions, close_open_contours
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import FrequencyResult, Solution, SolverInterface
 from eaopt.solver.case import load_case
@@ -161,20 +162,20 @@ class CstSolver(SolverInterface):
         ``clear_results`` 打开时，每轮**先清上一轮的结果再改形状**：CST 在
         "已有结果 + 模型要变"时会弹确认框，GUI 模式下脚本会卡在那一行。
 
-        movable: 可动金属轮廓（世界坐标 mm，开放路径按设计区裁剪闭合）；
+        movable: 完整闭合金属轮廓，含区外初始金属（世界坐标 mm）；
         fixed: 固定金属与馈线——**模板里已经有了，这里忽略**（固定几何只在
         建模板时写一次，runner 不重复施加）。
         """
-        # 送 CST 前必须简化：网格描线（尤其斜边界）点数可达 800+，超过 CST
-        # ``Extrude .Create`` 的点表容量后它只回一句 "Profile is
-        # self-intersecting"（2026-10-09 功分器 Stage 1 实测）。容差 = 0.2 格。
+        # 区内简化在拼合前完成；这里不能再移动区外固定轮廓。
         self.last_prepared_polys = None
-        boundary_pad = float(getattr(self.M, "DESIGN_BOUNDARY_PAD_MM", 0.05))
         supports_nested = bool(getattr(self.M, "SUPPORTS_NESTED_CONTOURS", False))
+        if any(len(poly) < 4 or not np.allclose(poly[0], poly[-1]) for poly in movable):
+            raise ValueError("CST 重建需要完整闭合轮廓；先拼合设计区内外金属")
+        if any(len(poly) > SIMPLIFY_MAX_POINTS for poly in movable):
+            raise ValueError("完整金属轮廓超过 CST 点数上限；请先在设计区内简化")
         polys = close_open_contours(
             movable, self.cfg.design_region.box,
-            pad_mm=boundary_pad,
-            simplify_tol_mm=SIMPLIFY_TOL_CELLS * self.cfg.design_region.grid_step_mm,
+            pad_mm=0.0, simplify_tol_mm=0.0,
             allow_nested=supports_nested,
         )
         if not polys:

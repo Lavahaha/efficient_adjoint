@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from scipy import ndimage
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -29,7 +28,7 @@ from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_feature,
 from eaopt.optimize.objective import multi_frequency_fom
 from eaopt.solver.case import load_case
 from eaopt import artifacts, plotting
-from eaopt.geometry.contour import classify_metal_regions
+from eaopt.geometry.design import compose_metal_regions, connection_boundary_mask, region_rings
 
 
 def _select_z_plane(field, requested_z_mm: float, metal_thickness_mm: float) -> tuple[int, float]:
@@ -175,9 +174,8 @@ class CstAdjointLevelSetProblem:
                             x=ls.grid.x, y=ls.grid.y, cst_eval_id=eval_id)
         contours = None
         try:
-            metal = ls.phi < 0.0
-            enclosed_air = ndimage.binary_fill_holes(metal) & ~metal
-            if (enclosed_air.any() and
+            regions = compose_metal_regions(self.cfg, ls.phi)
+            if (any(region.holes for region in regions) and
                     not getattr(self.solver.M, "SUPPORTS_NESTED_CONTOURS", False)):
                 raise ValueError(
                     "The current level set contains an enclosed air hole. The existing "
@@ -185,7 +183,7 @@ class CstAdjointLevelSetProblem:
                     "cannot represent hole subtraction; the solve was stopped to avoid "
                     "evaluating a different geometry."
                 )
-            contours = als.boundary_polygons(ls)
+            contours = region_rings(regions)
             if hasattr(self.solver, "last_prepared_polys"):
                 self.solver.last_prepared_polys = None
             self.solver.begin_iteration(eval_id)
@@ -465,6 +463,8 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
                       x0=float(ls_old.xs[0]), y0=float(ls_old.ys[0]))
     ls = als.LevelSet(grid, ls_old.phi)
     design_mask, force_metal, force_air, anchor = _movement_constraints(ls_old, cfg)
+    pinned_boundary = connection_boundary_mask(ls_old, cfg, model.fixed_metal_polygons())
+    design_mask[pinned_boundary] = 0.0
     topology_guard = (ConnectivityGuard(ls_old, cfg, log=log)
                      if cfg.constraints.require_connected else None)
     if topology_guard is not None:
@@ -476,10 +476,12 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     def project_geometry(trial):
         """Apply shared geometric projections and repair connectivity in place."""
         topology_candidate.phi = np.asarray(trial.phi, dtype=float).copy()
+        topology_candidate.phi[pinned_boundary] = ls_old.phi[pinned_boundary]
         apply_min_gap(topology_candidate, cfg)
         apply_min_feature(
             topology_candidate, cfg.constraints.min_feature_mm,
             force_air=force_air, force_metal=force_metal)
+        topology_candidate.phi[pinned_boundary] = ls_old.phi[pinned_boundary]
         if topology_guard is not None and not topology_guard.apply(topology_candidate, log=log):
             raise RuntimeError(
                 "Connectivity repair failed for the updated geometry; refusing to "
@@ -487,10 +489,12 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             )
         trial.phi = topology_candidate.phi.copy()
         trial.reinit()
+        trial.phi[pinned_boundary] = ls_old.phi[pinned_boundary]
         if topology_guard is not None:
             design_mask[:] = build_velocity_mask(
                 topology_candidate, cfg, taper_mm=1.0,
                 frozen=topology_guard.frozen)
+            design_mask[pinned_boundary] = 0.0
 
     field_step_xy_mm = setup.resolve_export_steps(cfg.field_export_step_mm)[0]
     if args.sample_offset_mm is not None:
@@ -634,26 +638,15 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
         )
         final_fom = (optimizer.history[-1]["f_after"] if optimizer.history
                      else float("nan"))
-        final_contours = als.boundary_polygons(final_ls)
-        if getattr(model, "SUPPORTS_NESTED_CONTOURS", False):
-            final_regions = classify_metal_regions(final_contours)
-            final_polygons = [region.outer for region in final_regions]
-            final_polygons += [
-                hole for region in final_regions for hole in region.holes]
-            final_shape = {
-                "unit": "mm",
-                "n_polygons": len(final_polygons),
-                "polygons": [polygon.tolist() for polygon in final_polygons],
-                "regions": [
-                    {"outer": region.outer.tolist(),
-                     "holes": [hole.tolist() for hole in region.holes],
-                     "depth": region.depth}
-                    for region in final_regions
-                ],
-            }
-        else:
-            final_shape = [np.asarray(poly, dtype=float).tolist()
-                           for poly in final_contours]
+        final_regions = compose_metal_regions(cfg, final_ls.phi)
+        final_polygons = region_rings(final_regions)
+        final_shape = {
+            "unit": "mm", "n_polygons": len(final_polygons),
+            "polygons": [polygon.tolist() for polygon in final_polygons],
+            "regions": [{"outer": region.outer.tolist(),
+                         "holes": [hole.tolist() for hole in region.holes]}
+                        for region in final_regions],
+        }
         _write_json(output_dir / "final_shape.json", final_shape)
         plotting.adjoint_levelset_sparams_figure(
             cfg, sparams_history, output_dir / "fig7_sparams_vs_iteration.png")
