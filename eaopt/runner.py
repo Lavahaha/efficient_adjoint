@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from shapely.geometry import Point, Polygon
+from shapely.ops import unary_union
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -29,6 +31,27 @@ from eaopt.optimize.objective import multi_frequency_fom
 from eaopt.solver.case import load_case
 from eaopt import artifacts, plotting
 from eaopt.geometry.design import compose_metal_regions, connection_boundary_mask, region_rings
+from eaopt.geometry.contour import classify_metal_regions
+
+
+def boundary_sample_points(boundary, offset_mm, z_mm, setup, metal, substrate, air_top_mm):
+    """One material side, with explicit validation against the actual CAD."""
+    if not np.isfinite([offset_mm, z_mm]).all() or offset_mm <= 0:
+        raise ValueError("Direct PEC samples require a finite positive outward offset and finite z")
+    if not (-setup.substrate_h_mm < z_mm < air_top_mm) or abs(z_mm) <= 1e-9:
+        raise ValueError("Choose a nonzero sampling z strictly inside substrate or air, away from interfaces")
+    indices = np.flatnonzero(boundary.active)
+    xy = boundary.pts[indices] + offset_mm * boundary.normals[indices]
+    if not len(indices) or not np.isfinite(xy).all():
+        raise ValueError("No finite active boundary sample points")
+    invalid = [int(i) for i, p in zip(indices, xy)
+               if not substrate.contains(Point(p)) or
+               (0 < z_mm <= setup.metal_thickness_mm and metal.covers(Point(p)))]
+    if invalid:
+        raise ValueError(f"Boundary sample points outside substrate footprint or in PEC: {invalid[:20]} (total {len(invalid)})")
+    points = np.column_stack([xy, np.full(len(xy), z_mm)])
+    eps = als.EPS0 * (setup.eps_r if z_mm < 0 else 1.0)
+    return points, eps, indices
 
 
 def _select_z_plane(field, requested_z_mm: float, metal_thickness_mm: float) -> tuple[int, float]:
@@ -63,7 +86,7 @@ def _select_z_plane(field, requested_z_mm: float, metal_thickness_mm: float) -> 
     return i_near, z_near
 
 
-def _field_bundle(solution, requested_z_mm: float, metal_thickness_mm: float):
+def _field_bundle(solution, requested_z_mm: float, metal_thickness_mm: float, *, direct_plane=False):
     if solution.e_field is None or solution.h_field is None:
         raise ValueError("CST did not return both E and H field grids")
 
@@ -74,8 +97,15 @@ def _field_bundle(solution, requested_z_mm: float, metal_thickness_mm: float):
                 not np.allclose(axes_e[axis_i], axes_h[axis_i], rtol=0.0, atol=1e-9)):
             raise ValueError(f"CST E and H {axis_name} axes do not match")
 
-    iz_e, z_e = _select_z_plane(e_grid, requested_z_mm, metal_thickness_mm)
-    iz_h, z_h = _select_z_plane(h_grid, requested_z_mm, metal_thickness_mm)
+    if direct_plane:
+        if any(len(axis[2])!=1 or not np.isclose(axis[2][0],requested_z_mm,rtol=0,atol=1e-9)
+               for axis in (axes_e,axes_h)):
+            raise ValueError("Direct display plane differs from requested z")
+        iz_e=iz_h=0
+        z_e,z_h=float(axes_e[2][0]),float(axes_h[2][0])
+    else:
+        iz_e, z_e = _select_z_plane(e_grid, requested_z_mm, metal_thickness_mm)
+        iz_h, z_h = _select_z_plane(h_grid, requested_z_mm, metal_thickness_mm)
     if abs(z_e - z_h) > 1e-9:
         raise ValueError(f"CST E/H fields selected different z planes ({z_e:g}, {z_h:g} mm)")
 
@@ -91,11 +121,18 @@ class CstAdjointLevelSetProblem:
     mu = als.MU0
 
     def __init__(self, cfg, setup, solver, sample_offset_mm: float,
-                 prefactor_scale: float, output_dir: Path, log=print):
+                 prefactor_scale: float, output_dir: Path, log=print,
+                 boundary_sampling: str = "grid", adjoint_source: str = "unit"):
         self.cfg = cfg
         self.setup = setup
         self.solver = solver
         self.sample_offset = float(sample_offset_mm)
+        if boundary_sampling not in ("grid", "cst-points"):
+            raise ValueError(f"Unknown boundary sampling: {boundary_sampling}")
+        self.boundary_sampling = boundary_sampling
+        if adjoint_source not in ("unit", "objective"):
+            raise ValueError(f"Unknown adjoint source: {adjoint_source}")
+        self.adjoint_source = adjoint_source
         self.eps = als.EPS0 * float(setup.eps_r)
         omega = 2.0 * np.pi * float(setup.frequency_ghz) * 1e9
         pin = float(setup.port_power_w)
@@ -200,7 +237,8 @@ class CstAdjointLevelSetProblem:
         if self.s_key not in sol.s_params:
             raise KeyError(f"CST forward result is missing S{self.s_key[0]},{self.s_key[1]}")
         fields, z_used = _field_bundle(
-            sol, self.requested_z_mm, self.setup.metal_thickness_mm)
+            sol, self.requested_z_mm, self.setup.metal_thickness_mm,
+            direct_plane=getattr(self.solver,"point_sampling",False))
         # Negative z samples the substrate side of the metal interface; planes
         # above the conductor are in the CST vacuum region.
         self.eps = als.EPS0 * (
@@ -216,8 +254,12 @@ class CstAdjointLevelSetProblem:
             "s_real": s.real,
             "s_imag": s.imag,
             "objective_value": fom,
-            "field_z_mm": z_used,
-            "eps_f_per_m": self.eps,
+            "field_z_mm": self.requested_z_mm if self.boundary_sampling == "cst-points" else z_used,
+            "grid_field_z_mm": z_used,
+            "grid_field_role": "plot" if self.boundary_sampling == "cst-points" else "gradient",
+            "gradient_field_z_mm": self.requested_z_mm if self.boundary_sampling == "cst-points" else z_used,
+            "eps_f_per_m": (als.EPS0*(self.setup.eps_r if self.requested_z_mm<0 else 1.0)
+                             if self.boundary_sampling == "cst-points" else self.eps),
             "sample_offset_mm": self.sample_offset,
         })
         self.log(f"[adjoint_levelset] forward eval={eval_id:03d}: "
@@ -246,9 +288,84 @@ class CstAdjointLevelSetProblem:
     def objective_value(self, fwd):
         return fwd.extra["objective_value"]
 
+    def _point_gradient(self, fwd, boundary):
+        indices = np.flatnonzero(boundary.active)
+        if not len(indices):
+            return np.zeros(len(boundary.pts))
+        model = self.solver.M
+        regions = classify_metal_regions(self.solver.last_prepared_polys)
+        metal = unary_union([Polygon(r.outer, r.holes) for r in regions] +
+                            [Polygon(p) for p in model.fixed_metal_polygons()])
+        substrate = unary_union([Polygon(p) for kind, p, _ in model.layout_view()["shapes"]
+                                 if kind == "substrate"])
+        folder = artifacts.iteration_dir(self.output_dir, fwd.extra["eval_id"])
+        try:
+            points, eps, indices = boundary_sample_points(
+                boundary, self.sample_offset, self.requested_z_mm,
+                self.setup, metal, substrate, model.AIR_H)
+        except ValueError as error:
+            np.savez_compressed(folder / "invalid_boundary_samples.npz",
+                boundary=boundary.pts, normals=boundary.normals, active=boundary.active,
+                requested_points=np.column_stack([boundary.pts+self.sample_offset*boundary.normals,
+                                                 np.full(len(boundary.pts),self.requested_z_mm)]))
+            _write_json(folder / "invalid_boundary_samples.json", {"error":str(error)})
+            raise
+        freq = self.setup.frequency_ghz
+        ef, hf = self.solver.sample_fields(points, tag="fwd", freq_ghz=freq)
+        if self.forward_only:
+            eb, hb = ef, hf
+        else:
+            self.solver.solve_backward()
+            eb, hb = self.solver.sample_fields(points, tag="bwd", freq_ghz=freq)
+        self._write_eval({"eval_id":fwd.extra["eval_id"],"kind":"adjoint",
+                         "fields_reused_from":"forward" if self.forward_only else None})
+        _, weight = als.fom_value_and_weight(fwd.s, self.fom_kind)
+        amplitude = np.conj(weight) if self.adjoint_source == "objective" else 1+0j
+        self._write_eval({"eval_id":fwd.extra["eval_id"],"kind":"adjoint_source",
+            "mode":self.adjoint_source,"objective":self.fom_kind,
+            "amplitude_real":float(amplitude.real),"amplitude_imag":float(amplitude.imag)})
+        material = "substrate" if self.requested_z_mm < 0 else "air"
+        self.log(f"[boundary fields] {len(points)} active points, z={self.requested_z_mm:g} mm, "
+                 f"material={material}, eps={eps:.9g} F/m")
+        np.savez_compressed(folder / "boundary_fields.npz", points_mm=points,
+            boundary_indices=indices,boundary=boundary.pts,normals=boundary.normals,
+            active=boundary.active,eps_f_per_m=eps,z_mm=self.requested_z_mm,
+            offset_mm=self.sample_offset,E_fwd=ef,H_fwd=hf,E_bwd=eb,H_bwd=hb)
+        self._write_eval({"eval_id":fwd.extra["eval_id"],"kind":"boundary_fields",
+            "sampling":"cst-points","field_z_mm":self.requested_z_mm,
+            "sample_offset_mm":self.sample_offset,"eps_f_per_m":eps,
+            "material":material,"sample_count":len(points),"frequency_ghz":freq,
+            "solver_type":self.setup.solver_type})
+        selected = als.Boundary(boundary.pts[indices],boundary.normals[indices],
+                                boundary.weights[indices],np.ones(len(indices),bool))
+        gradient = np.zeros(len(boundary.pts))
+        gradient[indices] = np.real(als.shape_derivative_from_fields(
+            selected,ef,hf,amplitude*eb,amplitude*hb,self.prefactor,eps,self.mu))
+        return gradient
+
     def boundary_gradient(self, ls, fwd, boundary):
+        if self.boundary_sampling == "cst-points" and not self.frequencies:
+            return self._point_gradient(fwd,boundary)
+        point_forward = None
+        if self.boundary_sampling == "cst-points":
+            xy = boundary.pts + self.sample_offset * boundary.normals
+            points = np.column_stack([xy, np.full(len(xy), self.requested_z_mm)])
+            point_eps = als.EPS0 * (self.setup.eps_r if self.requested_z_mm <= 1e-6 else 1.0)
+            # Capture forward samples before switching the serial CST project to bwd.
+            point_forward = {freq: self.solver.sample_fields(points, tag="fwd", freq_ghz=freq)
+                             for freq in (self.frequencies or (self.setup.frequency_ghz,))}
         if not self.frequencies:
             adj = self.adjoint(ls, fwd)
+            _, objective_weight = als.fom_value_and_weight(fwd.s, self.fom_kind)
+            # Experimental: applying the objective weight assumes Q is the complex S derivative.
+            source_amplitude = (np.conj(objective_weight)
+                                if self.adjoint_source == "objective" else 1.0 + 0j)
+            self._write_eval({"eval_id": fwd.extra["eval_id"], "kind": "adjoint_source",
+                "mode": self.adjoint_source,
+                "objective": self.fom_kind, "amplitude_real": float(source_amplitude.real),
+                "amplitude_imag": float(source_amplitude.imag)})
+            adj = als.FieldBundle(x=adj.x, y=adj.y,
+                                  E=source_amplitude * adj.E, H=source_amplitude * adj.H)
             return np.real(als.shape_derivative_complex(
                 boundary, fwd.fields, adj, self.prefactor, self.sample_offset,
                 self.eps, self.mu))
@@ -267,8 +384,15 @@ class CstAdjointLevelSetProblem:
                 raise ValueError(f"Forward/backward field grids differ at {freq:g} GHz")
             prefactor = self.prefactor_scale * (-2j * 2 * np.pi * freq * 1e9 /
                                                self.setup.port_power_w)
-            sensitivity = als.shape_derivative_complex(
-                boundary, fields, adj, prefactor, self.sample_offset, eps, self.mu)
+            if point_forward is None:
+                sensitivity = als.shape_derivative_complex(
+                    boundary, fields, adj, prefactor, self.sample_offset, eps, self.mu)
+            else:
+                ef, hf = point_forward[freq]
+                eb, hb = ((ef, hf) if self.forward_only else self.solver.sample_fields(
+                    points, tag="bwd", freq_ghz=freq))
+                sensitivity = als.shape_derivative_from_fields(
+                    boundary, ef, hf, eb, hb, prefactor, point_eps, self.mu)
             s = params[self.s_key]
             _, chain = als.fom_value_and_weight(s, "db")
             gradient += float(weight) * als.real_gradient(sensitivity, chain)
@@ -276,8 +400,11 @@ class CstAdjointLevelSetProblem:
 
     def e_field_for_plot(self, eval_id: int, box: BoxSpec):
         grid = self.solver.export_field_for_plot(box, eval_id=eval_id, tag="fwd")
-        iz, z_used = _select_z_plane(
-            grid, self.requested_z_mm, self.setup.metal_thickness_mm)
+        if getattr(self.solver,"point_sampling",False):
+            iz,z_used=0,float(grid.axes()[2][0])
+        else:
+            iz, z_used = _select_z_plane(
+                grid, self.requested_z_mm, self.setup.metal_thickness_mm)
         e_plane = np.asarray(grid.plane(iz), dtype=complex)
         magnitude = np.sqrt(np.sum(np.abs(e_plane) ** 2, axis=-1))
         axes = grid.axes()
@@ -419,7 +546,13 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     parser.add_argument("--output-dir", help="output root (default: <configured output>/adjoint_levelset)")
     parser.add_argument("--iterations", type=int, help="override optimizer.max_iterations")
     parser.add_argument("--sample-offset-mm", type=float,
-                        help="field offset along the outward normal; PEC defaults to +1 grid cell")
+                        help="outward offset in mm; PEC grid defaults to one export cell, points to the configured physical offset")
+    parser.add_argument("--boundary-sampling", choices=("grid", "cst-points"), default=None,
+                        help="single-frequency default: cst-points; multifrequency default remains grid")
+    parser.add_argument("--solver", choices=("td", "fd"), default=None,
+                        help="single-frequency default: fd; multifrequency remains td")
+    parser.add_argument("--adjoint-source", choices=("unit", "objective"), default="unit",
+                        help="single frequency: unit reverse field (default), or experimental objective-derived complex factor")
     parser.add_argument("--prefactor-scale", type=float, default=1.0,
                         help="real scale/sign applied to the paper prefactor; default follows velocity_sign")
     parser.add_argument("--gradient-check", action="store_true",
@@ -437,6 +570,16 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
         cfg.optimizer.max_iterations = args.iterations
 
     setup, model = load_case(cfg)
+    args.solver = args.solver or ("td" if cfg.objective.frequencies_ghz else "fd")
+    args.boundary_sampling = args.boundary_sampling or ("grid" if cfg.objective.frequencies_ghz else "cst-points")
+    if args.solver == "fd" and cfg.objective.frequencies_ghz:
+        raise ValueError("FD currently supports single-frequency cases only")
+    setup = replace(setup, solver_type=args.solver)
+    if not cfg.objective.frequencies_ghz and args.boundary_sampling == "cst-points":
+        if abs(cfg.sampling.field_z_mm) <= 1e-9:
+            raise ValueError("Direct sampling requires a nonzero material-side field_z_mm")
+        if setup.metal_material.lower() == "pec" and cfg.sampling.sample_side != "outside":
+            raise ValueError("Direct PEC sampling requires sample_side: outside")
     requested_output = (Path(args.output_dir) if args.output_dir else
                         Path(cfg.output.dir) / "adjoint_levelset")
     output_dir = _run_output_dir(requested_output)
@@ -502,7 +645,10 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     elif setup.metal_material.lower() == "pec":
         # CST PEC interior fields vanish. Sample one cell beyond the xy boundary,
         # as required by adjoint_levelset.py for a PEC geometry.
-        sample_offset = field_step_xy_mm
+        sample_offset = (abs(float(cfg.sampling.intersection_offset_mm))
+                         if args.boundary_sampling == "cst-points" else field_step_xy_mm)
+        if sample_offset <= 0:
+            raise ValueError("PEC exact-point sampling requires a positive physical offset")
     else:
         sign = -1.0 if cfg.sampling.sample_side == "inside" else 1.0
         sample_offset = sign * float(cfg.sampling.intersection_offset_mm)
@@ -510,7 +656,10 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     prefactor_scale = float(args.prefactor_scale) * float(cfg.optimizer.velocity_sign)
     log(f"[adjoint_levelset] output: {output_dir}")
     log(f"[adjoint_levelset] field offset: {sample_offset:g} mm; "
-        f"requested z={cfg.sampling.field_z_mm:g} mm; eps_r={setup.eps_r:g}")
+        f"requested z={cfg.sampling.field_z_mm:g} mm; substrate eps_r={setup.eps_r:g}")
+    log(f"[adjoint_levelset] boundary sampling: {args.boundary_sampling}")
+    log(f"[adjoint_levelset] CST solver: {setup.solver_type}")
+    log(f"[adjoint_levelset] single-frequency adjoint source: {args.adjoint_source}")
     log(f"[adjoint_levelset] pseudo_time_step={cfg.optimizer.pseudo_time_step:g}; "
         f"CFL={cfg.optimizer.cfl:g}; "
         f"extension band={cfg.level_set.extension_band_mm:g} mm")
@@ -530,10 +679,12 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             save_fields=args.save_fields,
             attach=args.attach or None,
             force_new=args.force_new,
+            point_sampling=args.boundary_sampling=="cst-points",
             log=log,
         )
         problem = CstAdjointLevelSetProblem(
-            cfg, setup, solver, sample_offset, prefactor_scale, output_dir, log=log)
+            cfg, setup, solver, sample_offset, prefactor_scale, output_dir, log=log,
+            boundary_sampling=args.boundary_sampling, adjoint_source=args.adjoint_source)
         opt_cfg = als.OptimizerConfig(
             maximize=bool(maximize),
             pseudo_time_step=float(cfg.optimizer.pseudo_time_step),
@@ -668,6 +819,9 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             "evaluations_recorded": len(evaluation_history),
             "sample_offset_mm": sample_offset,
             "requested_field_z_mm": cfg.sampling.field_z_mm,
+            "boundary_sampling": args.boundary_sampling,
+            "solver_type": setup.solver_type,
+            "adjoint_source": args.adjoint_source,
             "prefactor_scale": prefactor_scale,
             "output_dir": str(output_dir),
             "state_plots": len(sparams_history),

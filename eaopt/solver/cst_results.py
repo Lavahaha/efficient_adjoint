@@ -27,6 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import re
 
 import cst.results as cstr
 
@@ -34,9 +35,9 @@ from eaopt.adjoint.fields import FieldGrid
 from eaopt.solver import cst_model as M
 
 __all__ = [
-    "S_PARAM_FOLDER", "s_param_item", "read_s_params",
+    "S_PARAM_FOLDER", "s_param_item", "read_s_params", "read_incident_power",
     "resolve_field_item",
-    "export_field_grid", "export_field_cropped", "crop_grid",
+    "export_field_grid", "export_field_cropped", "export_field_points", "export_field_plane", "crop_grid",
     "parse_ascii_field",
 ]
 
@@ -54,7 +55,7 @@ def s_param_item(response_port: int, stimulus_port: int) -> str:
 # --------------------------------------------------------------------------- #
 def read_s_params(project_path, stimulus_port: int, response_ports=(1, 2, 3, 4),
                   freq_ghz: float = 5.0, *, allow_interactive: bool = True,
-                  log=print) -> dict:
+                  log=print, exact_frequency: bool = False) -> dict:
     """读 ``freq_ghz`` 处的 ``S_{i,激励端口}``（i ∈ response_ports），线性插值。
 
     **必须先存盘**：``cst.results`` 读的是磁盘上的结果文件。工程在 CST
@@ -77,7 +78,7 @@ def read_s_params(project_path, stimulus_port: int, response_ports=(1, 2, 3, 4),
     for i in wanted:
         path = s_param_item(i, stim)
         try:
-            out[(i, stim)] = _read_curve(rm, path, freq_ghz, notes, log)
+            out[(i, stim)] = _read_curve(rm, path, freq_ghz, notes, log, exact_frequency=exact_frequency)
         except Exception as e:
             notes.append(f"{path}: {e}")
             break                       # 一条读不到就没必要继续试
@@ -86,6 +87,18 @@ def read_s_params(project_path, stimulus_port: int, response_ports=(1, 2, 3, 4),
     if len(out) != len(wanted):
         raise RuntimeError(_why_not(project_path, stim, wanted, freq_ghz, notes))
     return out
+
+
+def read_incident_power(project_path, stimulus_port: int, freq_ghz: float, *, log=print) -> float:
+    rm = _result_module(project_path, True)
+    names = [p for p in rm.get_tree_items() if p.endswith("\\Power Stimulated")
+             and f"\\Excitation [{int(stimulus_port)}]\\" in p]
+    if len(names) != 1:
+        raise RuntimeError(f"Cannot uniquely identify incident power for port {stimulus_port}: {names}")
+    value = _read_curve(rm,names[0],freq_ghz,[],log,exact_frequency=True)
+    if abs(value.imag)>1e-12 or value.real<=0:
+        raise RuntimeError(f"Invalid incident power: {value}")
+    return float(value.real)
 
 
 def _why_not(project_path, stimulus_port: int, response_ports, freq_ghz: float,
@@ -115,19 +128,24 @@ def _result_module(project_path, allow_interactive: bool):
 
 
 def _read_curve(rm, path: str, freq_ghz: float, notes: list[str],
-                log=print) -> complex:
+                log=print, *, exact_frequency: bool = False) -> complex:
     """取单条曲线在 freq_ghz 的值（复数）。"""
     item = _get_item(rm, path, notes)
     x = np.asarray(item.get_xdata(), dtype=float).ravel()
     y = np.asarray(item.get_ydata()).ravel()
-    if x.size < 2 or y.size != x.size:
+    if x.size < 1 or y.size != x.size or not np.isfinite(x).all() or not np.isfinite(y).all():
         raise RuntimeError(f"曲线数据长度不对：x={x.size}, y={y.size}")
-    if not (x.min() <= freq_ghz <= x.max()):
-        log(f"    [警告] {freq_ghz:g} GHz 超出数据范围 "
-            f"[{x.min():g}, {x.max():g}]，插值会被端点截断")
     y = y.astype(complex)
-    v = complex(float(np.interp(freq_ghz, x, y.real)),
-                float(np.interp(freq_ghz, x, y.imag)))
+    exact = np.flatnonzero(np.isclose(x, freq_ghz, rtol=0, atol=1e-9))
+    if len(exact) == 1:
+        v = complex(y[exact[0]])
+    elif exact_frequency or x.size == 1 or len(exact) > 1:
+        raise RuntimeError(f"Expected one sample at {freq_ghz:g} GHz, got {x.tolist()}")
+    else:
+        if np.any(np.diff(x) <= 0) or not x[0] <= freq_ghz <= x[-1]:
+            raise RuntimeError("S-parameter frequencies must be ordered and bracket the requested frequency")
+        v = complex(float(np.interp(freq_ghz, x, y.real)),
+                    float(np.interp(freq_ghz, x, y.imag)))
     if abs(v) > 1.5:
         log(f"    [警告] |S{path.rsplit(chr(92), 1)[-1]}|={abs(v):.3g} 远大于 1，"
             "可能读错了条目")
@@ -166,7 +184,7 @@ class _TreeUnavailable(Exception):
 
 
 def resolve_field_item(model3d, field_type: str, freq_ghz: float, *,
-                       log=print) -> str:
+                       log=print, stimulus_port: int | None = None) -> str:
     """求出该场在结果树里**真实存在**的条目路径。
 
     条目名是 CST 自己起的：同一个监视器可以叫 ``e-field (f=5)``，也可能带
@@ -186,10 +204,15 @@ def resolve_field_item(model3d, field_type: str, freq_ghz: float, *,
     try:
         items = _tree_items(model3d)
     except _TreeUnavailable as e:
+        if stimulus_port is not None:
+            raise RuntimeError("Cannot verify field excitation without the result tree") from e
         log(f"    [警告] 结果树枚举不可用（{e}），按惯例路径选中；条目名若带"
             "后缀会立刻报错，不会静默导出")
         return fallback
     cands = [p for p in items if _leaf(p).startswith(want)]
+    if stimulus_port is not None:
+        pattern = re.compile(r"\["+str(int(stimulus_port))+r"(?:\(1\))?\]$")
+        cands = [p for p in cands if pattern.search(_leaf(p))]
     if not cands:
         raise RuntimeError(
             f"结果树里没有 {field_type} 的条目（期望叶子名 {want!r}；"
@@ -198,8 +221,9 @@ def resolve_field_item(model3d, field_type: str, freq_ghz: float, *,
             + "\n  排查：监视器建了吗（Modeling 树 → Field Monitors，名字由"
               " cst_model.field_monitor_name 决定）、求解跑完了吗、频点对得"
               f"上吗（{freq_ghz:g} GHz）。")
-    exact = [p for p in cands if _leaf(p) == want]
-    pick = sorted(exact or cands, key=lambda p: (len(_leaf(p)), p))[0]
+    if len(cands) != 1:
+        raise RuntimeError(f"Ambiguous field results for {want}: {cands}")
+    pick = cands[0]
     if pick != fallback:
         others = [p for p in cands if p != pick]
         log(f"    [ .. ] 场条目按实际树路径选中：{pick}"
@@ -286,9 +310,69 @@ def _select_item(model3d, item: str) -> None:
 # --------------------------------------------------------------------------- #
 # 场
 # --------------------------------------------------------------------------- #
+def export_field_points(model3d, field_type: str, freq_ghz: float, points_mm,
+                        out_path, *, log=print, stimulus_port: int | None = None) -> np.ndarray:
+    """Export complex E/H at XYZ points in mm, returning (N, 3) in input order."""
+    from scipy.spatial import cKDTree
+
+    points = np.asarray(points_mm, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
+        raise ValueError("Field sample points must be a nonempty finite (N, 3) array")
+    unique, inverse = np.unique(points, axis=0, return_inverse=True)
+    out_path = Path(out_path).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    point_path = out_path.with_suffix(".points.txt")
+    np.savetxt(point_path, unique, fmt="%.12g")
+    item = resolve_field_item(model3d, field_type, freq_ghz, log=log, stimulus_port=stimulus_port)
+    _select_item(model3d, item)
+    out_vba = str(out_path).replace('"', '""')
+    points_vba = str(point_path).replace('"', '""')
+    model3d._execute_vba_code(f'''Sub Main
+With ASCIIExport
+ .Reset
+ .Mode "FixedWidth"
+ .UseSubvolume False
+ .FileName "{out_vba}"
+ .SetPointFile "{points_vba}"
+ .ExportCoordinatesInMeter False
+ .Execute
+End With
+End Sub''')
+    table = np.atleast_2d(np.loadtxt(out_path, skiprows=2))
+    if table.shape != (len(unique), 9) or not np.isfinite(table).all():
+        raise ValueError(f"Invalid point-field export {out_path}: {table.shape}")
+    distance, index = cKDTree(unique).query(table[:, :3])
+    if distance.max() > 1e-4 or len(np.unique(index)) != len(unique):
+        raise ValueError(f"Exported coordinates do not match requested points: {out_path}")
+    result = np.empty((len(unique), 3), dtype=complex)
+    result[index] = table[:, 3::2] + 1j * table[:, 4::2]
+    log(f"    [OK] {field_type}: {len(points)} exact sample points")
+    return result[inverse]
+
+
+def export_field_plane(model3d, field_type, freq_ghz, step_mm, out_path, box,
+                       z_mm, *, margin_mm=0., log=print, stimulus_port=None):
+    """Direct point evaluation of a display plane; no 3D export or z interpolation."""
+    if not np.isfinite([step_mm,z_mm,margin_mm]).all() or step_mm<=0 or margin_mm<0:
+        raise ValueError("Invalid display-plane sampling parameters")
+    axes=[]
+    for limits in (box.x,box.y):
+        low,high=float(limits[0])-margin_mm,float(limits[1])+margin_mm
+        if not np.isfinite([low,high]).all() or high<=low:
+            raise ValueError("Invalid display-plane bounds")
+        axes.append(np.linspace(low,high,int(np.ceil((high-low)/step_mm))+1))
+    x,y=axes
+    xx,yy=np.meshgrid(x,y,indexing="ij")
+    points=np.column_stack([xx.ravel(),yy.ravel(),np.full(xx.size,z_mm)])
+    values=export_field_points(model3d,field_type,freq_ghz,points,out_path,
+                               log=log,stimulus_port=stimulus_port)
+    return FieldGrid((float(x[0]),float(y[0]),float(z_mm)),
+                     (float(x[1]-x[0]),float(y[1]-y[0]),1.),values.reshape(len(x),len(y),1,3))
+
+
 def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
                       out_path, *, step_z_mm: float | None = None,
-                      log=print) -> FieldGrid:
+                      log=print, stimulus_port: int | None = None) -> FieldGrid:
     """导出场监视器的结果并解析成 FieldGrid（单位 mm / V·m⁻¹ 或 A·m⁻¹）。
 
     流程 = 选中结果条目 → ``ASCIIExport`` 设步长 → ``Execute`` → 解析。
@@ -307,7 +391,7 @@ def export_field_grid(model3d, field_type: str, freq_ghz: float, step_mm: float,
     out_path = Path(out_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    item = resolve_field_item(model3d, field_type, freq_ghz, log=log)
+    item = resolve_field_item(model3d, field_type, freq_ghz, log=log, stimulus_port=stimulus_port)
     _select_item(model3d, item)
 
     exporter = getattr(model3d, "ASCIIExport", None)
@@ -372,7 +456,8 @@ def _align_z_axis_to_zero(data: np.ndarray, axes: tuple, out_path,
 
 def export_field_cropped(model3d, field_type: str, freq_ghz: float, step_mm: float,
                          out_path, box, margin_mm: float = 0.0, *,
-                         step_z_mm: float | None = None, log=print) -> FieldGrid:
+                         step_z_mm: float | None = None, log=print,
+                         stimulus_port: int | None = None) -> FieldGrid:
     """导出该场 → 裁到设计区 ``box``（``.x``/``.y``）± ``margin_mm``。
 
     三个 CST 程序都要做这个动作：整域导出的网格没有保留价值（点数按面积
@@ -380,7 +465,7 @@ def export_field_cropped(model3d, field_type: str, freq_ghz: float, step_mm: flo
     裁剪后的 ``FieldGrid`` 交出去。
     """
     grid = export_field_grid(model3d, field_type, freq_ghz, step_mm, out_path,
-                             step_z_mm=step_z_mm, log=log)
+                             step_z_mm=step_z_mm, log=log, stimulus_port=stimulus_port)
     cut = crop_grid(grid, box, margin_mm)
     log(f"    [OK] {field_type} 裁剪：{grid.data.shape} → {cut.data.shape}"
         f"（设计区 ±{margin_mm:g} mm）")

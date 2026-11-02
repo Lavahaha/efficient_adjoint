@@ -4,7 +4,7 @@ from __future__ import annotations
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header, brick,
     delete_component, field_monitor, frequency_range, material_normal,
-    polygon_extrude, set_boundaries, time_domain_solver_setup,
+    polygon_extrude, set_boundaries, solver_setup,
 )
 from eaopt.solver.cst_setup import ANTENNA
 from eaopt.geometry.contour import MetalRegion
@@ -158,12 +158,12 @@ def _cylinder(name: str, component: str, material: str,
     )
 
 
-def setting_blocks(portnum: int) -> list[tuple[str, str]]:
+def setting_blocks(portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
     if int(portnum) != 1:
         raise ValueError(f"antenna template only has discrete port 1, got {portnum}")
     return [
         ("Mesh", MESH_CREATOR),
-        ("Solver", time_domain_solver_setup("1")),
+        ("Solver", solver_setup(portnum, FREQ, solver_type)),
         ("FrequencyRange", frequency_range(FMIN, FMAX)),
         ("Monitor Efield", field_monitor("Efield", FREQ)),
         ("Monitor Hfield", field_monitor("Hfield", FREQ)),
@@ -174,10 +174,10 @@ def setting_blocks(portnum: int) -> list[tuple[str, str]]:
     ]
 
 
-def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
+def template_blocks(project: str, portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
     blocks = [("Units", UNITS_BLOCK)]
     blocks += [(block_header(command), command) for command in model_blocks()]
-    blocks += setting_blocks(portnum)
+    blocks += setting_blocks(portnum, solver_type)
     return blocks
 
 

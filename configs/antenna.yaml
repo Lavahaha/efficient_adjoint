@@ -35,8 +35,8 @@ constraints:
   require_connected: false
 
 sampling:
-  field_z_mm: 0.0
-  intersection_offset_mm: 0.4
+  field_z_mm: 0.009  # one-sided air sample; metal mid-height
+  intersection_offset_mm: 0.05
   sample_side: outside
 
 optimizer:

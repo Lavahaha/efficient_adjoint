@@ -34,8 +34,8 @@ import math
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header,
     brick, design_region_update, field_monitor, frequency_range,
-    material_normal, polygon_extrude, set_boundaries, time_domain_solver_setup,
-    waveguide_port,
+    material_normal, polygon_extrude, set_boundaries,
+    waveguide_port, solver_setup,
 )
 from eaopt.solver.cst_setup import DIVIDER
 
@@ -247,7 +247,7 @@ def model_blocks() -> list[str]:
             + _design_parts() + _ports())
 
 
-def setting_blocks(portnum: int, frequencies_ghz=None) -> list[tuple[str, str]]:
+def setting_blocks(portnum: int, frequencies_ghz=None, solver_type: str = "td") -> list[tuple[str, str]]:
     """全部**设置**类块 ``[(标签, 命令文本)]``：求解器/频段/监视器/边界。
 
     与耦合器逐条同款（只有激励端口号随算例变），顺序与 template_blocks 一致。
@@ -256,6 +256,8 @@ def setting_blocks(portnum: int, frequencies_ghz=None) -> list[tuple[str, str]]:
         raise ValueError(
             f"激励端口 {portnum} 不在模板建的端口 {DIVIDER.ports} 里"
             "（fwd 激励 objective.from_port、bwd 激励 to_port）")
+    if solver_type == "fd" and frequencies_ghz:
+        raise ValueError("FD currently supports single-frequency cases only")
     freqs = tuple(float(f) for f in (frequencies_ghz or (FREQ,)))
     if not freqs or any(not math.isfinite(f) or f <= 0 or f > FMAX
                         for f in freqs):
@@ -272,7 +274,7 @@ def setting_blocks(portnum: int, frequencies_ghz=None) -> list[tuple[str, str]]:
         # 只激励本模板指定的端口（fwd→1 / bwd→2）。用 Solver 的
         # StimulationPort，不用 Excitation 对象（后者在 CST 2024 里报
         # 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
-        ("Solver", time_domain_solver_setup(str(portnum))),
+        ("Solver", solver_setup(portnum, FREQ, solver_type)),
         ("FrequencyRange", frequency_range(FMIN, FMAX)),
         *monitor_blocks,
         ("Boundary", set_boundaries("magnetic", "magnetic", "magnetic",
@@ -281,7 +283,7 @@ def setting_blocks(portnum: int, frequencies_ghz=None) -> list[tuple[str, str]]:
 
 
 def template_blocks(project: str, portnum: int,
-                    frequencies_ghz=None) -> list[tuple[str, str]]:
+                    frequencies_ghz=None, solver_type: str = "td") -> list[tuple[str, str]]:
     """模板的全部命令块 ``[(标题, VBA 命令文本)]`` —— **单一事实来源**。
 
     调用方逐块交给 ``model3d.add_to_history(标题, 命令文本)``。``project``
@@ -289,7 +291,7 @@ def template_blocks(project: str, portnum: int,
     """
     blocks = [("Units", UNITS_BLOCK)]
     blocks += [(block_header(c), c) for c in model_blocks()]
-    blocks += setting_blocks(portnum, frequencies_ghz)
+    blocks += setting_blocks(portnum, frequencies_ghz, solver_type)
     return blocks
 
 

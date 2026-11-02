@@ -10,13 +10,13 @@ DOI: 10.1109/TMTT.2024.3421558。
 ## 安装
 
 需要 Python 3.10 或更新版本；实际运行 CST 时还须满足所安装 CST 官方
-Python 库的版本要求。
+Python 库的版本要求。本机 CST 2024 链接包要求 Python <3.11，使用 Python 3.10。
 
 ```bash
 pip install -e .
 
 # CST 官方库随 CST 安装包提供，不从 PyPI 下载；路径按实际安装目录修改。
-pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" cst-studio-suite-link
+pip install --no-index --find-links "E:\CST2024\Library\Python\repo\simple" cst-studio-suite-link
 ```
 
 `scikit-fmm` 用于符号距离重初始化；未安装时回退到 SciPy 距离变换。
@@ -37,6 +37,10 @@ Shapely 用于金属多边形的差集、并集与孔洞处理；更新代码后
 四个入口均调用 `eaopt.runner.main`，再使用 `adjoint_levelset.AdjointLevelSetOptimizer`。
 旧入口 `scripts/run_coupler.py` 及旧的 `eaopt.pipeline` 已删除。
 
+单频默认使用频域四面体求解和 CST 指定边界点取场（`--solver fd --boundary-sampling cst-points`）；
+多频默认路径不变。单频 PEC 配置使用外侧偏移和非零采样高度，绘图只导出该高度的二维场。
+实现、真实短程结果及尚未通过的网格精度检查见[单频采样报告](docs/single_frequency_fd_sampling_2026-11-02.md)。
+
 ```bash
 # 指定小规模运行、独立输出目录和日志
 python scripts/run_divider_adjoint_levelset.py --iterations 2 --output-dir results/divider_smoke --log results/divider_smoke.log
@@ -49,7 +53,8 @@ python scripts/run_antenna_adjoint_levelset.py --help
 ```
 
 工程缺失时自动初始化。默认创建无界面的 CST 实例；`--attach` 附接已运行实例，
-`--new` 强制创建新实例。`--save-fields` / `--no-save-fields` 控制完整场快照保存。
+`--new` 强制创建新实例。`--save-fields` / `--no-save-fields` 控制规则场快照保存，单频直接采样另存边界点场。
+正向/反向工程交替打开以减少内存占用；切换和结束时先保存再关闭本次工程。
 程序不支持断点续跑。输出目录非空时自动创建 `run_<UTC时间戳>/` 子目录，
 保留此前的日志、快照和 CST 工程；控制台会打印本次实际输出目录。
 默认保存 `run.log`；指定的 `--log` 文件已存在时，本次日志保存在新运行目录中。
@@ -134,6 +139,29 @@ docs/server_runbook.md   # 服务器操作说明
 - `adjoint_levelset_state_NNN.npz`、`phi_before_iter_NNN.npz`、`phi_after_iter_NNN.npz`：状态快照。
 - `fig6b_iter_NNN.png`、`fig7_sparams_vs_iteration.png`：布局/场图与 S 参数曲线；
   双频曲线带有频点标签，场图显示配置中的第一个目标频点。
+
+### 绘制任意 z 平面的 xy 电场矢量图
+
+`scripts/plot_efield_xy.py` 用 CST 导出的
+`x y z ExRe ExIm EyRe EyIm EzRe EzIm` 文本文件绘制 xy 平面电场图：
+底色和箭头颜色条表示 xy 平面复幅值
+`|E_xy| = sqrt(|Ex|² + |Ey|²)`，箭头方向表示指定相位下的 `Ex/Ey`
+瞬时方向，箭头长度按 `|E_xy|` 相对缩放。每个导出的 xy 网格点都会绘制
+一个箭头；通过 `--z` 选择不同平面；脚本只把
+选定平面读入内存，适合较大的 Volume 导出文件。
+
+```bash
+python scripts/plot_efield_xy.py --z 0
+python scripts/plot_efield_xy.py --z -0.7485 --output docs/efield_z-0.7485.png --step 2
+python scripts/plot_efield_xy.py --z 0 --phase-deg 90
+python scripts/plot_efield_xy.py --z 0 --x 0.5 11.5 --y -2.6 0.9
+```
+
+`--z` 必须与文件中的导出平面一致；若需要查看可用 z 值，可根据 CST
+导出文件中的第三列检查。`--step N` 可降低箭头密度，`--phase-deg` 用于
+查看复场在其它相位的瞬时方向。`--x X_MIN X_MAX` 和
+`--y Y_MIN Y_MAX` 指定绘制区域，例如 `--x 0.5 11.5 --y -2.6 0.9`；
+只有落在区域内的原始网格点会绘制箭头，坐标轴范围仍显示为指定范围。标频点。
 - `sparams_history.json` 及 `fig7_sparams_vs_iteration.png` 包含初始和每轮提交状态；
   `fig7_sparams_vs_evaluation.png` 展示全部评估，包括有限差分检查。
 - `phi_final.npz`、`final_shape.json`、`adjoint_levelset_summary.json`：最终形状和运行摘要。
@@ -155,8 +183,7 @@ python scripts/plot_layout.py configs/divider.yaml
 ## 验证
 
 ```bash
-# 无需 CST 和 pytest 的记录逻辑回归检查
-python scripts/check_evaluation_recording.py
+# 无需 CST 的纯几何检查；模拟 CST/求解流程已移除
 python scripts/check_design_geometry.py
 ```
 

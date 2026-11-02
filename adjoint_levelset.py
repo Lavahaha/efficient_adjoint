@@ -238,7 +238,18 @@ def shape_derivative_complex(
     ps = boundary.pts + offset * boundary.normals
     Ef, Hf = fwd.sample(ps)
     Eb, Hb = adj.sample(ps)
-    n3 = np.vstack([boundary.normals.T, np.zeros(len(ps))])      # (3,N)
+    return shape_derivative_from_fields(boundary, Ef, Hf, Eb, Hb, prefactor, eps, mu)
+
+
+def shape_derivative_from_fields(boundary: Boundary, Ef: np.ndarray, Hf: np.ndarray,
+                                 Eb: np.ndarray, Hb: np.ndarray, prefactor: complex,
+                                 eps: float = EPS0, mu: float = MU0) -> np.ndarray:
+    """Eq. (25) kernel for E/H evaluated at the same boundary sample points."""
+    count = len(boundary.pts)
+    for field in (Ef, Hf, Eb, Hb):
+        if field.shape != (3, count) or not np.isfinite(field).all():
+            raise ValueError("Boundary E/H must be finite arrays of shape (3, N)")
+    n3 = np.vstack([boundary.normals.T, np.zeros(count)])
     dot = lambda a, b: np.sum(a * b, axis=0)
     e_perp = dot(Ef, n3) * dot(Eb, n3)                           # E_perp . Eb_perp
     h_par = dot(Hf, Hb) - dot(Hf, n3) * dot(Hb, n3)              # H_par . Hb_par

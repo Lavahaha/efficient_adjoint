@@ -21,16 +21,18 @@ False——静默建工程等于在用户可能开着的 GUI 里凭空冒出两�
 from __future__ import annotations
 
 import time
+import hashlib
+import shutil
 from pathlib import Path
 
 import numpy as np
 
-try:                        # CST 官方库只支持 Python 3.6–3.11
+try:
     import cst.interface as csti
 except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意义
     raise SystemExit(
         f"import cst.interface 失败：{e}\n"
-        "  官方库只支持 Python 3.6–3.11（服务器用 conda py310）；让解释器"
+        "  本机 CST 2024 链接包要求 Python >=3.7,<3.11；项目使用 Python 3.10。让解释器"
         "找到它：\n"
         "    pip install --no-index --find-links "
         "\"<CST>/Library/Python/repo/simple\" cst-studio-suite-link\n"
@@ -57,7 +59,8 @@ class CstSolver(SolverInterface):
                  save_fields: bool | None = None,
                  attach: bool | None = None, force_new: bool = False,
                  quiet: bool | None = None,
-                 clear_results: bool | None = None, log=print):
+                 clear_results: bool | None = None, log=print,
+                 point_sampling: bool = False):
         # 算例（CstSetup + 模板模块）成套取自 cfg.name；调用方给了哪一个就
         # 用哪一个（测试要注入改动过的设置时只覆盖 setup，模板仍按算例取）。
         if setup is None or model is None:
@@ -65,7 +68,10 @@ class CstSolver(SolverInterface):
             setup = case_setup if setup is None else setup
             model = case_model if model is None else model
         setup.validate_objective(cfg.objective)     # 端口规则在 CST 侧，装配点校验
+        if setup.solver_type == "fd" and cfg.objective.frequencies_ghz:
+            raise ValueError("FD currently supports single-frequency cases only")
         self.cfg = cfg
+        self.point_sampling = bool(point_sampling) and not cfg.objective.frequencies_ghz
         self.setup = setup
         self.M = model
         # Reflection objectives reuse the forward fields as adjoint fields.
@@ -84,6 +90,8 @@ class CstSolver(SolverInterface):
         self.de = None
         self.projects: dict = {}
         self._it: int | None = None                 # begin_iteration 给的轮次
+        self._solved_at: dict[str, int | None] = {}
+        self._mesh_fingerprints: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ #
     # 会话 / 工程
@@ -98,8 +106,15 @@ class CstSolver(SolverInterface):
         """该 tag 的工程路径（规则在 cst_setup，值来自配置）。"""
         return self.setup.project_path(tag, self.cfg.output.dir, self.cfg.name)
 
+    def _release_projects(self) -> None:
+        # 本地内存有限：切换正向/反向工程前保存并释放当前 modeler。
+        for tag, prj in list(self.projects.items()):
+            _save(prj, self.project_path(tag), self.log)
+            prj.close()
+            del self.projects[tag]
+
     def _open(self, tag: str):
-        """打开该 tag 的工程（已开着就复用），~20 轮迭代共用同一个对象。"""
+        """打开该 tag 的工程；同一时间只保留一个工程的 modeler。"""
         if self.projects.get(tag) is not None:
             return self.projects[tag]
         path = self.project_path(tag)
@@ -108,9 +123,27 @@ class CstSolver(SolverInterface):
                 f"{tag} 工程不存在：{path}\n"
                 f"  先跑 scripts/cst_init_{tag}.py 初始化（它会建工程并跑"
                 f"第一次仿真）；或让 scripts/run_coupler_adjoint_levelset.py 自动建。")
+        self._release_projects()
         prj = _open_or_reuse(self._environment(), path, self.log)
         self.projects[tag] = prj
+        self._check_project(tag, prj)
         return prj
+
+    def _check_project(self, tag, project):
+        folder = Path(self.cfg.output.dir) / "cst_work"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = (folder / f"solver_{tag}.txt").resolve()
+        code = ['Print #1, GetSolverType()']
+        if self.setup.solver_type == "fd":
+            code += ['Print #1, FDSolver.GetStimulationPort', 'Print #1, FDSolver.GetStimulationMode']
+        project.model3d._execute_vba_code('Sub Main\nOpen "'+str(path).replace('"','""')+
+            '" For Output As #1\n'+'\n'.join(code)+'\nClose #1\nEnd Sub')
+        values = path.read_text(encoding="utf-8-sig").splitlines()
+        expected = "HF Frequency Domain" if self.setup.solver_type == "fd" else "HF Time Domain"
+        if not values or values[0].strip() != expected:
+            raise ValueError(f"Project solver mismatch: expected {expected}, got {values}")
+        if self.setup.solver_type == "fd" and [v.strip() for v in values[1:]] != [str(self.setup.stimulus(tag,self.cfg.objective)),"1"]:
+            raise ValueError(f"FD excitation mismatch: {values}")
 
     def _ensure_projects(self) -> None:
         """确认所需工程可用；``auto_init`` 时缺哪个建哪个。"""
@@ -122,8 +155,6 @@ class CstSolver(SolverInterface):
                     self._open(tag)             # 报错并给出 init 脚本提示
                 self.log(f"[ .. ] {tag} 工程不存在 → 自动初始化")
                 self._initialize(tag)
-        for tag in self.project_tags:
-            self._open(tag)
 
     def _initialize(self, tag: str):
         """建该 tag 的工程：模板命令块逐块进历史表 → 存盘（不跑仿真）。"""
@@ -133,14 +164,17 @@ class CstSolver(SolverInterface):
                 f"{tag} 工程已经存在：{path}\n"
                 "  要重建请先删掉它（连同同名文件夹），或直接用 "
                 "scripts/cst_update.py 改形状。")
+        self._release_projects()
         prj = self._environment().new_mws()
+        self.projects[tag] = prj
         port = self.setup.stimulus(tag, self.cfg.objective)
         freqs = self.cfg.objective.frequencies_ghz
         if freqs:
             blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port,
                                             frequencies_ghz=freqs)
         else:
-            blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port)
+            blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port,
+                                            solver_type=self.setup.solver_type)
         self.log(f"[ .. ] 建 {tag} 工程：{len(blocks)} 个命令块，"
                  f"激励端口 = {port}")
         _apply_blocks(prj.model3d, blocks,
@@ -168,6 +202,8 @@ class CstSolver(SolverInterface):
         """
         # 区内简化在拼合前完成；这里不能再移动区外固定轮廓。
         self.last_prepared_polys = None
+        self._solved_at.clear()
+        self._mesh_fingerprints.clear()
         supports_nested = bool(getattr(self.M, "SUPPORTS_NESTED_CONTOURS", False))
         if any(len(poly) < 4 or not np.allclose(poly[0], poly[-1]) for poly in movable):
             raise ValueError("CST 重建需要完整闭合轮廓；先拼合设计区内外金属")
@@ -224,6 +260,20 @@ class CstSolver(SolverInterface):
                 "no backward CST solve is configured.")
         return self._solve("bwd")
 
+    def sample_fields(self, points_mm, *, tag: str, freq_ghz: float):
+        """Read E/H at explicit points of the current solved geometry, as (3, N)."""
+        if tag not in self.project_tags:
+            raise ValueError(f"Unknown field project tag: {tag}")
+        if tag not in self._solved_at or self._solved_at[tag] != self._it:
+            raise RuntimeError(f"No {tag} field solution for current evaluation {self._it}")
+        prj = self._open(tag)
+        folder = Path(self.cfg.output.dir) / "cst_work" / f"points_{self._it}_{tag}_{freq_ghz:g}GHz"
+        folder.mkdir(parents=True, exist_ok=True)
+        fields = [R.export_field_points(prj.model3d, kind, freq_ghz, points_mm,
+                  folder / f"{kind}.txt", log=self.log,
+                  stimulus_port=self.setup.stimulus(tag,self.cfg.objective)).T for kind in ("Efield", "Hfield")]
+        return tuple(fields)
+
     def export_field_for_plot(self, box, *, eval_id: int, tag: str = "fwd"):
         """Re-export the current field over a wider plot box without another solve."""
         if self._it != int(eval_id):
@@ -236,16 +286,21 @@ class CstSolver(SolverInterface):
         out.parent.mkdir(parents=True, exist_ok=True)
         step_xy, step_z = self.setup.resolve_export_steps(self.cfg.field_export_step_mm)
         try:
+            if self.point_sampling:
+                return R.export_field_plane(prj.model3d,"Efield",self.setup.frequency_ghz,
+                    step_xy,out,box,self.cfg.sampling.field_z_mm,log=self.log,
+                    stimulus_port=self.setup.stimulus(tag,self.cfg.objective))
             return R.export_field_cropped(
                 prj.model3d, "Efield",
                 float((self.cfg.objective.frequencies_ghz or
                        (self.setup.frequency_ghz,))[0]),
-                step_xy, out, box, 0.0, step_z_mm=step_z, log=self.log)
+                step_xy, out, box, 0.0, step_z_mm=step_z, log=self.log,
+                stimulus_port=self.setup.stimulus(tag,self.cfg.objective))
         finally:
             out.unlink(missing_ok=True)
 
     def close(self) -> None:
-        """存盘收尾（**不关 CST 实例**：常驻会话供下一次运行复用）。
+        """保存并关闭本次工程，保留 CST 环境供下一次运行复用。
 
         runner 在 finally 里调用——没连过也要能安全收尾。
         """
@@ -257,8 +312,10 @@ class CstSolver(SolverInterface):
                 continue
             try:
                 _save(prj, self.project_path(tag), self.log)
+                prj.close()
+                del self.projects[tag]
             except Exception as e:              # pragma: no cover - 尽力而为
-                self.log(f"[ -- ] 保存 {tag} 工程失败（忽略）：{e}")
+                self.log(f"[ -- ] 保存/关闭 {tag} 工程失败（忽略）：{e}")
 
     # ------------------------------------------------------------------ #
     def _solve(self, tag: str) -> Solution:
@@ -271,9 +328,26 @@ class CstSolver(SolverInterface):
         path = self.project_path(tag)
         m3d = prj.model3d
 
+        self._check_project(tag, prj)
+
         seconds = _run_solver(m3d, self.log)
         # cst.results 读的是磁盘结果：先存盘再读，否则读到的可能是上一轮
         _save(prj, path, self.log, what="求解后存盘")
+
+        if self._it is not None:
+            source = path.with_suffix("") / "Result"
+            destination = artifacts.iteration_dir(self.cfg.output.dir,self._it)
+            destination.mkdir(parents=True,exist_ok=True)
+            for name in ("Model.log","MCalc.log","Model.msh","log.tet","moegeom.tet","topot.tet","bc3d.tet","tetquality.tet"):
+                if (source/name).exists():
+                    shutil.copy2(source/name,destination/f"cst_{tag}_{name}")
+            if self.setup.solver_type == "fd":
+                fingerprints = {name:hashlib.sha256((source/name).read_bytes()).hexdigest()
+                                for name in ("moegeom.tet","topot.tet","bc3d.tet")}
+                self._mesh_fingerprints[tag] = fingerprints
+                if "fwd" in self._mesh_fingerprints and "bwd" in self._mesh_fingerprints:
+                    if self._mesh_fingerprints["fwd"] != self._mesh_fingerprints["bwd"]:
+                        raise RuntimeError("Forward/backward tetrahedral meshes differ; gradient evaluation stopped")
 
         freqs = tuple(float(f) for f in
                       (self.cfg.objective.frequencies_ghz or
@@ -283,22 +357,32 @@ class CstSolver(SolverInterface):
             sp = R.read_s_params(
                 path, self.setup.stimulus(tag, self.cfg.objective),
                 response_ports=tuple(self.setup.ports), freq_ghz=freq,
-                log=self.log)
+                log=self.log, exact_frequency=self.setup.solver_type == "fd")
             e_field = _export(m3d, "Efield", self.cfg, self.setup, tag,
-                              self.log, freq_ghz=freq)
+                              self.log, freq_ghz=freq,
+                              plane_z_mm=self.cfg.sampling.field_z_mm if self.point_sampling else None)
             h_field = _export(m3d, "Hfield", self.cfg, self.setup, tag,
-                              self.log, freq_ghz=freq)
+                              self.log, freq_ghz=freq,
+                              plane_z_mm=self.cfg.sampling.field_z_mm if self.point_sampling else None)
             frequency_results[freq] = FrequencyResult(sp, e_field, h_field)
         primary = frequency_results[freqs[0]]
+        pin = float(self.setup.port_power_w)
+        if self.setup.solver_type == "fd":
+            pin = R.read_incident_power(path,self.setup.stimulus(tag,self.cfg.objective),freqs[0],log=self.log)
+            if not np.isclose(pin,self.setup.port_power_w,rtol=1e-6,atol=1e-12):
+                raise ValueError(f"FD incident power {pin:g} W differs from configured Pin {self.setup.port_power_w:g} W")
+            self.log(f"[OK] FD actual incident power: {pin:g} W")
         sol = Solution(
             s_params=primary.s_params, e_field=primary.e_field,
-            h_field=primary.h_field, pin=float(self.setup.port_power_w),
-            extra={"tag": tag, "solver_seconds": seconds},
+            h_field=primary.h_field, pin=pin,
+            extra={"tag": tag, "solver_seconds": seconds, "solver_type":self.setup.solver_type,
+                   "mesh_sha256":self._mesh_fingerprints.get(tag)},
             frequency_results=(frequency_results
                                if self.cfg.objective.frequencies_ghz else {}))
+        self._solved_at[tag] = self._it
         if self._it is not None:
             paths = artifacts.save_solution(self.cfg.output.dir, self._it, tag,
-                                            sol, save_fields=self.save_fields)
+                                            sol, save_fields=self.save_fields, extra=sol.extra)
             self.log(f"[OK] 产物落盘："
                      f"{artifacts.iteration_dir(self.cfg.output.dir, self._it)}"
                      f"（{', '.join(sorted(paths))}）")
@@ -487,13 +571,17 @@ def _solver_running(m3d) -> bool:
 
 
 def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log,
-            *, freq_ghz: float | None = None):
+            *, freq_ghz: float | None = None, plane_z_mm: float | None = None):
     """导出该场并裁到设计区 ± field_margin_mm。"""
     freq = float(setup.frequency_ghz if freq_ghz is None else freq_ghz)
     out = Path(cfg.output.dir) / "cst_work" / f"{tag}_{field_type}_{freq:g}GHz.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
     step_xy, step_z = setup.resolve_export_steps(cfg.field_export_step_mm)
+    if plane_z_mm is not None:
+        return R.export_field_plane(m3d,field_type,freq,step_xy,out,cfg.design_region.box,
+            plane_z_mm,margin_mm=cfg.design_region.field_margin_mm,log=log,
+            stimulus_port=setup.stimulus(tag,cfg.objective))
     return R.export_field_cropped(
         m3d, field_type, freq, step_xy, out,
         cfg.design_region.box, float(cfg.design_region.field_margin_mm),
-        step_z_mm=step_z, log=log)
+        step_z_mm=step_z, log=log, stimulus_port=setup.stimulus(tag,cfg.objective))

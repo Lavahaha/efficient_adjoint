@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 # ===================== 两个 init 脚本唯一的差异 =====================
@@ -55,10 +56,14 @@ from eaopt.solver.case import load_case
 def main(argv=None) -> int:
     safe_console()
     p = base_parser(f"初始化 {TAG} 仿真工程并跑第一次仿真")
+    p.add_argument("--solver", choices=("td", "fd"), default="td")
     args = p.parse_args(argv)
     log = make_log(args.log)
     cfg = CaseConfig.from_yaml(args.config)
     setup, M = load_case(cfg)          # 算例（CstSetup + 模板模块）由 cfg.name 选
+    if args.solver == "fd" and cfg.objective.frequencies_ghz:
+        raise ValueError("FD currently supports single-frequency cases only")
+    setup = replace(setup, solver_type=args.solver)
     banner(log, f"初始化 {TAG} 工程", cfg, setup)
 
     path = setup.project_path(TAG, cfg.output.dir, cfg.name)
@@ -68,7 +73,7 @@ def main(argv=None) -> int:
         prj = de.new_mws()
         log("[OK] 新建 MWS 工程")
         port = setup.stimulus(TAG, cfg.objective)
-        blocks = M.template_blocks(f"{cfg.name}_{TAG}", port)
+        blocks = M.template_blocks(f"{cfg.name}_{TAG}", port, solver_type=setup.solver_type)
         log(f"[ .. ] 建 {TAG} 工程：{len(blocks)} 个命令块，激励端口 = {port}")
         _apply_blocks(prj.model3d, blocks, f"建 {TAG} 工程（激励端口 {port}）",
                       log)
@@ -213,17 +218,22 @@ def _solve_and_record(cfg: CaseConfig, setup, prj, path, *, tag: str,
 
     sp = R.read_s_params(path, setup.stimulus(tag, cfg.objective),
                          response_ports=tuple(setup.ports),
-                         freq_ghz=float(setup.frequency_ghz), log=log)
+                         freq_ghz=float(setup.frequency_ghz), log=log,
+                         exact_frequency=setup.solver_type=="fd")
     e_field = h_field = None
     if save_fields:
         e_field = _export(m3d, "Efield", cfg, setup, tag, log)
         h_field = _export(m3d, "Hfield", cfg, setup, tag, log)
+    pin = (R.read_incident_power(path,setup.stimulus(tag,cfg.objective),
+                                setup.frequency_ghz,log=log)
+           if setup.solver_type=="fd" else float(setup.port_power_w))
+    if abs(pin-setup.port_power_w)>1e-6*setup.port_power_w:
+        raise ValueError("CST incident power differs from configured Pin")
     sol = Solution(s_params=sp, e_field=e_field, h_field=h_field,
-                   pin=float(setup.port_power_w),
-                   extra={"tag": tag, "solver_seconds": seconds})
+                   pin=pin, extra={"tag":tag,"solver_seconds":seconds,"solver_type":setup.solver_type})
     if iteration is not None:
         paths = artifacts.save_solution(cfg.output.dir, int(iteration), tag,
-                                        sol, save_fields=bool(save_fields))
+                                        sol, save_fields=bool(save_fields),extra=sol.extra)
         log(f"[OK] 产物落盘：{artifacts.iteration_dir(cfg.output.dir, int(iteration))}"
             f"（{', '.join(sorted(paths))}）")
     return sol
@@ -264,7 +274,7 @@ def _export(m3d, field_type: str, cfg: CaseConfig, setup, tag: str, log):
     return R.export_field_cropped(
         m3d, field_type, float(setup.frequency_ghz), step_xy, out,
         cfg.design_region.box, float(cfg.design_region.field_margin_mm),
-        step_z_mm=step_z, log=log)
+        step_z_mm=step_z, log=log,stimulus_port=setup.stimulus(tag,cfg.objective))
 
 
 def _save_fields(args, setup) -> bool:

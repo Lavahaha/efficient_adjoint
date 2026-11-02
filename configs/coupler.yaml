@@ -69,9 +69,9 @@ constraints:
   taper_edges: none
 
 sampling:
-  field_z_mm: 0.0
-  intersection_offset_mm: 0.3
-  sample_side: inside
+  field_z_mm: 0.0175  # one-sided air sample; metal mid-height
+  intersection_offset_mm: 0.05
+  sample_side: outside
 optimizer:
   pseudo_time_step: 1.0e-8
   cfl: 0.5
@@ -80,4 +80,4 @@ optimizer:
 level_set:
   extension_band_mm: 1.0
 output:
-  dir: E:/zouyi/efficient_adjoint/results/coupler
+  dir: results/coupler

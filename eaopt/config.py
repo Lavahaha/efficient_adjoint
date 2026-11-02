@@ -223,7 +223,9 @@ class CaseConfig:
                 '只认 "xy" / "x" / "y" / "none"（速度掩膜 taper 作用在哪些边）')
         if self.sampling.sample_side not in ("outside", "inside"):
             raise ValueError(f"未知采样侧 {self.sampling.sample_side}")
-        if self.sampling.intersection_offset_mm < 0:
+        if not math.isfinite(self.sampling.field_z_mm):
+            raise ValueError("sampling.field_z_mm must be finite")
+        if not math.isfinite(self.sampling.intersection_offset_mm) or self.sampling.intersection_offset_mm < 0:
             raise ValueError("sampling.intersection_offset_mm 不能为负")
         if (not math.isfinite(self.optimizer.pseudo_time_step) or
                 self.optimizer.pseudo_time_step <= 0.0):

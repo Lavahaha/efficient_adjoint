@@ -73,6 +73,11 @@ class CstSetup:
     # 关掉它们只在有人盯着点框时才合理。
     quiet_mode: bool = True             # 连上就 DesignEnvironment.set_quiet_mode(True)
     clear_results: bool = True          # 每轮改形状前 DeleteResults（控制宏，不进历史表）
+    solver_type: str = "td"             # td or single-frequency fd
+
+    def __post_init__(self):
+        if self.solver_type not in ("td", "fd"):
+            raise ValueError(f"Unknown CST solver type: {self.solver_type}")
 
     # ------------------------------------------------------------------ #
     @property

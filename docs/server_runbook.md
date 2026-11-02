@@ -1,13 +1,20 @@
 # CST 服务器运行手册
 
+单频入口当前默认 `--solver fd --boundary-sampling cst-points`；多频仍使用原有 TD 默认路径。
+请使用新输出目录，旧 TD 工程不会自动转换为 FD。PEC 边界点要求外侧偏移和非零材料侧高度，
+正反向实际四面体网格不一致时终止计算。详细命令、产物格式及未通过的网格精度检查见
+[单频 FD 与点采样报告](single_frequency_fd_sampling_2026-11-02.md)。手工 `cst_init_*` 工具仍默认 TD，需要 FD 时显式传 `--solver fd`。
+
 ## 0. 环境准备
 
 安装项目及 CST 自带的官方 Python 库，解释器版本必须同时满足项目
-Python ≥3.10 和所安装 CST 版本的支持范围。以下路径按服务器实际目录修改。
+Python ≥3.10 和所安装 CST 版本的支持范围。本机 `E:\CST2024` 的
+`cst-studio-suite-link` 包声明 `>=3.7,<3.11`，因此使用 Python 3.10。
+以下路径按实际安装目录修改。
 
 ```bash
 pip install -e .
-pip install --no-index --find-links "D:\CST 2024\Library\Python\repo\simple" cst-studio-suite-link
+pip install --no-index --find-links "E:\CST2024\Library\Python\repo\simple" cst-studio-suite-link
 python -c "import cst.interface; import cst.results; print(cst.interface.__file__)"
 ```
 
@@ -15,6 +22,14 @@ python -c "import cst.interface; import cst.results; print(cst.interface.__file_
 `output.dir`。非空输出目录会自动生成 `run_<UTC时间戳>/` 子目录，
 以控制台打印的本次路径为准；旧日志、快照和 CST 工程不会被覆盖。当前不支持断点续跑。
 新增 Shapely 几何依赖后须重新执行 `pip install -e .`。
+
+本机项目内的 Python 3.10 解释器是 `.venv\python.exe`。在 PowerShell 中显式调用，
+避免误用默认的 Python 3.14：
+
+```powershell
+.\.venv\python.exe -c "import sys, cst.interface, cst.results; print(sys.version); print(cst.interface.__file__)"
+.\.venv\python.exe scripts/run_coupler_adjoint_levelset.py --iterations 2 --output-dir results/coupler_local_smoke
+```
 
 ## 1. 小规模验收
 
@@ -27,6 +42,8 @@ python scripts/run_divider_multifreq.py --iterations 2 --output-dir results/divi
 
 四个入口都通过 `eaopt.runner` 调用 `adjoint_levelset.py`。默认创建无界面实例，
 工程缺失时自动初始化。`--attach` 用于附接已运行的 GUI 实例。
+为控制本地内存占用，正向/反向工程按需交替打开，切换前先保存并关闭当前工程；
+运行结束也会保存并关闭本次工程，CST 环境仍保留。需要查看时重新打开对应 `.cst`。
 
 检查模型 History List 非空，保存并关闭后重新打开 `.cst`，确认几何与端口仍在。
 CST 工程包含 `.cst` 文件及其同名文件夹，复制工程时两者一起复制。
@@ -83,7 +100,6 @@ python scripts/cst_update.py --help
 结果读取前必须先保存工程；不要改监视器名称，导出工具按其名称定位场条目。
 已有结果导致确认框阻塞时，检查 `quiet_mode`、`clear_results` 配置及 CST 许可状态。
 
-旧 pipeline、过期诊断脚本及 `tests/` 已移除。记录逻辑可用
-`python scripts/check_evaluation_recording.py` 离线回归检查；真实计算仍须通过
-有限差分检查和 CST 小规模验收。
-`python scripts/check_design_geometry.py` 覆盖四个案例的区外金属保留、连接边界、孔洞、CST 重建和完整运行记录。
+旧 pipeline、过期诊断脚本、`tests/` 及模拟 CST/求解的检查已移除。
+`python scripts/check_design_geometry.py` 仅检查纯几何：四个案例的区外金属保留、
+连接边界和孔洞；CST 重建、运行记录与梯度仍须通过真实小规模运行验收。

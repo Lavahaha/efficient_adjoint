@@ -53,7 +53,7 @@ __all__ = [
     "DESIGN_COMPONENT", "delete_component", "design_region_update",
     "waveguide_port", "field_monitor", "field_monitor_name",
     "field_result_path", "FIELD_TYPES",
-    "set_boundaries", "time_domain_solver_setup", "frequency_range",
+    "set_boundaries", "time_domain_solver_setup", "frequency_domain_solver_setup", "solver_setup", "frequency_range",
     "MESH_CREATOR",
     "ASCII_EXPORT_MODE", "ASCII_EXPORT_EXECUTE", "ascii_export_params",
     # 模板
@@ -348,6 +348,7 @@ def time_domain_solver_setup(stimulation_port: str = "All",
     if stimulation_mode is None:
         stimulation_mode = "All" if stimulation_port == "All" else "1"
     return (
+        'ChangeSolverType "HF Time Domain"\n'
         "With Solver\n"
         '    .Method "Hexahedral"\n'
         '    .CalculationType "TD-S"\n'
@@ -362,8 +363,7 @@ def time_domain_solver_setup(stimulation_port: str = "All",
         '    .FullDeembedding "False"\n'
         '    .SuperimposePLWExcitation "False"\n'
         '    .UseSensitivityAnalysis "False"\n'
-        # 下面两项是录制里没有、我们额外保留的：S 参数按 50 Ω 归一，
-        # 不依赖该机器 GUI 里的默认值（|S31| 是我们的目标函数）。
+        # False 使用计算的输入端口阻抗；50 仅在 AutoNormImpedance=True 时生效。
         '    .AutoNormImpedance "False"\n'
         '    .NormingImpedance "50"\n'
         "End With\n"
@@ -373,6 +373,39 @@ def time_domain_solver_setup(stimulation_port: str = "All",
 # GUI 录制：打开时域求解器对话框时，CST 会把网格生成器写进历史表。
 # 单独一条历史记录（录制里就是独立一行），故单独成块。
 MESH_CREATOR = 'Mesh.SetCreator "High Frequency"\n'
+
+
+def frequency_domain_solver_setup(stimulation_port: int, frequency_ghz: float) -> str:
+    """CST 2024 HF FEM: one actual frequency and one port/mode, fixed mesh policy."""
+    if int(stimulation_port) <= 0 or not math.isfinite(frequency_ghz) or frequency_ghz <= 0:
+        raise ValueError("FD requires a positive port and finite positive frequency")
+    return (
+        'ChangeSolverType "HF Frequency Domain"\n'
+        f'Solver.FrequencyRange "0", "{2 * frequency_ghz:g}"\n'
+        'With FDSolver\n'
+        ' .Reset\n'
+        ' .SetMethod "Tetrahedral", "Discrete samples only"\n'
+        ' .OrderTet "Second"\n'
+        ' .AccuracyTet "1e-6"\n'
+        ' .MeshAdaptionTet "False"\n'
+        f' .Stimulation "{int(stimulation_port)}", "1"\n'
+        ' .AutoNormImpedance "False"\n'
+        ' .NormingImpedance "50"\n'
+        ' .SetKeepSolutionCoefficients "All"\n'
+        ' .ResetSampleIntervals "all"\n'
+        f' .AddSampleInterval "{frequency_ghz:g}", "{frequency_ghz:g}", "1", "Single", "False"\n'
+        ' .UseParallelization "True"\n'
+        ' .MaxCPUs "2"\n'
+        'End With\n'
+    )
+
+
+def solver_setup(portnum: int, frequency_ghz: float, solver_type: str = "td") -> str:
+    if solver_type == "fd":
+        return frequency_domain_solver_setup(portnum, frequency_ghz)
+    if solver_type == "td":
+        return time_domain_solver_setup(str(portnum))
+    raise ValueError(f"Unknown solver type: {solver_type}")
 
 
 def frequency_range(fmin_ghz: float, fmax_ghz: float) -> str:
@@ -571,7 +604,7 @@ def model_blocks() -> list[str]:
             + [_arm_design_part()] + _ports())
 
 
-def setting_blocks(portnum: int) -> list[tuple[str, str]]:
+def setting_blocks(portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
     """全部**设置**类块 ``[(标签, 命令文本)]``：求解器/频段/监视器/边界。
 
     顺序与 template_blocks 一致（标签在前）。标签是 ASCII（进 History
@@ -586,7 +619,7 @@ def setting_blocks(portnum: int) -> list[tuple[str, str]]:
         # 报 10090，且失败静默：S 参数照样对，场却是多激励叠加的）。
         # 端口与模式成对给出（"1"/"1"）：实测 "1" + "All" 会让
         # Solver.Start 报 "Invalid stimulation port, please specify."。
-        ("Solver", time_domain_solver_setup(str(portnum))),
+        ("Solver", solver_setup(portnum, FREQ, solver_type)),
         ("FrequencyRange", frequency_range(FMIN, FMAX)),
         ("Monitor Efield", field_monitor("Efield", FREQ)),
         ("Monitor Hfield", field_monitor("Hfield", FREQ)),
@@ -617,7 +650,7 @@ def block_header(cmd: str) -> str:
     return kind
 
 
-def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
+def template_blocks(project: str, portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
     """模板的全部命令块 ``[(标题, VBA 命令文本)]`` —— **单一事实来源**。
 
     调用方逐块交给 ``model3d.add_to_history(标题, 命令文本)``。改几何只改
@@ -627,7 +660,7 @@ def template_blocks(project: str, portnum: int) -> list[tuple[str, str]]:
     """
     blocks = [("Units", UNITS_BLOCK)]
     blocks += [(block_header(c), c) for c in model_blocks()]
-    blocks += setting_blocks(portnum)
+    blocks += setting_blocks(portnum, solver_type)
     return blocks
 
 
