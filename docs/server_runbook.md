@@ -3,7 +3,7 @@
 单频入口当前默认 `--solver fd --boundary-sampling cst-points`；多频仍使用原有 TD 默认路径。
 请使用新输出目录，旧 TD 工程不会自动转换为 FD。PEC 边界点要求外侧偏移和非零材料侧高度，
 正反向实际四面体网格不一致时终止计算。详细命令、产物格式及未通过的网格精度检查见
-[单频 FD 与点采样报告](single_frequency_fd_sampling_2026-11-02.md)。手工 `cst_init_*` 工具仍默认 TD，需要 FD 时显式传 `--solver fd`。
+[综合测试分析报告](analysis_summary_2026-11-02.md)。手工 `cst_init_*` 工具仍默认 TD，需要 FD 时显式传 `--solver fd`。
 
 ## 0. 环境准备
 

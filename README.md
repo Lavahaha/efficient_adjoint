@@ -39,7 +39,7 @@ Shapely 用于金属多边形的差集、并集与孔洞处理；更新代码后
 
 单频默认使用频域四面体求解和 CST 指定边界点取场（`--solver fd --boundary-sampling cst-points`）；
 多频默认路径不变。单频 PEC 配置使用外侧偏移和非零采样高度，绘图只导出该高度的二维场。
-实现、真实短程结果及尚未通过的网格精度检查见[单频采样报告](docs/single_frequency_fd_sampling_2026-11-02.md)。
+实现、真实短程结果及尚未通过的网格精度检查见[综合测试分析报告](docs/analysis_summary_2026-11-02.md)。
 
 ```bash
 # 指定小规模运行、独立输出目录和日志
@@ -181,6 +181,11 @@ python scripts/plot_layout.py configs/divider.yaml
 `cst_init_fwd.py`、`cst_init_bwd.py` 和 `cst_update.py` 保留为手工建模与求解工具。
 
 ## 验证
+
+2026-11-08 清理了 `tmp/` 中已被替代的
+`capture_divider_audit_logs.py`、`check_divider_frozen_baseline.py`、
+`probe_fd_mesh.py` 和 `probe_pin_eq18.py`。当前报告引用的诊断脚本、原始求解数据
+和公式（18）验证数据仍保留；不按文件日期直接判定过期。
 
 ```bash
 # 无需 CST 的纯几何检查；模拟 CST/求解流程已移除

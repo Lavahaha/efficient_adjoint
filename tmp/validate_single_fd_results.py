@@ -67,10 +67,27 @@ for name in ('coupler_smoke', 'divider_smoke', 'antenna_smoke', 'coupler_planar_
             for kind in ('e','h'):
                 grid = np.load(folder/f'iter_{iteration:03d}/fields_fwd_{kind}.npz')
                 assert grid['data'].shape[2] == 1 and grid['origin'][2] == cfg.sampling.field_z_mm
+    coupler_geometry = None
+    if summary['case'] == 'coupler':
+        fixed = [Polygon(p) for p in model.fixed_metal_polygons()]
+        through,left,right = fixed
+        coupler_geometry = []
+        for iteration in (0,1):
+            saved_shape = json.loads((folder/f'iter_{iteration:03d}/shape.json').read_text())
+            saved_regions = classify_metal_regions([np.asarray(p) for p in saved_shape['polygons']])
+            moving = unary_union([Polygon(r.outer,r.holes) for r in saved_regions])
+            coupled = unary_union([moving,left,right])
+            parts = list(coupled.geoms) if coupled.geom_type == 'MultiPolygon' else [coupled]
+            connected = any(p.intersects(left) and p.intersects(right) for p in parts)
+            gap = coupled.distance(through)
+            coupler_geometry.append(dict(iteration=iteration,coupled_ports_connected=connected,
+                right_leg_gap_mm=moving.distance(right),through_line_gap_mm=gap,
+                geometry_acceptance_passed=connected and gap>=cfg.constraints.min_gap_mm-1e-9))
     rows.append(dict(run=name,case=summary['case'],native_solver_jobs=solves,
         active_points=len(indices),z_mm=float(fields['z_mm']),offset_mm=float(fields['offset_mm']),
         f_before=history[0]['f_before'],f_after=history[0]['f_after'],objective_gain=history[0]['objective_gain'],
-        pipeline_checks_passed=True,planar_display_export=planar))
+        solver_io_checks_passed=True,planar_display_export=planar,coupler_geometry=coupler_geometry,
+        paper_reproduction_passed=False))
 
 plane_difference = abs(rows[0]['f_after']-rows[3]['f_after'])
 assert plane_difference < 1e-5
@@ -85,7 +102,7 @@ hausdorff_mm = geometries[0].hausdorff_distance(geometries[1])
 assert hausdorff_mm < 1e-4
 mesh = json.loads((ROOT/'coupler_mesh_sampling/analysis.json').read_text())
 delta_s = next(v['y'][-1][0] for k,v in mesh['adaptation_curves'].items() if 'Delta' in k)
-result = dict(status='pipeline_passed_accuracy_not_certified',runs=rows,
+result = dict(status='paper_reproduction_failed',solver_io_checks_passed=True,runs=rows,
     planar_export_control=dict(final_fom_absolute_difference=plane_difference,final_phi_max_difference=phi_difference,
                                final_cad_hausdorff_mm=hausdorff_mm),
     mesh_check=dict(maximum_passes=3,target_delta_s=.001,final_delta_s=delta_s,

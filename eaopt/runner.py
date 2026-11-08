@@ -122,7 +122,7 @@ class CstAdjointLevelSetProblem:
 
     def __init__(self, cfg, setup, solver, sample_offset_mm: float,
                  prefactor_scale: float, output_dir: Path, log=print,
-                 boundary_sampling: str = "grid", adjoint_source: str = "unit"):
+                 boundary_sampling: str = "grid", adjoint_source: str = "objective"):
         self.cfg = cfg
         self.setup = setup
         self.solver = solver
@@ -551,8 +551,8 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
                         help="single-frequency default: cst-points; multifrequency default remains grid")
     parser.add_argument("--solver", choices=("td", "fd"), default=None,
                         help="single-frequency default: fd; multifrequency remains td")
-    parser.add_argument("--adjoint-source", choices=("unit", "objective"), default="unit",
-                        help="single frequency: unit reverse field (default), or experimental objective-derived complex factor")
+    parser.add_argument("--adjoint-source", choices=("unit", "objective"), default="objective",
+                        help="single frequency: experimental conj(S)/|S| factor (default), or unit reverse field")
     parser.add_argument("--prefactor-scale", type=float, default=1.0,
                         help="real scale/sign applied to the paper prefactor; default follows velocity_sign")
     parser.add_argument("--gradient-check", action="store_true",
