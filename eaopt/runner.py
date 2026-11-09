@@ -299,7 +299,7 @@ class CstAdjointLevelSetProblem:
             magnitude = abs(fwd.s)
             if not np.isfinite(magnitude) or magnitude == 0:
                 raise ValueError(f"Experimental adjoint coefficient requires finite nonzero S, got {fwd.s}")
-            amplitude = -1j * np.conj(fwd.s) / magnitude
+            amplitude = -1j * self.omega * np.conj(fwd.s) / magnitude
         self._write_eval({"eval_id": fwd.extra["eval_id"], "kind": "adjoint_source",
             "mode": self.adjoint_source, "objective": self.fom_kind,
             "omega_rad_per_s": self.omega,
@@ -562,7 +562,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     parser.add_argument("--solver", choices=("td", "fd"), default=None,
                         help="single-frequency default: fd; multifrequency remains td")
     parser.add_argument("--adjoint-source", choices=("unit", "objective"), default="objective",
-                        help="single frequency: experimental -1j*conj(S)/|S| (default), or unit reverse field")
+                        help="single frequency: experimental -1j*omega*conj(S)/|S|, omega=2*pi*f (default), or unit reverse field")
     parser.add_argument("--prefactor-scale", type=float, default=1.0,
                         help="real scale/sign on the shape derivative; default follows velocity_sign")
     parser.add_argument("--gradient-check", action="store_true",
@@ -672,7 +672,8 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     log(f"[adjoint_levelset] CST solver: {setup.solver_type}")
     log(f"[adjoint_levelset] single-frequency adjoint source: {args.adjoint_source}")
     if not cfg.objective.frequencies_ghz and args.adjoint_source == "objective":
-        log("[adjoint_levelset] experimental coefficient: -1j*conj(S)/|S|")
+        log("[adjoint_levelset] experimental coefficient: -1j*omega*conj(S)/|S|; "
+            "omega=2*pi*f in rad/s")
     log(f"[adjoint_levelset] pseudo_time_step={cfg.optimizer.pseudo_time_step:g}; "
         f"CFL={cfg.optimizer.cfl:g}; "
         f"extension band={cfg.level_set.extension_band_mm:g} mm")
@@ -684,7 +685,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             f"scale={prefactor_scale:g}; validate it with --gradient-check")
     else:
         log("[adjoint_levelset] shape_derivative_mine: "
-            "Re[eps*E_perp.Eb_perp + j*omega*mu*H_par.Hb_par]; "
+            "Re[eps*E_perp.Eb_perp + mu*H_par.Hb_par]; "
             f"scale={prefactor_scale:g}; validate it with --gradient-check")
 
     solver = None

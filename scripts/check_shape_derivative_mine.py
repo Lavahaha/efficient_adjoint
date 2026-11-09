@@ -31,22 +31,22 @@ class ShapeDerivativeMineChecks(unittest.TestCase):
             self.boundary if boundary is None else boundary,
             *(self.fields if fields is None else fields), omega, eps, mu)
 
-    def test_formula_projection_and_frequency(self):
+    def test_formula_projection_and_frequency_independence(self):
         # E product = 5+5j, tangential H product = 6+12j.
-        np.testing.assert_allclose(self.evaluate(), [-170., -170.])
+        np.testing.assert_allclose(self.evaluate(), [40., 40.])
         np.testing.assert_allclose(self.evaluate(mu=0.), [10., 10.])
-        np.testing.assert_allclose(self.evaluate(eps=0.), [-180., -180.])
-        np.testing.assert_allclose(self.evaluate(omega=6.), [-350., -350.])
+        np.testing.assert_allclose(self.evaluate(eps=0.), [30., 30.])
+        np.testing.assert_allclose(self.evaluate(omega=6.), [40., 40.])
         self.assertFalse(np.iscomplexobj(self.evaluate()))
 
     def test_bilinear_products_and_objective_source(self):
         ef, hf, eb, hb = self.fields
         np.testing.assert_allclose(
-            self.evaluate([1j * ef, 1j * hf, 1j * eb, 1j * hb]), [170., 170.])
-        # Re[(.6-.8j) * (-170+100j)] = -22; weight precedes Re[].
+            self.evaluate([1j * ef, 1j * hf, 1j * eb, 1j * hb]), [-40., -40.])
+        # Re[(.6-.8j) * (40+70j)] = 80; weight precedes Re[].
         weight = .6 - .8j
         np.testing.assert_allclose(
-            self.evaluate([ef, hf, weight * eb, weight * hb]), [-22., -22.])
+            self.evaluate([ef, hf, weight * eb, weight * hb]), [80., 80.])
 
     def test_original_kernel_is_unchanged(self):
         value = als.shape_derivative_from_fields(
@@ -84,15 +84,15 @@ class ExperimentalSourceChecks(unittest.TestCase):
             als.ForwardResult(s=s, fields=None,
                               extra={"eval_id": 0, "output_power_w": pm}))
 
-    def test_phase_and_frequency_independence(self):
+    def test_frequency_scaling_and_phase(self):
         s = .3 + .4j
         pm = abs(s) ** 2 * 2.0
-        expected = -.8 - .6j
+        expected = -2.4 - 1.8j
         np.testing.assert_allclose(self.source(s, pm), expected)
         np.testing.assert_allclose(self.source(s, 4 * pm), expected)
         self.problem.omega = 6.
-        np.testing.assert_allclose(self.source(s, pm), expected)
-        self.assertAlmostEqual(abs(self.source(s, pm)), 1.)
+        np.testing.assert_allclose(self.source(s, pm), 2 * expected)
+        self.assertAlmostEqual(abs(self.source(s, pm)), self.problem.omega)
         self.assertEqual(self.rows[0]["output_power_w"], pm)
         self.assertEqual(self.rows[0]["omega_rad_per_s"], 3.)
         self.assertAlmostEqual(self.rows[0]["amplitude_real"], expected.real)
@@ -128,7 +128,7 @@ class ExperimentalSourceChecks(unittest.TestCase):
         self.problem.eps, self.problem.mu, self.problem.omega = 2., 5., 3.
         self.problem.prefactor_scale = 2.
         actual = self.problem.boundary_gradient(None, fwd, boundary)
-        np.testing.assert_allclose(actual, [392.])
+        np.testing.assert_allclose(actual, [60.])
 
 
 if __name__ == "__main__":

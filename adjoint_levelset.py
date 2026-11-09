@@ -252,16 +252,17 @@ def shape_derivative_from_fields(boundary: Boundary, Ef: np.ndarray, Hf: np.ndar
 def shape_derivative_mine(boundary: Boundary, Ef: np.ndarray, Hf: np.ndarray,
                           Eb: np.ndarray, Hb: np.ndarray, omega: float,
                           eps: float = EPS0, mu: float = MU0) -> np.ndarray:
-    """Real boundary sensitivity Re[eps E_perp . Eb_perp + j omega mu H_par . Hb_par].
+    """Real boundary sensitivity Re[eps E_perp . Eb_perp + mu H_par . Hb_par].
 
-    Fields have shape (3, N) at the same sample points; omega is in rad/s.
+    Fields have shape (3, N) at the same sample points.
+    omega (rad/s) is retained for call compatibility, not used in this kernel.
     Products are bilinear (no conjugation). Any objective source weight must
     already be included in Eb/Hb. No Eq. (25) prefactor or port power is applied.
     """
     if not np.isfinite(omega) or omega <= 0:
         raise ValueError("omega must be finite and positive (rad/s)")
     e_perp, h_par = _boundary_field_products(boundary, Ef, Hf, Eb, Hb)
-    return np.real(eps * e_perp + 1j * omega * mu * h_par)
+    return np.real(eps * e_perp + mu * h_par)
 
 
 def _boundary_field_products(boundary, Ef, Hf, Eb, Hb):

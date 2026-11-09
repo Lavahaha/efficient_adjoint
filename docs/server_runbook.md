@@ -43,12 +43,12 @@ python scripts/run_divider_multifreq.py --iterations 2 --output-dir results/divi
 四个入口都通过 `eaopt.runner` 调用 `adjoint_levelset.py`。默认创建无界面实例，
 工程缺失时自动初始化。`--attach` 用于附接已运行的 GUI 实例。
 三个单频入口使用 `shape_derivative_mine`，公式为
-`Re[eps*E_perp·Eb_perp + j*omega*MU0*H_parallel·Hb_parallel]`，
+`Re[eps*E_perp·Eb_perp + MU0*H_parallel·Hb_parallel]`，
 保留当前伴随源权重与速度比例，不再乘公式（25）的 `-2j*omega/Pin`。
-默认实验权重为 `-1j*conj(S)/|S|`，模为 1；形状核磁场项中的 `omega` 保留。
+默认实验权重为 `-1j*omega*conj(S)/|S|`，其中 `omega=2*pi*f`，单位 rad/s；磁场点乘项只乘 `MU0`。
 `cst_evaluations.jsonl` 记录角频率、实际复数系数及作为诊断数据的入射/出射功率。
-此前含 `omega` 系数的 3 轮仿真见 [-jω 历史实验记录](experimental_minus_jomega_validation_2026-11-09.md)；
-其中约 `1e-20` 至 `1e-19` 的实验步长对应历史系数尺度，当前系数需重新选择步长。
+该系数此前的 3 轮仿真见 [-jω 实验记录](experimental_minus_jomega_validation_2026-11-09.md)；
+该记录中的磁场核含 `j*omega`，其中约 `1e-20` 至 `1e-19` 的实验步长需按当前磁场核重新选择。
 `run_config.json` 的 `shape_derivative` 记录所用公式；双频仍为 `paper_eq25`。
 为控制本地内存占用，正向/反向工程按需交替打开，切换前先保存并关闭当前工程；
 运行结束也会保存并关闭本次工程，CST 环境仍保留。需要查看时重新打开对应 `.cst`。
