@@ -78,9 +78,17 @@ python scripts/run_antenna_adjoint_levelset.py --help
 每次更新都重初始化符号距离；保留零速度、极小预测位移的停止条件及几何和数值校验。
 `optimizer.max_iterations` 控制最大迭代次数。
 
-单频路径保留原有的实部形状灵敏度约定，不额外乘 S 参数相位因子。
+三个单频案例使用 `shape_derivative_mine(boundary, Ef, Hf, Eb, Hb, omega, eps=EPS0, mu=MU0)`：
+`Re[eps * E_perp · Eb_perp + 1j * omega * mu * H_parallel · Hb_parallel]`。
+输入场为 `(3, N)` 复数数组，`omega = 2πf`（rad/s），点积不取共轭；
+`eps` 取实际采样侧介电常数，`mu` 默认 `MU0`。直接取场和网格插值均调用该接口。
+`--adjoint-source objective` 的实验伴随源权重为 `-1j*conj(S)/|S|`，
+每轮按当前 S 参数重新计算，源权重的模为 1；形状核磁场项中的 `omega` 保留。
+S 为零或非有限时会报错，避免未定义相位进入梯度；端口功率继续记录为诊断数据。
+权重在取实部前乘入反向场；`--adjoint-source unit` 使用单位反向场。
+新公式不乘原来的 `-2j*omega/Pin`；`--prefactor-scale` 与 `velocity_sign` 只整体缩放结果。
 双频路径按各频点的角频率计算灵敏度，通过 dB 目标的复数链式因子和 soft-min
-动态权重汇总梯度；初始评估、迭代记录和有限差分检查均使用相同的双频目标。
+动态权重汇总原公式（25）的梯度；初始评估、迭代记录和有限差分检查均使用相同的双频目标。
 双频目标的值以 dB 余量表示，不等于单个频点的 S 参数幅值。
 
 YAML 中保留当前优化器实际使用的参数：
@@ -190,7 +198,17 @@ python scripts/plot_layout.py configs/divider.yaml
 ```bash
 # 无需 CST 的纯几何检查；模拟 CST/求解流程已移除
 python scripts/check_design_geometry.py
+
+# 新形状导数的解析场检查（无需 CST）
+python scripts/check_shape_derivative_mine.py
 ```
+
+`shape_derivative_mine` 的三个案例真实场回放和本机 CST 求解尝试见
+[本地验证记录](docs/shape_derivative_mine_validation_2026-11-09.md)。
+此前 `-j*omega` 实验系数的 3 轮仿真保留在
+[-jω 系数验证记录](docs/experimental_minus_jomega_validation_2026-11-09.md)。
+此前出射功率归一化系数的结果保留在
+[历史实验记录](docs/experimental_coefficient_validation_2026-11-09.md)。
 
 使用四个案例入口的 `--help` 检查参数和导入，使用 `--gradient-check` 在配置好
 CST 的环境中检查目标变化与伴随梯度，并先做 1–2 轮小规模运行确认几何、场数据

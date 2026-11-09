@@ -134,11 +134,11 @@ class CstAdjointLevelSetProblem:
             raise ValueError(f"Unknown adjoint source: {adjoint_source}")
         self.adjoint_source = adjoint_source
         self.eps = als.EPS0 * float(setup.eps_r)
-        omega = 2.0 * np.pi * float(setup.frequency_ghz) * 1e9
+        self.omega = 2.0 * np.pi * float(setup.frequency_ghz) * 1e9
         pin = float(setup.port_power_w)
         if pin <= 0:
             raise ValueError(f"CST port power must be positive, got {pin:g} W")
-        self.prefactor = float(prefactor_scale) * (-2j * omega / pin)
+        self.prefactor = float(prefactor_scale) * (-2j * self.omega / pin)
         self.prefactor_scale = float(prefactor_scale)
         self.frequencies = tuple(map(float, cfg.objective.frequencies_ghz or ()))
         self.requested_z_mm = float(cfg.sampling.field_z_mm)
@@ -244,6 +244,8 @@ class CstAdjointLevelSetProblem:
         self.eps = als.EPS0 * (
             float(self.setup.eps_r) if z_used <= 1e-6 else 1.0)
         s = complex(sol.s_params[self.s_key])
+        incident_power = float(sol.pin)
+        output_power = abs(s) ** 2 * incident_power
         frequency_data = self._frequency_data(sol) if self.frequencies else {}
         fom = (multi_frequency_fom(
             {f: row[0] for f, row in frequency_data.items()}, self.cfg)[0]
@@ -253,6 +255,8 @@ class CstAdjointLevelSetProblem:
             "kind": "forward",
             "s_real": s.real,
             "s_imag": s.imag,
+            "incident_power_w": incident_power,
+            "output_power_w": output_power,
             "objective_value": fom,
             "field_z_mm": self.requested_z_mm if self.boundary_sampling == "cst-points" else z_used,
             "grid_field_z_mm": z_used,
@@ -270,6 +274,7 @@ class CstAdjointLevelSetProblem:
             extra={"eval_id": eval_id, "z_mm": z_used,
                    "x": fields.x.copy(), "y": fields.y.copy(),
                    "s_params": dict(sol.s_params), "frequency_data": frequency_data,
+                   "incident_power_w": incident_power, "output_power_w": output_power,
                    "objective_value": fom},
         )
 
@@ -287,6 +292,20 @@ class CstAdjointLevelSetProblem:
 
     def objective_value(self, fwd):
         return fwd.extra["objective_value"]
+
+    def _source_amplitude(self, fwd):
+        amplitude = 1.0 + 0j
+        if self.adjoint_source == "objective":
+            magnitude = abs(fwd.s)
+            if not np.isfinite(magnitude) or magnitude == 0:
+                raise ValueError(f"Experimental adjoint coefficient requires finite nonzero S, got {fwd.s}")
+            amplitude = -1j * np.conj(fwd.s) / magnitude
+        self._write_eval({"eval_id": fwd.extra["eval_id"], "kind": "adjoint_source",
+            "mode": self.adjoint_source, "objective": self.fom_kind,
+            "omega_rad_per_s": self.omega,
+            "output_power_w": fwd.extra["output_power_w"],
+            "amplitude_real": float(amplitude.real), "amplitude_imag": float(amplitude.imag)})
+        return amplitude
 
     def _point_gradient(self, fwd, boundary):
         indices = np.flatnonzero(boundary.active)
@@ -319,11 +338,7 @@ class CstAdjointLevelSetProblem:
             eb, hb = self.solver.sample_fields(points, tag="bwd", freq_ghz=freq)
         self._write_eval({"eval_id":fwd.extra["eval_id"],"kind":"adjoint",
                          "fields_reused_from":"forward" if self.forward_only else None})
-        _, weight = als.fom_value_and_weight(fwd.s, self.fom_kind)
-        amplitude = np.conj(weight) if self.adjoint_source == "objective" else 1+0j
-        self._write_eval({"eval_id":fwd.extra["eval_id"],"kind":"adjoint_source",
-            "mode":self.adjoint_source,"objective":self.fom_kind,
-            "amplitude_real":float(amplitude.real),"amplitude_imag":float(amplitude.imag)})
+        amplitude = self._source_amplitude(fwd)
         material = "substrate" if self.requested_z_mm < 0 else "air"
         self.log(f"[boundary fields] {len(points)} active points, z={self.requested_z_mm:g} mm, "
                  f"material={material}, eps={eps:.9g} F/m")
@@ -339,8 +354,8 @@ class CstAdjointLevelSetProblem:
         selected = als.Boundary(boundary.pts[indices],boundary.normals[indices],
                                 boundary.weights[indices],np.ones(len(indices),bool))
         gradient = np.zeros(len(boundary.pts))
-        gradient[indices] = np.real(als.shape_derivative_from_fields(
-            selected,ef,hf,amplitude*eb,amplitude*hb,self.prefactor,eps,self.mu))
+        gradient[indices] = self.prefactor_scale * als.shape_derivative_mine(
+            selected,ef,hf,amplitude*eb,amplitude*hb,self.omega,eps,self.mu)
         return gradient
 
     def boundary_gradient(self, ls, fwd, boundary):
@@ -356,19 +371,14 @@ class CstAdjointLevelSetProblem:
                              for freq in (self.frequencies or (self.setup.frequency_ghz,))}
         if not self.frequencies:
             adj = self.adjoint(ls, fwd)
-            _, objective_weight = als.fom_value_and_weight(fwd.s, self.fom_kind)
-            # Experimental: applying the objective weight assumes Q is the complex S derivative.
-            source_amplitude = (np.conj(objective_weight)
-                                if self.adjoint_source == "objective" else 1.0 + 0j)
-            self._write_eval({"eval_id": fwd.extra["eval_id"], "kind": "adjoint_source",
-                "mode": self.adjoint_source,
-                "objective": self.fom_kind, "amplitude_real": float(source_amplitude.real),
-                "amplitude_imag": float(source_amplitude.imag)})
-            adj = als.FieldBundle(x=adj.x, y=adj.y,
-                                  E=source_amplitude * adj.E, H=source_amplitude * adj.H)
-            return np.real(als.shape_derivative_complex(
-                boundary, fwd.fields, adj, self.prefactor, self.sample_offset,
-                self.eps, self.mu))
+            # Apply the objective source weight before taking the real part.
+            source_amplitude = self._source_amplitude(fwd)
+            points = boundary.pts + self.sample_offset * boundary.normals
+            ef, hf = fwd.fields.sample(points)
+            eb, hb = adj.sample(points)
+            return self.prefactor_scale * als.shape_derivative_mine(
+                boundary, ef, hf, source_amplitude * eb, source_amplitude * hb,
+                self.omega, self.eps, self.mu)
         forward = fwd.extra["frequency_data"]
         backward = (forward if self.forward_only else
                     self._frequency_data(self.solver.solve_backward()))
@@ -552,9 +562,9 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     parser.add_argument("--solver", choices=("td", "fd"), default=None,
                         help="single-frequency default: fd; multifrequency remains td")
     parser.add_argument("--adjoint-source", choices=("unit", "objective"), default="objective",
-                        help="single frequency: experimental conj(S)/|S| factor (default), or unit reverse field")
+                        help="single frequency: experimental -1j*conj(S)/|S| (default), or unit reverse field")
     parser.add_argument("--prefactor-scale", type=float, default=1.0,
-                        help="real scale/sign applied to the paper prefactor; default follows velocity_sign")
+                        help="real scale/sign on the shape derivative; default follows velocity_sign")
     parser.add_argument("--gradient-check", action="store_true",
                         help="run central finite-difference checks before optimization (extra CST solves)")
     args = parser.parse_args()
@@ -594,6 +604,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
         "time_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": str(Path(args.config).expanduser().resolve()),
         "config": asdict(cfg), "setup": asdict(setup), "arguments": vars(args),
+        "shape_derivative": "paper_eq25" if cfg.objective.frequencies_ghz else "mine",
     })
     log(cfg.summary())
     banner(log, f"Run adjoint_levelset: {cfg.name}", cfg, setup)
@@ -660,14 +671,21 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     log(f"[adjoint_levelset] boundary sampling: {args.boundary_sampling}")
     log(f"[adjoint_levelset] CST solver: {setup.solver_type}")
     log(f"[adjoint_levelset] single-frequency adjoint source: {args.adjoint_source}")
+    if not cfg.objective.frequencies_ghz and args.adjoint_source == "objective":
+        log("[adjoint_levelset] experimental coefficient: -1j*conj(S)/|S|")
     log(f"[adjoint_levelset] pseudo_time_step={cfg.optimizer.pseudo_time_step:g}; "
         f"CFL={cfg.optimizer.cfl:g}; "
         f"extension band={cfg.level_set.extension_band_mm:g} mm")
     log("[adjoint_levelset] each valid update is committed with fixed pseudo_time_step; "
         "FoM changes are recorded without acceptance filtering")
     log("[adjoint_levelset] signed-distance reinitialization runs on every update")
-    log("[adjoint_levelset] prefactor is (-2j*omega/Pin) times "
-        f"scale={prefactor_scale:g}; validate it with --gradient-check")
+    if cfg.objective.frequencies_ghz:
+        log("[adjoint_levelset] prefactor is (-2j*omega/Pin) times "
+            f"scale={prefactor_scale:g}; validate it with --gradient-check")
+    else:
+        log("[adjoint_levelset] shape_derivative_mine: "
+            "Re[eps*E_perp.Eb_perp + j*omega*mu*H_par.Hb_par]; "
+            f"scale={prefactor_scale:g}; validate it with --gradient-check")
 
     solver = None
     try:

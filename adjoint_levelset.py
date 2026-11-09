@@ -245,6 +245,27 @@ def shape_derivative_from_fields(boundary: Boundary, Ef: np.ndarray, Hf: np.ndar
                                  Eb: np.ndarray, Hb: np.ndarray, prefactor: complex,
                                  eps: float = EPS0, mu: float = MU0) -> np.ndarray:
     """Eq. (25) kernel for E/H evaluated at the same boundary sample points."""
+    e_perp, h_par = _boundary_field_products(boundary, Ef, Hf, Eb, Hb)
+    return prefactor * (eps * e_perp + mu * h_par)
+
+
+def shape_derivative_mine(boundary: Boundary, Ef: np.ndarray, Hf: np.ndarray,
+                          Eb: np.ndarray, Hb: np.ndarray, omega: float,
+                          eps: float = EPS0, mu: float = MU0) -> np.ndarray:
+    """Real boundary sensitivity Re[eps E_perp . Eb_perp + j omega mu H_par . Hb_par].
+
+    Fields have shape (3, N) at the same sample points; omega is in rad/s.
+    Products are bilinear (no conjugation). Any objective source weight must
+    already be included in Eb/Hb. No Eq. (25) prefactor or port power is applied.
+    """
+    if not np.isfinite(omega) or omega <= 0:
+        raise ValueError("omega must be finite and positive (rad/s)")
+    e_perp, h_par = _boundary_field_products(boundary, Ef, Hf, Eb, Hb)
+    return np.real(eps * e_perp + 1j * omega * mu * h_par)
+
+
+def _boundary_field_products(boundary, Ef, Hf, Eb, Hb):
+    """Bilinear normal E and tangential H products shared by both kernels."""
     count = len(boundary.pts)
     for field in (Ef, Hf, Eb, Hb):
         if field.shape != (3, count) or not np.isfinite(field).all():
@@ -253,7 +274,7 @@ def shape_derivative_from_fields(boundary: Boundary, Ef: np.ndarray, Hf: np.ndar
     dot = lambda a, b: np.sum(a * b, axis=0)
     e_perp = dot(Ef, n3) * dot(Eb, n3)                           # E_perp . Eb_perp
     h_par = dot(Hf, Hb) - dot(Hf, n3) * dot(Hb, n3)              # H_par . Hb_par
-    return prefactor * (eps * e_perp + mu * h_par)
+    return e_perp, h_par
 
 
 def fom_value_and_weight(s: complex, kind: str = "abs2") -> Tuple[float, complex]:
