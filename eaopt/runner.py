@@ -30,7 +30,8 @@ from eaopt.optimize.constraints import (ConnectivityGuard, apply_min_feature,
 from eaopt.optimize.objective import multi_frequency_fom
 from eaopt.solver.case import load_case
 from eaopt import artifacts, plotting
-from eaopt.geometry.design import compose_metal_regions, connection_boundary_mask, region_rings
+from eaopt.geometry.design import (compose_metal_regions, connection_boundary_mask,
+                                   design_box, polygon_union, region_rings)
 from eaopt.geometry.contour import classify_metal_regions
 
 
@@ -44,11 +45,20 @@ def boundary_sample_points(boundary, offset_mm, z_mm, setup, metal, substrate, a
     xy = boundary.pts[indices] + offset_mm * boundary.normals[indices]
     if not len(indices) or not np.isfinite(xy).all():
         raise ValueError("No finite active boundary sample points")
-    invalid = [int(i) for i, p in zip(indices, xy)
-               if not substrate.contains(Point(p)) or
-               (0 < z_mm <= setup.metal_thickness_mm and metal.covers(Point(p)))]
+    invalid = []
+    details = []
+    for i, p in zip(indices, xy):
+        outside = not substrate.contains(Point(p))
+        in_pec = 0 < z_mm <= setup.metal_thickness_mm and metal.covers(Point(p))
+        if outside or in_pec:
+            invalid.append(int(i))
+            if len(details) < 20:
+                details.append(dict(index=int(i), outside_substrate=outside, in_pec=in_pec,
+                    boundary_mm=boundary.pts[i].tolist(), normal=boundary.normals[i].tolist(),
+                    sample_mm=[float(p[0]), float(p[1]), float(z_mm)]))
     if invalid:
-        raise ValueError(f"Boundary sample points outside substrate footprint or in PEC: {invalid[:20]} (total {len(invalid)})")
+        raise ValueError(f"Boundary sample points outside substrate footprint or in PEC: "
+                         f"{invalid[:20]} (total {len(invalid)}); details: {details}")
     points = np.column_stack([xy, np.full(len(xy), z_mm)])
     eps = als.EPS0 * (setup.eps_r if z_mm < 0 else 1.0)
     return points, eps, indices
@@ -308,15 +318,26 @@ class CstAdjointLevelSetProblem:
         return amplitude
 
     def _point_gradient(self, fwd, boundary):
-        indices = np.flatnonzero(boundary.active)
-        if not len(indices):
+        if not boundary.active.any():
             return np.zeros(len(boundary.pts))
         model = self.solver.M
+        fixed = polygon_union(model.fixed_metal_polygons())
         regions = classify_metal_regions(self.solver.last_prepared_polys)
         metal = unary_union([Polygon(r.outer, r.holes) for r in regions] +
-                            [Polygon(p) for p in model.fixed_metal_polygons()])
+                            [fixed])
         substrate = unary_union([Polygon(p) for kind, p, _ in model.layout_view()["shapes"]
                                  if kind == "substrate"])
+        domain = design_box(self.cfg)
+        frozen = polygon_union([p.vertices for p in self.cfg.initial_metal]).difference(domain).union(fixed)
+        contact = domain.boundary.intersection(frozen)
+        excluded = [int(i) for i in np.flatnonzero(boundary.active)
+                    if not contact.is_empty and contact.distance(Point(boundary.pts[i])) <= 1e-9]
+        if excluded:
+            # Fixed joins and their corners have no independent free-surface normal.
+            boundary.active[excluded] = False
+            self.log(f"[boundary fields] excluded fixed-contact points: {excluded}")
+        if not boundary.active.any():
+            return np.zeros(len(boundary.pts))
         folder = artifacts.iteration_dir(self.output_dir, fwd.extra["eval_id"])
         try:
             points, eps, indices = boundary_sample_points(
@@ -325,9 +346,13 @@ class CstAdjointLevelSetProblem:
         except ValueError as error:
             np.savez_compressed(folder / "invalid_boundary_samples.npz",
                 boundary=boundary.pts, normals=boundary.normals, active=boundary.active,
+                excluded_contact_indices=np.asarray(excluded, dtype=np.int64),
                 requested_points=np.column_stack([boundary.pts+self.sample_offset*boundary.normals,
                                                  np.full(len(boundary.pts),self.requested_z_mm)]))
-            _write_json(folder / "invalid_boundary_samples.json", {"error":str(error)})
+            _write_json(folder / "invalid_boundary_samples.json", {
+                "error": str(error), "eval_id": int(fwd.extra["eval_id"]),
+                "offset_mm": self.sample_offset, "z_mm": self.requested_z_mm,
+                "excluded_contact_indices": excluded})
             raise
         freq = self.setup.frequency_ghz
         ef, hf = self.solver.sample_fields(points, tag="fwd", freq_ghz=freq)
@@ -344,6 +369,7 @@ class CstAdjointLevelSetProblem:
                  f"material={material}, eps={eps:.9g} F/m")
         np.savez_compressed(folder / "boundary_fields.npz", points_mm=points,
             boundary_indices=indices,boundary=boundary.pts,normals=boundary.normals,
+            excluded_contact_indices=np.asarray(excluded, dtype=np.int64),
             active=boundary.active,eps_f_per_m=eps,z_mm=self.requested_z_mm,
             offset_mm=self.sample_offset,E_fwd=ef,H_fwd=hf,E_bwd=eb,H_bwd=hb)
         self._write_eval({"eval_id":fwd.extra["eval_id"],"kind":"boundary_fields",
@@ -366,7 +392,7 @@ class CstAdjointLevelSetProblem:
             xy = boundary.pts + self.sample_offset * boundary.normals
             points = np.column_stack([xy, np.full(len(xy), self.requested_z_mm)])
             point_eps = als.EPS0 * (self.setup.eps_r if self.requested_z_mm <= 1e-6 else 1.0)
-            # Capture forward samples before switching the serial CST project to bwd.
+            # Both solved projects remain open; keep samples aligned by frequency.
             point_forward = {freq: self.solver.sample_fields(points, tag="fwd", freq_ghz=freq)
                              for freq in (self.frequencies or (self.setup.frequency_ghz,))}
         if not self.frequencies:

@@ -1,0 +1,90 @@
+{
+  "note": "Production boundary_gradient CAD replay at offset=.05 mm and z=.0175 mm with stub fields; no CST solves",
+  "geometry_count": 13,
+  "excluded_count": 3,
+  "rows": [
+    {
+      "folder": "results\\coupler_local_serial_smoke\\iter_000",
+      "active_before": 240,
+      "active_after": 240,
+      "excluded": []
+    },
+    {
+      "folder": "results\\coupler_local_serial_smoke\\iter_001",
+      "active_before": 279,
+      "active_after": 279,
+      "excluded": []
+    },
+    {
+      "folder": "results\\coupler_local_serial_smoke\\iter_002",
+      "active_before": 215,
+      "active_after": 213,
+      "excluded": [
+        0,
+        310
+      ]
+    },
+    {
+      "folder": "results\\coupler_source_factor_ab_2026-11-02\\unit\\iter_000",
+      "active_before": 240,
+      "active_after": 240,
+      "excluded": []
+    },
+    {
+      "folder": "results\\coupler_source_factor_ab_2026-11-02\\unit\\iter_001",
+      "active_before": 274,
+      "active_after": 274,
+      "excluded": []
+    },
+    {
+      "folder": "results\\coupler_source_factor_ab_2026-11-02\\unit\\iter_002",
+      "active_before": 224,
+      "active_after": 223,
+      "excluded": [
+        307
+      ]
+    },
+    {
+      "folder": "results\\coupler_source_factor_ab_2026-11-02\\objective\\iter_000",
+      "active_before": 240,
+      "active_after": 240,
+      "excluded": []
+    },
+    {
+      "folder": "results\\coupler_source_factor_ab_2026-11-02\\objective\\iter_001",
+      "active_before": 271,
+      "active_after": 271,
+      "excluded": []
+    },
+    {
+      "folder": "results\\coupler_source_factor_ab_2026-11-02\\objective\\iter_002",
+      "active_before": 215,
+      "active_after": 215,
+      "excluded": []
+    },
+    {
+      "folder": "results\\fd_single_2026-11-02\\coupler_smoke\\iter_000",
+      "active_before": 240,
+      "active_after": 240,
+      "excluded": []
+    },
+    {
+      "folder": "results\\fd_single_2026-11-02\\coupler_smoke\\iter_001",
+      "active_before": 243,
+      "active_after": 243,
+      "excluded": []
+    },
+    {
+      "folder": "results\\fd_single_2026-11-02\\coupler_planar_smoke\\iter_000",
+      "active_before": 240,
+      "active_after": 240,
+      "excluded": []
+    },
+    {
+      "folder": "results\\fd_single_2026-11-02\\coupler_planar_smoke\\iter_001",
+      "active_before": 243,
+      "active_after": 243,
+      "excluded": []
+    }
+  ]
+}

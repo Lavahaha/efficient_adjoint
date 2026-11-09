@@ -52,7 +52,7 @@ __all__ = ["CstSolver"]
 
 
 class CstSolver(SolverInterface):
-    """一次会话；反射目标仅用 fwd 工程，其余目标用 fwd/bwd 两工程。"""
+    """一次会话；fwd/bwd 常驻并发求解，反射目标仅用 fwd 工程。"""
 
     def __init__(self, cfg: CaseConfig, *, setup: CstSetup | None = None,
                  model=None, auto_init: bool = False,
@@ -92,6 +92,7 @@ class CstSolver(SolverInterface):
         self._it: int | None = None                 # begin_iteration 给的轮次
         self._solved_at: dict[str, int | None] = {}
         self._mesh_fingerprints: dict[str, dict] = {}
+        self._backward_solution: Solution | None = None
 
     # ------------------------------------------------------------------ #
     # 会话 / 工程
@@ -106,15 +107,8 @@ class CstSolver(SolverInterface):
         """该 tag 的工程路径（规则在 cst_setup，值来自配置）。"""
         return self.setup.project_path(tag, self.cfg.output.dir, self.cfg.name)
 
-    def _release_projects(self) -> None:
-        # 本地内存有限：切换正向/反向工程前保存并释放当前 modeler。
-        for tag, prj in list(self.projects.items()):
-            _save(prj, self.project_path(tag), self.log)
-            prj.close()
-            del self.projects[tag]
-
     def _open(self, tag: str):
-        """打开该 tag 的工程；同一时间只保留一个工程的 modeler。"""
+        """打开并保留该 tag 的工程，后续访问复用同一个 modeler。"""
         if self.projects.get(tag) is not None:
             return self.projects[tag]
         path = self.project_path(tag)
@@ -123,7 +117,6 @@ class CstSolver(SolverInterface):
                 f"{tag} 工程不存在：{path}\n"
                 f"  先跑 scripts/cst_init_{tag}.py 初始化（它会建工程并跑"
                 f"第一次仿真）；或让 scripts/run_coupler_adjoint_levelset.py 自动建。")
-        self._release_projects()
         prj = _open_or_reuse(self._environment(), path, self.log)
         self.projects[tag] = prj
         self._check_project(tag, prj)
@@ -164,7 +157,6 @@ class CstSolver(SolverInterface):
                 f"{tag} 工程已经存在：{path}\n"
                 "  要重建请先删掉它（连同同名文件夹），或直接用 "
                 "scripts/cst_update.py 改形状。")
-        self._release_projects()
         prj = self._environment().new_mws()
         self.projects[tag] = prj
         port = self.setup.stimulus(tag, self.cfg.objective)
@@ -204,6 +196,7 @@ class CstSolver(SolverInterface):
         self.last_prepared_polys = None
         self._solved_at.clear()
         self._mesh_fingerprints.clear()
+        self._backward_solution = None
         supports_nested = bool(getattr(self.M, "SUPPORTS_NESTED_CONTOURS", False))
         if any(len(poly) < 4 or not np.allclose(poly[0], poly[-1]) for poly in movable):
             raise ValueError("CST 重建需要完整闭合轮廓；先拼合设计区内外金属")
@@ -249,15 +242,29 @@ class CstSolver(SolverInterface):
             self.log(f"[OK] 形状落盘：{path}（{len(self.last_prepared_polys)} 个轮廓环）")
 
     def solve_forward(self) -> Solution:
-        """端口 from_port 激励（工程 fwd，模板里激励已写死）。"""
-        return self._solve("fwd")
+        """同一几何的 fwd/bwd 并发求解，返回 fwd 并保留 bwd 结果。"""
+        self._backward_solution = None
+        if self.forward_only:
+            return self._solve("fwd")
+        projects = {tag: self._open(tag) for tag in self.project_tags}
+        for tag, project in projects.items():
+            self._check_project(tag, project)
+        self._solved_at.clear()
+        self._mesh_fingerprints.clear()
+        seconds = _run_solvers(projects, self.log)
+        # Sequential collection keeps shared metadata and mesh checks consistent.
+        forward = self._collect_solution("fwd", seconds["fwd"])
+        self._backward_solution = self._collect_solution("bwd", seconds["bwd"])
+        return forward
 
     def solve_backward(self) -> Solution:
-        """端口 to_port 激励（工程 bwd）= 论文的伴随仿真。"""
+        """返回本轮并发求解的 bwd 结果；独立调用时求解 bwd。"""
         if self.forward_only:
             raise RuntimeError(
                 "This reflection objective reuses the forward fields; "
                 "no backward CST solve is configured.")
+        if self._backward_solution is not None and self._solved_at.get("bwd") == self._it:
+            return self._backward_solution
         return self._solve("bwd")
 
     def sample_fields(self, points_mm, *, tag: str, freq_ghz: float):
@@ -325,12 +332,18 @@ class CstSolver(SolverInterface):
         ``iter_NNN/``（.npz 有 MB 量级，20 轮就是上百 MB）。
         """
         prj = self._open(tag)
-        path = self.project_path(tag)
         m3d = prj.model3d
 
         self._check_project(tag, prj)
 
         seconds = _run_solver(m3d, self.log)
+        return self._collect_solution(tag, seconds)
+
+    def _collect_solution(self, tag: str, seconds: float) -> Solution:
+        """读取已完成的求解；正反向逐个落盘，避免共享 meta.json 写入冲突。"""
+        prj = self._open(tag)
+        path = self.project_path(tag)
+        m3d = prj.model3d
         # cst.results 读的是磁盘结果：先存盘再读，否则读到的可能是上一轮
         _save(prj, path, self.log, what="求解后存盘")
 
@@ -541,6 +554,44 @@ def _update_design_region(m3d, polys, setup, model, *, what: str, log) -> None:
                    else sum(len(poly) for poly in geometry))
     log(f"[ .. ] {what}：{len(geometry)} 个几何区域 / {point_count} 个点")
     _apply_blocks(m3d, [("design region", cmd)], what, log)
+
+
+def _run_solvers(projects, log) -> dict[str, float]:
+    """先异步启动全部工程，再等待完成；失败时停止本次启动的其他求解。"""
+    for tag, project in projects.items():
+        if project.model3d.is_solver_running():
+            raise RuntimeError(f"{tag} 求解器已经在运行，拒绝重复启动")
+    started = {}
+    seconds = {}
+    try:
+        for tag, project in projects.items():
+            started[tag] = time.perf_counter()
+            project.model3d.start_solver()
+            log(f"[ .. ] {tag} 求解已异步启动（前向/后向并发）")
+        pending = set(started)
+        while pending:
+            for tag in list(pending):
+                model = projects[tag].model3d
+                if model.is_solver_running():
+                    continue
+                info = model.get_solver_run_info()
+                if info.get("state") != "SUCCESS":
+                    raise RuntimeError(f"{tag} 求解未成功完成：{info}")
+                seconds[tag] = time.perf_counter() - started[tag]
+                pending.remove(tag)
+                log(f"[OK] {tag} 求解完成，耗时 {seconds[tag]:.1f} s")
+            if pending:
+                time.sleep(0.5)
+    except BaseException:
+        for tag in started:
+            try:
+                model = projects[tag].model3d
+                if model.is_solver_running():
+                    model.abort_solver()
+            except Exception as error:
+                log(f"[ -- ] 停止 {tag} 求解失败：{error}")
+        raise
+    return seconds
 
 
 def _run_solver(m3d, log) -> float:
