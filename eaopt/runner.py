@@ -14,6 +14,8 @@ from pathlib import Path
 
 import numpy as np
 from shapely.geometry import Point, Polygon
+from shapely.geometry.polygon import orient
+from scipy.interpolate import RegularGridInterpolator
 from shapely.ops import unary_union
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -285,8 +287,35 @@ class CstAdjointLevelSetProblem:
                    "x": fields.x.copy(), "y": fields.y.copy(),
                    "s_params": dict(sol.s_params), "frequency_data": frequency_data,
                    "incident_power_w": incident_power, "output_power_w": output_power,
+                   "cad_polygons": [p.copy() for p in self.solver.last_prepared_polys],
                    "objective_value": fom},
         )
+
+    def boundary(self, ls, fwd, design_mask=None):
+        """Midpoint quadrature on the exact polygon edges sent to CST."""
+        regions = classify_metal_regions(fwd.extra["cad_polygons"])
+        points, normals, weights = [], [], []
+        for region in regions:
+            polygon = orient(Polygon(region.outer, region.holes), sign=1.)
+            for ring in (polygon.exterior, *polygon.interiors):
+                xy = np.asarray(ring.coords)
+                for a, b in zip(xy[:-1], xy[1:]):
+                    tangent = b - a
+                    length = np.linalg.norm(tangent)
+                    if length <= 1e-12:
+                        continue
+                    count = max(1, int(np.ceil(length / ls.grid.dx)))
+                    points.extend(a + ((np.arange(count) + .5) / count)[:, None] * tangent)
+                    normals.extend(np.tile([tangent[1] / length, -tangent[0] / length], (count, 1)))
+                    weights.extend(np.full(count, length / count))
+        pts = np.asarray(points).reshape(-1, 2)
+        active = np.ones(len(pts), bool)
+        if design_mask is not None:
+            active = RegularGridInterpolator(
+                (ls.grid.x, ls.grid.y), np.asarray(design_mask, float),
+                method="nearest", bounds_error=False, fill_value=0.)(pts) > .5
+        return als.Boundary(pts, np.asarray(normals).reshape(-1, 2),
+                            np.asarray(weights), active)
 
     def _frequency_data(self, sol):
         if set(sol.frequency_results) != set(self.frequencies):
@@ -368,7 +397,7 @@ class CstAdjointLevelSetProblem:
         self.log(f"[boundary fields] {len(points)} active points, z={self.requested_z_mm:g} mm, "
                  f"material={material}, eps={eps:.9g} F/m")
         np.savez_compressed(folder / "boundary_fields.npz", points_mm=points,
-            boundary_indices=indices,boundary=boundary.pts,normals=boundary.normals,
+            boundary_indices=indices,boundary=boundary.pts,normals=boundary.normals,weights=boundary.weights,
             excluded_contact_indices=np.asarray(excluded, dtype=np.int64),
             active=boundary.active,eps_f_per_m=eps,z_mm=self.requested_z_mm,
             offset_mm=self.sample_offset,E_fwd=ef,H_fwd=hf,E_bwd=eb,H_bwd=hb)

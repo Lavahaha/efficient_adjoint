@@ -17,7 +17,7 @@ from eaopt.geometry.design import design_box, polygon_union
 from eaopt.solver.case import load_case
 
 
-def inspect_ray(metal, p, n, offset):
+def inspect_ray(metal, p, n, offset, ray_length=None):
     """Report signed CAD distances and exact metal intervals on the sample ray."""
     p, n = np.asarray(p, float), np.asarray(n, float)
     if not np.isclose(np.linalg.norm(n), 1., atol=1e-6):
@@ -25,7 +25,9 @@ def inspect_ray(metal, p, n, offset):
     origin = Point(p)
     distance = float(origin.distance(metal.boundary))
     closest = nearest_points(origin, metal.boundary)[1]
-    length = 4 * offset
+    length = 4 * offset if ray_length is None else float(ray_length)
+    if not np.isfinite(length) or length < offset:
+        raise ValueError("Ray length must be finite and at least the sampling offset")
     crossing = metal.intersection(LineString([p, p + length * n]))
     intervals = []
 
@@ -79,6 +81,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iteration_dir", nargs="?", type=Path)
     parser.add_argument("--index", type=int)
+    parser.add_argument("--ray-length-mm", type=float,
+                        help="inspection ray length; default: max(4*offset, 2*grid_step)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -97,6 +101,10 @@ def main():
     contact = design_box(cfg).boundary.intersection(frozen)
     diagnostic = json.loads((folder / "invalid_boundary_samples.json").read_text(encoding="utf-8"))
     offset, z = diagnostic["offset_mm"], diagnostic["z_mm"]
+    ray_length = (args.ray_length_mm if args.ray_length_mm is not None else
+                  max(4 * offset, 2 * cfg.design_region.grid_step_mm))
+    if not np.isfinite(ray_length) or ray_length < offset:
+        parser.error("--ray-length-mm must be finite and at least the sampling offset")
     substrate = unary_union([Polygon(p) for kind, p, _ in model.layout_view()["shapes"]
                              if kind == "substrate"])
     rows = []
@@ -115,7 +123,7 @@ def main():
                    "outside_substrate": bool(outside),
                    "fixed_metal_at_sample": bool(fixed.covers(q)),
                    "on_fixed_contact": bool(not contact.is_empty and contact.distance(Point(p)) <= 1e-9)}
-            row.update(inspect_ray(metal, p, n, offset))
+            row.update(inspect_ray(metal, p, n, offset, ray_length))
             rows.append(row)
     print(json.dumps({"folder": str(folder), "offset_mm": offset, "z_mm": z,
                       "nominal_simplify_tolerance_mm": SIMPLIFY_TOL_CELLS * cfg.design_region.grid_step_mm,

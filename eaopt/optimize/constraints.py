@@ -103,7 +103,7 @@ def apply_min_feature(ls: LevelSet2D, min_feature_mm: float, *,
 
     Opening removes narrow metal features; closing fills narrow air gaps and
     holes. Preserve sub-cell boundary positions when the filtered mask is
-    unchanged; reconstruct signed distance only when a repair is needed.
+    unchanged; a repair changes only nodes whose material classification changes.
     """
     feature = float(min_feature_mm)
     if feature <= 0.0:
@@ -116,8 +116,12 @@ def apply_min_feature(ls: LevelSet2D, min_feature_mm: float, *,
     if not footprint.any():
         footprint[extent, extent] = True
     metal = ls.phi < 0.0
+    # Closing needs its intermediate dilation outside the cropped design grid.
+    pad = 4 * extent
+    padded_metal = np.pad(metal, pad, mode="constant", constant_values=False)
     filtered = ndimage.binary_closing(
-        ndimage.binary_opening(metal, structure=footprint), structure=footprint)
+        ndimage.binary_opening(padded_metal, structure=footprint), structure=footprint)
+    filtered = filtered[pad:-pad, pad:-pad]
     if force_air is not None:
         filtered[np.asarray(force_air, dtype=bool)] = False
     if force_metal is not None:
@@ -132,7 +136,8 @@ def apply_min_feature(ls: LevelSet2D, min_feature_mm: float, *,
     inside_distance = ndimage.distance_transform_edt(padded)
     outside_distance = ndimage.distance_transform_edt(~padded)
     signed = (outside_distance - inside_distance)[1:-1, 1:-1] * ls.dx
-    ls.phi = signed
+    # A local repair must not quantize every unrelated sub-cell boundary.
+    ls.phi = np.where(filtered != metal, signed, ls.phi)
 
 
 # ---------------------------------------------------------------------- #

@@ -42,7 +42,8 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.config import CaseConfig
-from eaopt.geometry.contour import SIMPLIFY_MAX_POINTS, classify_metal_regions, close_open_contours
+from eaopt.geometry.contour import classify_metal_regions, close_open_contours
+from eaopt.geometry.design import contour_point_limit
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import FrequencyResult, Solution, SolverInterface
 from eaopt.solver.case import load_case
@@ -220,8 +221,8 @@ class CstSolver(SolverInterface):
         supports_nested = bool(getattr(self.M, "SUPPORTS_NESTED_CONTOURS", False))
         if any(len(poly) < 4 or not np.allclose(poly[0], poly[-1]) for poly in movable):
             raise ValueError("CST 重建需要完整闭合轮廓；先拼合设计区内外金属")
-        if any(len(poly) > SIMPLIFY_MAX_POINTS for poly in movable):
-            raise ValueError("完整金属轮廓超过 CST 点数上限；请先在设计区内简化")
+        if any(len(poly) > contour_point_limit(self.cfg) for poly in movable):
+            raise ValueError("完整金属轮廓超过已验证的 CST 点数预算；拒绝自动放宽几何误差")
         polys = close_open_contours(
             movable, self.cfg.design_region.box,
             pad_mm=0.0, simplify_tol_mm=0.0,

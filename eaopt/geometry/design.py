@@ -29,6 +29,11 @@ def region_rings(regions):
     return [ring for region in regions for ring in (region.outer, *region.holes)]
 
 
+def contour_point_limit(cfg):
+    # 400-point antenna extrusion is checked against CST solid volume/vertices.
+    return 400 if cfg.name == "antenna" else SIMPLIFY_MAX_POINTS
+
+
 def _regions(geometry):
     if geometry.is_empty:
         return []
@@ -63,6 +68,8 @@ def compose_metal_regions(cfg, phi):
     domain = design_box(cfg)
     if np.array_equal(phi, initial_ls.phi):
         # Iteration zero must use the input polygons, without rasterization loss.
+        # shortcut: marching squares cuts grid-aligned corners on inward motion;
+        # use a corner-preserving reconstruction before certifying those updates.
         regions = _regions(initial)
     else:
         outside = initial.difference(domain)
@@ -76,8 +83,10 @@ def compose_metal_regions(cfg, phi):
                     points[np.isclose(points[:, axis], limit, rtol=0., atol=1e-9), axis] = limit
             contours.append(points)
         interpolate = RegularGridInterpolator((initial_ls.xs, initial_ls.ys), phi)
-        tol = SIMPLIFY_TOL_CELLS * initial_ls.dx
-        for _ in range(9):
+        # Antenna updates must not acquire a displacement from vertex selection.
+        exact_contour = cfg.name == "antenna"
+        tol = 1e-9 if exact_contour else SIMPLIFY_TOL_CELLS * initial_ls.dx
+        for _ in range(1 if exact_contour else 9):
             lines = [domain.boundary]
             for contour in contours:
                 points = simplify_polygon(contour, tol, max_points=None)
@@ -93,11 +102,11 @@ def compose_metal_regions(cfg, phi):
                     faces.append(face)
             geometry = outside.union(unary_union(faces).intersection(domain))
             regions = _regions(geometry)
-            if all(len(ring) <= SIMPLIFY_MAX_POINTS for ring in region_rings(regions)):
+            if all(len(ring) <= contour_point_limit(cfg) for ring in region_rings(regions)):
                 break
             tol *= 2.0
-    if any(len(ring) > SIMPLIFY_MAX_POINTS for ring in region_rings(regions)):
-        raise ValueError("金属轮廓超过 CST 点数上限；区外固定几何不能自动简化移动")
+    if any(len(ring) > contour_point_limit(cfg) for ring in region_rings(regions)):
+        raise ValueError("金属轮廓超过已验证的 CST 点数预算；不能自动放宽几何误差移动天线或区外固定轮廓")
     return regions
 
 

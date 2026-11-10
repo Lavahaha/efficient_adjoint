@@ -134,10 +134,10 @@ def polygon_extrude(name: str, component: str, material: str,
         f'    .Origin "0.0", "0.0", "{z0:.6g}"',
         '    .Uvector "1.0", "0.0", "0.0"',
         '    .Vvector "0.0", "1.0", "0.0"',
-        f'    .Point "{pts[0][0]:.6g}", "{pts[0][1]:.6g}"',
+        f'    .Point "{pts[0][0]:.17g}", "{pts[0][1]:.17g}"',
     ]
     for x, y in pts[1:]:
-        lines.append(f'    .LineTo "{x:.6g}", "{y:.6g}"')
+        lines.append(f'    .LineTo "{x:.17g}", "{y:.17g}"')
     lines += ["    .Create", "End With", ""]
     return "\n".join(lines) + "\n"
 

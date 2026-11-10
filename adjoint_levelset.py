@@ -40,6 +40,8 @@ import numpy as np
 from scipy import ndimage
 from scipy.interpolate import RegularGridInterpolator
 from scipy.spatial import cKDTree
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from skimage import measure
 from eaopt.geometry.contour import dedupe_vertices
 
@@ -93,21 +95,49 @@ class LevelSet:
 
     # -- geometry helpers --------------------------------------------------
     def reinit(self) -> None:
-        """Restore |grad phi| = 1 (signed distance). Uses scikit-fmm if available."""
+        """Re-distance away from the interface, preserving interpolated edge zeros.
+
+        Cut-edge endpoints share one positive scale per connected component;
+        their ratios (and hence the marching-squares contour) stay unchanged.
+        Exact signed distance and all sub-cell edge zeros cannot generally both
+        be represented by the same nodal values.
+        """
         phi = self.phi
         if not (phi.min() < 0 < phi.max()):
             return
         try:
             import skfmm
 
-            self.phi = np.asarray(skfmm.distance(phi, dx=self.grid.dx))
+            distance = np.asarray(skfmm.distance(phi, dx=self.grid.dx))
         except ImportError:  # coarse fallback, pixel-accurate only
             dx = self.grid.dx
             inside = phi < 0
-            self.phi = (
+            distance = (
                 ndimage.distance_transform_edt(~inside)
                 - ndimage.distance_transform_edt(inside)
             ) * dx
+        nodes = np.arange(phi.size).reshape(phi.shape)
+        edges = []
+        for axis in (0, 1):
+            a, b = [slice(None)] * 2, [slice(None)] * 2
+            a[axis], b[axis] = slice(None, -1), slice(1, None)
+            a, b = tuple(a), tuple(b)
+            cut = ((phi[a] < 0) & (phi[b] > 0)) | ((phi[a] > 0) & (phi[b] < 0))
+            edges.append(np.column_stack((nodes[a][cut], nodes[b][cut])))
+        edges = np.concatenate(edges)
+        if len(edges):
+            indices, inverse = np.unique(edges, return_inverse=True)
+            links = inverse.reshape(-1, 2)
+            graph = coo_matrix((np.ones(len(links)), links.T),
+                               shape=(len(indices), len(indices)))
+            count, labels = connected_components(graph, directed=False)
+            old = phi.ravel()[indices]
+            target = distance.flat[indices]
+            scale = (np.bincount(labels, weights=old * target, minlength=count)
+                     / np.bincount(labels, weights=old ** 2, minlength=count))
+            distance.flat[indices] = old * scale[labels]
+        distance[phi == 0] = 0.0
+        self.phi = distance
 
     def metal_mask(self) -> np.ndarray:
         return self.phi < 0
@@ -441,7 +471,7 @@ class AdjointLevelSetOptimizer:
 
     # one boundary velocity from one forward + one adjoint solve
     def velocity(self, ls: LevelSet, fwd: ForwardResult):
-        bnd = extract_boundary(ls, self.design_mask)
+        bnd = problem_boundary(self.p, ls, fwd, self.design_mask)
         g = problem_gradient(self.p, ls, fwd, bnd)
         f = problem_value(self.p, fwd)
         if not self.cfg.maximize:
@@ -585,6 +615,13 @@ def problem_gradient(problem: Problem, ls: LevelSet, fwd: ForwardResult,
         getattr(problem, "eps", EPS0), getattr(problem, "mu", MU0)))
 
 
+def problem_boundary(problem: Problem, ls: LevelSet, fwd: ForwardResult,
+                     design_mask=None) -> Boundary:
+    if hasattr(problem, "boundary"):
+        return problem.boundary(ls, fwd, design_mask)
+    return extract_boundary(ls, design_mask)
+
+
 def gradient_check(problem: Problem, ls: LevelSet, design_mask=None,
                    deltas=(0.05, 0.1, 0.2), evaluation_callback=None) -> List[dict]:
     """Compare  sum_i g_i * w_i * delta  (adjoint prediction for a uniform outward
@@ -597,7 +634,7 @@ def gradient_check(problem: Problem, ls: LevelSet, design_mask=None,
     if evaluation_callback:
         evaluation_callback(ls, fwd, dict(
             phase="gradient_base", it=None, accepted=None, reason="gradient_check"))
-    bnd = extract_boundary(ls, design_mask)
+    bnd = problem_boundary(problem, ls, fwd, design_mask)
     g = problem_gradient(problem, ls, fwd, bnd)
     if design_mask is not None:
         g = np.where(bnd.active, g, 0.0)

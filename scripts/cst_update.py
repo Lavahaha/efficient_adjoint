@@ -45,8 +45,8 @@ except ImportError as e:    # pragma: no cover - 无 CST 的机器上才有意�
 
 from eaopt import artifacts
 from eaopt.cli import base_parser, banner, make_log, report_solution, safe_console
-from eaopt.geometry.contour import SIMPLIFY_MAX_POINTS, classify_metal_regions, close_open_contours
-from eaopt.geometry.design import compose_metal_regions, region_rings
+from eaopt.geometry.contour import classify_metal_regions, close_open_contours
+from eaopt.geometry.design import compose_metal_regions, contour_point_limit, region_rings
 from eaopt.config import CaseConfig
 from eaopt.solver import cst_results as R
 from eaopt.solver.base import Solution
@@ -390,8 +390,8 @@ def _resolve_shape(cfg: CaseConfig, args, *, model=None, log=print):
             polys = _contours_from_phi(cfg, dict(data), log=log)
     if any(len(p) < 4 or not np.allclose(p[0], p[-1]) for p in polys):
         raise ValueError("--shape 需要完整闭合多边形，不能沿 design_region 猜测封口")
-    if any(len(p) > SIMPLIFY_MAX_POINTS for p in polys):
-        raise ValueError("完整金属轮廓超过 CST 点数上限；请先在设计区内简化")
+    if any(len(p) > contour_point_limit(cfg) for p in polys):
+        raise ValueError("完整金属轮廓超过已验证的 CST 点数预算；拒绝自动放宽几何误差")
     closed = close_open_contours(
         polys, cfg.design_region.box,
         pad_mm=0.0, simplify_tol_mm=0.0,

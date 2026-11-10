@@ -293,7 +293,9 @@ def close_open_contours(
         raw_pts = np.asarray(contour, dtype=float)
         if not np.all(np.isfinite(raw_pts)):
             raise ValueError(f"第 {k} 条轮廓含 NaN/Inf 坐标。")
-        pts = dedupe_vertices(raw_pts)
+        # Interface roundoff must not create distinct CST mesh inputs.
+        pts = dedupe_vertices(np.round(raw_pts, decimals=12))
+        pts[pts == 0.] = 0.  # Canonical positive zero in the VBA point list.
         if len(pts) < 2:
             raise ValueError(
                 f"第 {k} 条轮廓去除重复顶点后只剩 {len(pts)} 个点，无法闭合。"
