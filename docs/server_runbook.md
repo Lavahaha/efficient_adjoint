@@ -5,6 +5,12 @@
 正反向实际四面体网格不一致时终止计算。详细命令、产物格式及未通过的网格精度检查见
 [综合测试分析报告](analysis_summary_2026-11-02.md)。手工 `cst_init_*` 工具仍默认 TD，需要 FD 时显式传 `--solver fd`。
 
+FD 启动前会检查求解器类型和激励。若服务器 CST 报 `Method or property not found`
+且缺失的是 `FDSolver.GetStimulationPort/GetStimulationMode`，当前代码会改用
+`FDSolver.Stimulation "<目标端口>", "1"` 显式设置激励并打印提示；支持读取接口的版本
+仍严格校验端口与模式。连接错误、设置失败和工程类型不符仍会终止运行。
+同步 `eaopt/solver/cst.py` 后，用新的 `--output-dir` 先跑 `--iterations 1` 验证。
+
 ## 0. 环境准备
 
 安装项目及 CST 自带的官方 Python 库，解释器版本必须同时满足项目

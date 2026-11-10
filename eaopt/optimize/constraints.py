@@ -102,8 +102,8 @@ def apply_min_feature(ls: LevelSet2D, min_feature_mm: float, *,
     """Filter metal necks and air gaps below the configured feature scale.
 
     Opening removes narrow metal features; closing fills narrow air gaps and
-    holes. The operation is quantized to the level-set grid and followed by an
-    exact signed-distance reconstruction.
+    holes. Preserve sub-cell boundary positions when the filtered mask is
+    unchanged; reconstruct signed distance only when a repair is needed.
     """
     feature = float(min_feature_mm)
     if feature <= 0.0:
@@ -125,6 +125,9 @@ def apply_min_feature(ls: LevelSet2D, min_feature_mm: float, *,
     if not filtered.any():
         raise ValueError(
             "最小特征过滤移除了全部金属；请减小 min_feature_mm 或检查初始形状")
+    # Rebuilding an unchanged mask erases motion smaller than a grid cell.
+    if np.array_equal(filtered, metal):
+        return
     padded = np.pad(filtered, 1, mode="constant", constant_values=False)
     inside_distance = ndimage.distance_transform_edt(padded)
     outside_distance = ndimage.distance_transform_edt(~padded)

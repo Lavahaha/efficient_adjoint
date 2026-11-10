@@ -157,6 +157,63 @@ class ParallelSolverTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "reflection"):
                 solver.solve_backward()
 
+    def test_fd_project_check_keeps_excitation_validation(self):
+        solver = self.solver()
+        solver.setup = replace(solver.setup, solver_type="fd")
+        for tag in solver.project_tags:
+            port = solver.setup.stimulus(tag, solver.cfg.objective)
+            for actual_port, mode in ((port, "1"), (99, "1"), (port, "All")):
+                with self.subTest(tag=tag, port=actual_port, mode=mode):
+                    project = Mock()
+                    path = Path(solver.cfg.output.dir) / f"cst_work/solver_{tag}.txt"
+
+                    def execute(code):
+                        result = "HF Frequency Domain\n"
+                        if "GetStimulationPort" in code:
+                            self.assertLess(code.index("GetStimulationMode"), code.index("Open "))
+                            result += f"{actual_port}\n{mode}\n"
+                        path.write_text(result, encoding="utf-8")
+
+                    project.model3d._execute_vba_code.side_effect = execute
+                    if actual_port == port and mode == "1":
+                        solver._check_project(tag, project)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "FD excitation mismatch"):
+                            solver._check_project(tag, project)
+
+    def test_fd_project_check_compatibility_and_error_propagation(self):
+        solver = self.solver()
+        solver.setup = replace(solver.setup, solver_type="fd")
+        for tag in solver.project_tags:
+            for error in ("Method or property not found.", "CST connection lost"):
+                for setter_fails in (False, True):
+                    with self.subTest(tag=tag, error=error, setter_fails=setter_fails):
+                        project = Mock()
+                        path = Path(solver.cfg.output.dir) / f"cst_work/solver_{tag}.txt"
+
+                        def execute(code):
+                            if "GetStimulationPort" in code:
+                                raise RuntimeError(error)
+                            if "FDSolver.Stimulation" in code:
+                                if setter_fails:
+                                    raise RuntimeError("Cannot set excitation")
+                            else:
+                                path.write_text("HF Frequency Domain\n", encoding="utf-8")
+
+                        project.model3d._execute_vba_code.side_effect = execute
+                        if error == "CST connection lost" or setter_fails:
+                            message = error if error == "CST connection lost" else "Cannot set excitation"
+                            with self.assertRaisesRegex(RuntimeError, message):
+                                solver._check_project(tag, project)
+                        else:
+                            solver._check_project(tag, project)
+                        calls = project.model3d._execute_vba_code.call_args_list
+                        if error == "CST connection lost":
+                            self.assertEqual(len(calls), 2)
+                        else:
+                            port = solver.setup.stimulus(tag, solver.cfg.objective)
+                            self.assertIn(f'FDSolver.Stimulation "{port}", "1"', calls[-1].args[0])
+
     def test_parallel_collection_checks_meshes_and_preserves_both_metadata_tags(self):
         for matching in (True, False):
             with self.subTest(matching_meshes=matching):

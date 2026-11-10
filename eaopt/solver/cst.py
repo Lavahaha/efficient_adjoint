@@ -127,15 +127,35 @@ class CstSolver(SolverInterface):
         folder.mkdir(parents=True, exist_ok=True)
         path = (folder / f"solver_{tag}.txt").resolve()
         code = ['Print #1, GetSolverType()']
-        if self.setup.solver_type == "fd":
-            code += ['Print #1, FDSolver.GetStimulationPort', 'Print #1, FDSolver.GetStimulationMode']
         project.model3d._execute_vba_code('Sub Main\nOpen "'+str(path).replace('"','""')+
             '" For Output As #1\n'+'\n'.join(code)+'\nClose #1\nEnd Sub')
         values = path.read_text(encoding="utf-8-sig").splitlines()
         expected = "HF Frequency Domain" if self.setup.solver_type == "fd" else "HF Time Domain"
         if not values or values[0].strip() != expected:
             raise ValueError(f"Project solver mismatch: expected {expected}, got {values}")
-        if self.setup.solver_type == "fd" and [v.strip() for v in values[1:]] != [str(self.setup.stimulus(tag,self.cfg.objective)),"1"]:
+        if self.setup.solver_type != "fd":
+            return
+        port = self.setup.stimulus(tag, self.cfg.objective)
+        try:
+            # Query before opening the file: an unavailable getter must not leave it open.
+            project.model3d._execute_vba_code(
+                'Sub Main\nDim stimulusPort As String, stimulusMode As String\n'
+                'stimulusPort = FDSolver.GetStimulationPort\n'
+                'stimulusMode = FDSolver.GetStimulationMode\n'
+                'Open "' + str(path).replace('"', '""') + '" For Output As #1\n'
+                'Print #1, GetSolverType()\nPrint #1, stimulusPort\n'
+                'Print #1, stimulusMode\nClose #1\nEnd Sub')
+        except RuntimeError as exc:
+            if "method or property not found" not in str(exc).lower():
+                raise
+            # Older CST builds expose Stimulation but not its readback getters.
+            project.model3d._execute_vba_code(
+                f'Sub Main\nFDSolver.Stimulation "{port}", "1"\nEnd Sub')
+            self.log(f"[ -- ] {tag}: CST FD excitation getters unavailable; "
+                     f"explicitly set port {port}, mode 1")
+            return
+        values = path.read_text(encoding="utf-8-sig").splitlines()
+        if [v.strip() for v in values] != [expected, str(port), "1"]:
             raise ValueError(f"FD excitation mismatch: {values}")
 
     def _ensure_projects(self) -> None:
