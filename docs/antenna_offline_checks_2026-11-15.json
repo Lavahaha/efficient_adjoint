@@ -1,0 +1,9 @@
+{
+  "tests": 91,
+  "errors": 0,
+  "failures": 0,
+  "skipped": 0,
+  "successful": true,
+  "cst_imports": "stub modules; project/model operations mocked by existing tests; no native API validation",
+  "native_import_issue": "CST installation lacks E:/CST2024/Image_Version"
+}

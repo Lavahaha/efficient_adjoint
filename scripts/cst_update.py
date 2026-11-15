@@ -90,6 +90,9 @@ def main(argv=None) -> int:
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=log)
             _update_design_region(prj.model3d, polys, setup, M,
                                   what=f"更新 {tag} 工程设计区", log=log)
+            if cfg.name == 'antenna':
+                M.audit_design_regions(prj.model3d,polys,setup.metal_thickness_mm,
+                    artifacts.iteration_dir(cfg.output.dir,n)/f'native_geometry_{tag}.json')
         if polys and hasattr(polys[0], "outer"):
             flat = [region.outer for region in polys]
             flat += [hole for region in polys for hole in region.holes]

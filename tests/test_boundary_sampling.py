@@ -10,11 +10,31 @@ import numpy as np
 
 import adjoint_levelset as als
 from eaopt.config import CaseConfig
-from eaopt.runner import CstAdjointLevelSetProblem
+from eaopt.runner import CstAdjointLevelSetProblem, boundary_sample_points
+from shapely.geometry import box, Point
+from shapely.ops import unary_union
 from eaopt.solver.case import load_case
 
 
 class BoundarySamplingTests(unittest.TestCase):
+    def test_clearance_sampling_stays_in_first_air_interval(self):
+        setup = SimpleNamespace(substrate_h_mm=1., metal_thickness_mm=.018, eps_r=3.)
+        boundary = self.boundary([[0., 0.]], [[1., 0.]])
+        # The nominal endpoint is in air beyond a thin opposing conductor.
+        metal = unary_union([box(-1, -1, 0, 1), box(.006, -1, .008, 1)])
+        args = (boundary, .05, .009, setup, metal, box(-2,-2,2,2), 1.)
+        points, _, _ = boundary_sample_points(*args, clearance_limited=True)
+        self.assertAlmostEqual(points[0, 0], .003)
+        self.assertFalse(metal.covers(Point(points[0, :2])))
+        old, _, _ = boundary_sample_points(*args)
+        self.assertEqual(old[0, 0], .05)
+        clear, _, _ = boundary_sample_points(boundary, .05, .009, setup,
+            box(-1,-1,0,1), box(-2,-2,2,2), 1., clearance_limited=True)
+        np.testing.assert_array_equal(clear, old)
+        boundary.normals *= -1
+        with self.assertRaisesRegex(ValueError, 'exterior interval'):
+            boundary_sample_points(*args, clearance_limited=True)
+
     def setUp(self):
         self.cfg = CaseConfig.from_yaml(
             Path(__file__).resolve().parents[1] / "configs/coupler.yaml")

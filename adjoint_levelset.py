@@ -27,8 +27,9 @@ Conventions (read these once, they matter)
 * phi < 0  : metal,   phi > 0 : air,   phi = 0 : boundary.
 * Outward normal n = grad(phi)/|grad(phi)| points from metal INTO air.
 * V > 0 means the metal GROWS along n (phi_t = -V|grad phi| decreases phi).
-* The shape gradient g_i is "change of the objective per unit displacement of
-  boundary point i along n", i.e. per unit metal growth.
+* The shape gradient is a boundary density: dF = integral(g * Vn dA).
+  A discrete design-variable derivative additionally includes quadrature
+  weights and the geometry basis. It is not a point displacement by itself.
 * Time convention e^{+j w t}, as in the paper (curl E = -j w mu H).
 """
 from __future__ import annotations
@@ -75,9 +76,15 @@ class Grid2D:
 class LevelSet:
     """phi on a uniform grid. phi<0 metal."""
 
-    def __init__(self, grid: Grid2D, phi: np.ndarray):
+    def __init__(self, grid: Grid2D, phi: np.ndarray, *, geometry_state=None):
         self.grid = grid
         self.phi = np.asarray(phi, dtype=float).copy()
+        self.geometry_state = geometry_state
+        if geometry_state is not None:
+            if not (np.allclose(geometry_state.x, grid.x, rtol=0, atol=1e-12) and
+                    np.allclose(geometry_state.y, grid.y, rtol=0, atol=1e-12)):
+                raise ValueError('CAD state and level-set grid coordinates differ')
+            geometry_state.validate_phi(self.phi)
 
     # -- constructors ------------------------------------------------------
     @classmethod
@@ -91,14 +98,17 @@ class LevelSet:
         return ls
 
     def copy(self) -> "LevelSet":
-        return LevelSet(self.grid, self.phi)
+        state = self.geometry_state.copy() if self.geometry_state is not None else None
+        return LevelSet(self.grid, self.phi, geometry_state=state)
 
     # -- geometry helpers --------------------------------------------------
-    def reinit(self) -> None:
+    def reinit(self, *, preserve_cell_fans: bool = False) -> None:
         """Re-distance away from the interface, preserving interpolated edge zeros.
 
         Cut-edge endpoints share one positive scale per connected component;
         their ratios (and hence the marching-squares contour) stay unchanged.
+        preserve_cell_fans also couples all corners of each mixed-sign cell,
+        preserving crossings of the mean-center triangular interpolant.
         Exact signed distance and all sub-cell edge zeros cannot generally both
         be represented by the same nodal values.
         """
@@ -124,6 +134,12 @@ class LevelSet:
             a, b = tuple(a), tuple(b)
             cut = ((phi[a] < 0) & (phi[b] > 0)) | ((phi[a] > 0) & (phi[b] < 0))
             edges.append(np.column_stack((nodes[a][cut], nodes[b][cut])))
+        if preserve_cell_fans:
+            corners = np.stack((phi[:-1,:-1],phi[1:,:-1],phi[1:,1:],phi[:-1,1:]),axis=-1)
+            mixed = (corners < 0).any(axis=-1) & (corners > 0).any(axis=-1)
+            first = nodes[:-1,:-1][mixed]
+            for neighbor in (nodes[1:,:-1],nodes[1:,1:],nodes[:-1,1:]):
+                edges.append(np.column_stack((first,neighbor[mixed])))
         edges = np.concatenate(edges)
         if len(edges):
             indices, inverse = np.unique(edges, return_inverse=True)
@@ -143,6 +159,9 @@ class LevelSet:
         return self.phi < 0
 
     def area(self) -> float:
+        if self.geometry_state is not None:
+            self.geometry_state.validate_phi(self.phi)
+            return self.geometry_state.area_in_grid
         return float(self.metal_mask().sum() * self.grid.dx ** 2)
 
     def normals_grid(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -256,9 +275,9 @@ def shape_derivative_complex(
 
         g_i = prefactor * ( eps * E_perp . Eb_perp  +  mu * H_par . Hb_par )
 
-    prefactor : -2j*w/P_in in the paper. It depends on how your solver
-                normalises the port modes and the backward excitation, so
-                calibrate it once with `gradient_check` (a single scalar).
+    prefactor : depends on the port and adjoint definitions. Derive its
+                normalization from those definitions and verify independently;
+                do not fit a scalar to an unresolved finite difference.
     offset    : distance (>0 into air, <0 into metal) from the boundary at which the
                 fields are sampled. Paper: samples slightly inside the metal for
                 lossy/finite-conductivity metal. For a PEC-like export where the
@@ -297,29 +316,126 @@ def shape_derivative_mine(boundary: Boundary, Ef: np.ndarray, Hf: np.ndarray,
 
 def _boundary_field_products(boundary, Ef, Hf, Eb, Hb):
     """Bilinear normal E and tangential H products shared by both kernels."""
-    count = len(boundary.pts)
+    if len(boundary.normals) != len(boundary.pts):
+        raise ValueError("Boundary points and normals must have equal lengths")
+    return _normal_field_products(boundary.normals, Ef, Hf, Eb, Hb)
+
+
+def _normal_field_products(normals, Ef, Hf, Eb, Hb):
+    normals = np.asarray(normals, dtype=float)
+    if normals.ndim != 2 or normals.shape[1] not in (2, 3) or not np.isfinite(normals).all():
+        raise ValueError("Normals must be finite arrays of shape (N, 2) or (N, 3)")
+    count = len(normals)
     for field in (Ef, Hf, Eb, Hb):
         if field.shape != (3, count) or not np.isfinite(field).all():
             raise ValueError("Boundary E/H must be finite arrays of shape (3, N)")
-    n3 = np.vstack([boundary.normals.T, np.zeros(count)])
+    n3 = normals.T if normals.shape[1] == 3 else np.vstack([normals.T, np.zeros(count)])
     dot = lambda a, b: np.sum(a * b, axis=0)
     e_perp = dot(Ef, n3) * dot(Eb, n3)                           # E_perp . Eb_perp
     h_par = dot(Hf, Hb) - dot(Hf, n3) * dot(Hb, n3)              # H_par . Hb_par
     return e_perp, h_par
 
 
+def s_parameter_shape_density(
+    normals, Ef, Hf, Eb, Hb,
+    omega: float, incident_amplitude_fwd: complex, incident_amplitude_adj: complex,
+    eps=EPS0, mu=MU0,
+) -> np.ndarray:
+    """Complex PEC surface density q, with delta S = integral q*delta_n*dA (SI).
+
+    Fields (3,N) are the unweighted forward (port n) and adjoint (port m)
+    solutions. Incident amplitudes are complex power-wave amplitudes in sqrt(W),
+    with peak phasors, exp(+jwt), and reciprocal lossless port modes. Their
+    squared moduli are average powers; their phases must match the field solves.
+    The PEC normal points into the dielectric. Ports/material interfaces are
+    fixed. eps/mu are finite scalars or one value per quadrature point.
+    See docs/pec_smatrix_derivation_2026-11-12.md for the derivation and limits.
+    """
+    normals = np.asarray(normals, dtype=float)
+    ep, hp = _normal_field_products(normals, Ef, Hf, Eb, Hb)
+    if not np.allclose(np.linalg.norm(normals, axis=1), 1., rtol=1e-10, atol=1e-12):
+        raise ValueError("Physical shape variations require unit normals")
+    if not np.isfinite(omega) or omega <= 0:
+        raise ValueError("omega must be finite and positive (rad/s)")
+    amplitudes = np.asarray([incident_amplitude_fwd, incident_amplitude_adj], complex)
+    if not np.isfinite(amplitudes).all() or np.any(abs(amplitudes) == 0):
+        raise ValueError("Incident power-wave amplitudes must be finite and nonzero")
+    materials = [np.asarray(v, complex) for v in (eps, mu)]
+    if any(v.shape not in ((), (len(normals),)) or not np.isfinite(v).all() for v in materials):
+        raise ValueError("eps/mu must be finite scalars or arrays of shape (N,)")
+    kernel = materials[0]*ep + materials[1]*hp
+    return -1j*omega/(4*amplitudes[0]*amplitudes[1]) * kernel
+
+
+def s_parameter_shape_variation(
+    normals, area_weights_m2, normal_displacement_m, Ef, Hf, Eb, Hb,
+    omega: float, incident_amplitude_fwd: complex, incident_amplitude_adj: complex,
+    eps=EPS0, mu=MU0,
+) -> complex:
+    """Integrate the normalized PEC density over an actual SI surface displacement."""
+    density = s_parameter_shape_density(normals, Ef, Hf, Eb, Hb, omega,
+                                        incident_amplitude_fwd, incident_amplitude_adj, eps, mu)
+    area = np.asarray(area_weights_m2, dtype=float)
+    displacement = np.asarray(normal_displacement_m, dtype=float)
+    if any(v.shape != density.shape or not np.isfinite(v).all() for v in (area, displacement)):
+        raise ValueError("Surface weights and displacements must be finite arrays of shape (N,)")
+    if np.any(area < 0):
+        raise ValueError("Surface area quadrature weights must be nonnegative")
+    return complex(np.sum(density*area*displacement))
+
+
+def s_parameter_sidewall_density(
+    normals_xy, z_weights_mm, Ef, Hf, Eb, Hb, omega: float,
+    incident_amplitude_fwd: complex, incident_amplitude_adj: complex, eps=EPS0, mu=MU0,
+) -> np.ndarray:
+    """Extruded PEC: delta S = sum_i g_i*ds_i_mm*delta_n_i_mm.
+
+    Fields are unweighted peak phasors of shape (3, N_boundary, N_z).
+    Heights are integrated explicitly; their positive weights are in mm.
+    eps/mu are scalar or (N_boundary,N_z). The in-plane displacement is
+    independent of z; top/bottom faces have zero normal velocity.
+    """
+    normals = np.asarray(normals_xy, float)
+    wz = np.asarray(z_weights_mm, float)
+    if normals.ndim != 2 or normals.shape[1] != 2:
+        raise ValueError('Sidewall normals must have shape (N_boundary,2)')
+    if wz.ndim != 1 or not len(wz) or not np.isfinite(wz).all() or np.any(wz <= 0):
+        raise ValueError('Thickness quadrature requires finite positive mm weights')
+    expected = (3, len(normals), len(wz))
+    fields = [np.asarray(v) for v in (Ef, Hf, Eb, Hb)]
+    if any(v.shape != expected for v in fields):
+        raise ValueError('Sidewall fields must have shape (3,N_boundary,N_z)')
+    materials = [np.asarray(v) for v in (eps, mu)]
+    if any(v.shape not in ((), expected[1:]) for v in materials):
+        raise ValueError('Sidewall materials must be scalar or (N_boundary,N_z)')
+    materials = [v if v.ndim == 0 else v.ravel() for v in materials]
+    density = s_parameter_shape_density(np.repeat(normals, len(wz), axis=0),
+        *(v.reshape(3, -1) for v in fields), omega, incident_amplitude_fwd,
+        incident_amplitude_adj, *materials)
+    # ds_mm * dz_mm * delta_n_mm -> m^3, once and only once.
+    return 1e-9*(density.reshape(len(normals), len(wz))@wz)
+
+
 def fom_value_and_weight(s: complex, kind: str = "abs2") -> Tuple[float, complex]:
     """Real objective f(s) and weight c such that  df = Re( conj(c) * ds ).
     Lets you optimise |S|^2, |S| or S in dB from the *complex* sensitivity."""
-    a = abs(s) + 1e-300
+    if not np.isfinite(s):
+        raise ValueError("S must be finite")
+    a = abs(s)
     if kind == "abs2":
         return a ** 2, 2 * s
     if kind == "abs":
+        if a == 0:
+            raise ValueError("|S| has no unique classical derivative at S=0")
         return a, s / a
     if kind == "db":
-        return 20 * np.log10(a), (20 / np.log(10)) * s / a ** 2
+        if a == 0:
+            raise ValueError("S in dB is undefined at S=0")
+        return 20 * np.log10(a), (20 / np.log(10)) * (s / a) / a
     if kind == "real":
         return float(np.real(s)), 1.0 + 0j
+    if kind == "imag":
+        return float(np.imag(s)), 1j
     raise ValueError(kind)
 
 
@@ -341,8 +457,10 @@ def boundary_to_grid_velocity(
 ) -> np.ndarray:
     """Extend boundary sensitivities into a narrow band (constant along the
     normal ~ nearest-point extension), then smooth with a Gaussian using
-    normalised convolution.  Smoothing = cheap Sobolev-type regularisation: it
-    suppresses grid-scale ripples and enforces a minimum feature scale."""
+    normalised convolution. If that changes the ascent direction, use a
+    positive semidefinite extension in the same boundary quadrature metric.
+    This changes neither the time step nor the displacement acceptance rule.
+    """
     g = ls.grid
     X, Y = g.mesh()
     band = np.abs(ls.phi) < band_cells * g.dx
@@ -366,7 +484,39 @@ def boundary_to_grid_velocity(
         V = num / den
     if design_mask is not None:
         V = V * design_mask
+    sampled = RegularGridInterpolator((g.x, g.y), V, bounds_error=False, fill_value=0.)(boundary.pts)
+    if np.sum(boundary.weights*v_b*sampled) < 0:
+        V = _positive_boundary_velocity(ls, boundary, v_b, design_mask, band, s)
     return V
+
+
+def _positive_boundary_velocity(ls, boundary, gradient, design_mask, band, sigma):
+    """V=D G G^T D R^T W g / dx, so g^T W R V = ||G^T D R^T W g||²/dx.
+
+    R is bilinear grid-to-boundary sampling, W the boundary arc quadrature,
+    and D the band/design mask. Reflect Gaussian convolution is symmetric;
+    two passes make the construction positive even for a truncated kernel.
+    """
+    grid = ls.grid
+    coordinates = (boundary.pts-np.array([grid.x0, grid.y0]))/grid.dx
+    valid = np.all((coordinates >= 0) & (coordinates <= [grid.nx-1, grid.ny-1]), axis=1)
+    xy = coordinates[valid]
+    lower = np.minimum(np.floor(xy).astype(int), [grid.nx-2, grid.ny-2])
+    fraction = xy-lower
+    source = gradient[valid]*boundary.weights[valid]/grid.dx
+    scattered = np.zeros_like(ls.phi)
+    for ix in (0, 1):
+        for iy in (0, 1):
+            weight = (fraction[:, 0] if ix else 1-fraction[:, 0])*(fraction[:, 1] if iy else 1-fraction[:, 1])
+            np.add.at(scattered, (lower[:, 0]+ix, lower[:, 1]+iy), source*weight)
+    mask = band.astype(float)
+    if design_mask is not None:
+        mask *= design_mask
+    velocity = scattered*mask
+    if sigma > 0:
+        for _ in range(2):
+            velocity = ndimage.gaussian_filter(velocity, sigma/np.sqrt(2), mode="reflect")
+    return velocity*mask
 
 
 # ----------------------------------------------------------------------------
@@ -440,7 +590,7 @@ class ForwardResult:
 
 class Problem(Protocol):
     fom_kind: str               # 'abs2' | 'abs' | 'db' | 'real'
-    prefactor: complex          # calibrated, see gradient_check
+    prefactor: complex          # derived from the field/port normalization
     sample_offset: float        # field sampling offset from the boundary
     eps: float                  # permittivity at the sampling points (EPS0 for air)
     mu: float                   # permeability (MU0)
@@ -456,21 +606,26 @@ class OptimizerConfig:
     cfl: float = 0.4
     smooth_sigma_cells: float = 1.5
     band_cells: float = 4.0
+    max_step_mm: Optional[float] = None
 
 
 class AdjointLevelSetOptimizer:
     def __init__(self, problem: Problem, design_mask: np.ndarray,
                  cfg: OptimizerConfig = OptimizerConfig(),
                  force_metal=None, force_air=None, anchor=None,
-                 geometry_projector: Optional[Callable[[LevelSet], None]] = None):
+                 geometry_projector: Optional[Callable[[LevelSet], None]] = None,
+                 geometry_evolution=None):
         self.p, self.design_mask, self.cfg = problem, design_mask, cfg
         self.force_metal, self.force_air, self.anchor = force_metal, force_air, anchor
         self.geometry_projector = geometry_projector
+        self.geometry_evolution = geometry_evolution
         self.history: List[dict] = []
         self.stop_reason = "not_started"
 
     # one boundary velocity from one forward + one adjoint solve
     def velocity(self, ls: LevelSet, fwd: ForwardResult):
+        if ls.geometry_state is not None:
+            raise ValueError('Retained CAD uses geometry_evolution.prepare, not a scalar grid velocity')
         bnd = problem_boundary(self.p, ls, fwd, self.design_mask)
         g = problem_gradient(self.p, ls, fwd, bnd)
         f = problem_value(self.p, fwd)
@@ -485,19 +640,29 @@ class AdjointLevelSetOptimizer:
             callback: Optional[Callable[[int, LevelSet, LevelSet, dict], None]] = None,
             state_callback: Optional[Callable[[int, LevelSet, ForwardResult], None]] = None,
             evaluation_callback: Optional[Callable[[LevelSet, ForwardResult, dict], None]] = None):
-        """Commit each valid update with the configured fixed pseudo-time step.
+        """Commit each valid update, optionally capping its predicted displacement.
 
         The configured time step is independent of the current velocity
-        magnitude, so a small shape derivative produces a proportionally small
-        geometry update. CFL sub-stepping in :func:`advect_levelset` remains in
+        magnitude by default, so a small shape derivative produces a proportionally small
+        geometry update. If max_step_mm is set, each iteration uses the smaller
+        of that fixed time and max_step_mm / max(abs(V)). CFL sub-stepping remains in
         place for numerical stability. FoM changes are recorded and do not
         control geometry acceptance or the time step. ``state_callback`` receives
         state 0 and every committed state. ``evaluation_callback`` receives each
         solve before another solve starts.
         """
         cfg, dx = self.cfg, ls.grid.dx
+        if ls.geometry_state is not None and self.geometry_evolution is None:
+            raise ValueError('Retained CAD requires a geometry-aware update; the current HJ loop updates phi only')
+        if ls.geometry_state is None and self.geometry_evolution is not None:
+            raise ValueError('Geometry-aware evolution requires a retained CAD state')
         if not np.isfinite(cfg.pseudo_time_step) or cfg.pseudo_time_step <= 0.0:
             raise ValueError("pseudo_time_step must be finite and positive")
+        if cfg.max_step_mm is not None:
+            if not np.isfinite(cfg.max_step_mm) or cfg.max_step_mm <= 0:
+                raise ValueError("max_step_mm must be finite and positive")
+            if ls.geometry_state is not None:
+                raise ValueError("The displacement-cap experiment supports HJ updates only")
         displacement_tolerance = 1e-3 * dx
         fwd = self.p.forward(ls)
         f_cur = problem_value(self.p, fwd)
@@ -511,8 +676,14 @@ class AdjointLevelSetOptimizer:
         pseudo_time_step = cfg.pseudo_time_step
         self.stop_reason = "max_iterations"
         for it in range(n_iter):
-            V, f, bnd, g = self.velocity(ls, fwd)
-            vmax = float(np.max(np.abs(V)))
+            pseudo_time_step = cfg.pseudo_time_step
+            cad_step = None
+            if self.geometry_evolution is not None:
+                cad_step = self.geometry_evolution.prepare(ls, self.p, fwd, self.design_mask, cfg)
+                vmax = cad_step.vmax
+            else:
+                V, f, bnd, g = self.velocity(ls, fwd)
+                vmax = float(np.max(np.abs(V)))
             if vmax == 0:
                 rec = dict(it=it, f_before=f_cur, f_after=f_cur, delta_f=0.0,
                            relative_gain=0.0,
@@ -531,6 +702,8 @@ class AdjointLevelSetOptimizer:
 
             if not np.isfinite(vmax):
                 raise RuntimeError(f"Iteration {it} produced a non-finite velocity")
+            if cfg.max_step_mm is not None:
+                pseudo_time_step = min(pseudo_time_step, cfg.max_step_mm / vmax)
             predicted_displacement = pseudo_time_step * vmax
             if predicted_displacement <= displacement_tolerance:
                 rec = dict(it=it, f_before=f_cur, f_after=f_cur, delta_f=0.0,
@@ -551,12 +724,28 @@ class AdjointLevelSetOptimizer:
             ls_before, fwd_before, f_before = ls, fwd, f_cur
             eval_id_before = (fwd_before.extra.get("eval_id")
                               if isinstance(fwd_before.extra, dict) else None)
-            trial = ls.copy()
-            trial.phi = advect_levelset(
-                trial.phi, V, pseudo_time_step, dx, cfl=cfg.cfl)
-            apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
+            update_details = {}
+            if cad_step is None:
+                trial = ls.copy()
+                trial.phi = advect_levelset(
+                    trial.phi, V, pseudo_time_step, dx, cfl=cfg.cfl)
+                apply_constraints(trial, self.force_metal, self.force_air, self.anchor)
+            else:
+                trial = cad_step.advance(pseudo_time_step)
+                before_projection = trial.geometry_state.geometry
+                self.geometry_evolution.apply_constraints(
+                    trial, self.force_metal, self.force_air, self.anchor)
             if self.geometry_projector is not None:
                 self.geometry_projector(trial)
+            if cad_step is not None:
+                trial.geometry_state.validate_phi(trial.phi)
+                final_geometry = trial.geometry_state.geometry
+                update_details = dict(
+                    geometry_update="cad",
+                    linearized_signed_work=pseudo_time_step*cad_step.signed_work,
+                    linearization_matches_final_geometry=before_projection.equals(final_geometry),
+                    projection_added_area=float(final_geometry.difference(before_projection).area),
+                    projection_removed_area=float(before_projection.difference(final_geometry).area))
             fwd = self.p.forward(trial)
             f_cur = problem_value(self.p, fwd)
             if not np.isfinite(f_cur):
@@ -571,7 +760,7 @@ class AdjointLevelSetOptimizer:
                     predicted_displacement=predicted_displacement,
                     eval_id_before=eval_id_before, f_before=f_before,
                     delta_f=delta_f, objective_gain=objective_gain,
-                    accepted=True, reason="committed"))
+                    accepted=True, reason="committed", **update_details))
             eval_id_after = (fwd.extra.get("eval_id")
                              if isinstance(fwd.extra, dict) else None)
             rec = dict(
@@ -584,7 +773,7 @@ class AdjointLevelSetOptimizer:
                 updated=True, area=trial.area(), vmax=vmax,
                 backtracks=0,
                 eval_id_before=eval_id_before, eval_id_after=eval_id_after,
-                reason="committed",
+                reason="committed", **update_details,
             )
             self.history.append(rec)
             if callback:
@@ -626,9 +815,13 @@ def gradient_check(problem: Problem, ls: LevelSet, design_mask=None,
                    deltas=(0.05, 0.1, 0.2), evaluation_callback=None) -> List[dict]:
     """Compare  sum_i g_i * w_i * delta  (adjoint prediction for a uniform outward
     shift of the whole boundary by delta) with a central finite difference of the
-    objective obtained by solving with phi -/+ delta.  Requires ls to be a signed
-    distance function.  Expect ratio ~ 1.  A ratio ~ -1 means the normal / sign
-    convention is flipped; a constant ratio != 1 means `prefactor` needs rescaling."""
+    objective obtained by solving with phi -/+ delta. The interface must be a
+    signed-distance representation, the exported geometry must realize that
+    displacement to first order, and g must have physical normalization.
+    Otherwise the ratio cannot certify the derivative or calibrate a prefactor.
+    """
+    if ls.geometry_state is not None:
+        raise ValueError('Retained CAD finite differences require explicit CAD perturbations, not phi +/- delta')
     dx = ls.grid.dx
     fwd = problem.forward(ls)
     if evaluation_callback:
@@ -672,6 +865,7 @@ def gradient_check(problem: Problem, ls: LevelSet, design_mask=None,
 #       f0, export E,H on a regular xy grid in the metal mid-plane, return S.
 #   adjoint(): same geometry, excite the *output* port instead (the "backward"
 #       simulation), export E,H at f0 -> FieldBundle.
-# Then `prefactor` = -2j*w/P_in (Eq. 25) up to the port-normalisation convention:
-# verify with gradient_check and rescale.  Keep the ~0.1-0.5 mm boundary point
+# Derive the prefactor from the reciprocal port/field normalization; validate
+# with an independent reference, rather than fitting gradient_check ratios.
+# Keep the ~0.1-0.5 mm boundary point
 # spacing recommended in the paper's Sec. III-C (this is the grid dx here).

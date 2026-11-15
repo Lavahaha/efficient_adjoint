@@ -30,8 +30,9 @@ def region_rings(regions):
 
 
 def contour_point_limit(cfg):
-    # 400-point antenna extrusion is checked against CST solid volume/vertices.
-    return 400 if cfg.name == "antenna" else SIMPLIFY_MAX_POINTS
+    # Antenna solids are audited after each extrusion; 400 was an empirical
+    # sample size, not a demonstrated CST limit. Never simplify to meet it.
+    return np.inf if cfg.name == "antenna" else SIMPLIFY_MAX_POINTS
 
 
 def _regions(geometry):
@@ -52,7 +53,7 @@ def _regions(geometry):
     return regions
 
 
-def compose_metal_regions(cfg, phi):
+def compose_metal_regions(cfg, phi, *, geometry_state=None):
     """Return (initial metal minus D) union (negative level-set faces inside D).
 
     Only phi inside D is stored. Polygonizing its zero contours together with
@@ -66,7 +67,16 @@ def compose_metal_regions(cfg, phi):
         raise ValueError("水平集必须有限且与 design_region 网格尺寸一致")
     initial = polygon_union([p.vertices for p in cfg.initial_metal])
     domain = design_box(cfg)
-    if np.array_equal(phi, initial_ls.phi):
+    if geometry_state is not None:
+        if not (np.allclose(geometry_state.x, initial_ls.xs, rtol=0, atol=1e-12) and
+                np.allclose(geometry_state.y, initial_ls.ys, rtol=0, atol=1e-12)):
+            raise ValueError('CAD state and configured design grid differ')
+        geometry_state.validate_phi(phi)
+        geometry = geometry_state.geometry
+        if geometry.difference(domain).symmetric_difference(initial.difference(domain)).area > 1e-12:
+            raise ValueError('Retained CAD changed frozen metal outside the design box')
+        regions = _regions(geometry)
+    elif np.array_equal(phi, initial_ls.phi):
         # Iteration zero must use the input polygons, without rasterization loss.
         # shortcut: marching squares cuts grid-aligned corners on inward motion;
         # use a corner-preserving reconstruction before certifying those updates.

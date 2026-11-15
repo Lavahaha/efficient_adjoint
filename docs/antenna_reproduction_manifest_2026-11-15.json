@@ -1,0 +1,798 @@
+{
+  "date": "2026-11-15",
+  "python": "3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "packages": {
+    "numpy": "2.2.6",
+    "scipy": "1.15.3",
+    "scikit-image": "0.25.2",
+    "shapely": "2.1.2",
+    "pyyaml": "6.0.3",
+    "matplotlib": "3.10.9",
+    "scikit-fmm": "2025.6.23",
+    "cst-studio-suite-link": "2024.2.1201136.551"
+  },
+  "note": "Working tree source hashes, not an old commit. Results are gitignored; copy separately. Native CST import unavailable during consolidation (missing Image_Version).",
+  "source_sha256": {
+    "adjoint_levelset.py": "bdf0ad87bafaf6663744c15abb82c4eaaa62e601425a832d56c69442539659c6",
+    "configs/antenna.yaml": "469eccc7809ac990f76bb3808ded59c9adcf11c18a5e14658f1a1a36bb26ff5e",
+    "configs/coupler.yaml": "38276bbbdfe0c99dba99db0e8c1030895d23deaf9732b79c1efaed80051dd936",
+    "configs/divider.yaml": "8bf01d4b0706a812430eb8d6712c89db6f2c3af2536042dbaa430f2f507add83",
+    "configs/divider_multifreq.yaml": "2f6f672936fb4a59f4790dc3817cb2d8e65b2862ec4ac45686bfe1d88fe1a202",
+    "docs/antenna_oscillation_complete_report_2026-11-15.md": "9a239e661b9ad2879e5cdc09b6f59126db5f27c85e92ecc893d22998e3c66aea",
+    "docs/server_runbook.md": "dd31e5ca4f62bc938e72ded11d5247ff07a5b97588068a321ae19dddbd953066",
+    "eaopt/__init__.py": "26ed03547beaedf17cd7d1715f8ccaadddb71efaf828a02b2199bde56c3352e8",
+    "eaopt/adjoint/__init__.py": "975d4e26bf9440bb8f3358010d762723c368e4abdcc4cc751ac64c2148f453ef",
+    "eaopt/adjoint/fields.py": "8929f46166f6843a7749dc5c2fcd3d5237deced33b0e4b9f7e11ae24ffa0acf7",
+    "eaopt/artifacts.py": "ec5e69815280b084473da165b056a1c924bdf35b1738a292b1c5226ed6943572",
+    "eaopt/cli.py": "0888fbb82e5a18897720c57b05eac2e3f3c0d8955a477f9e6895475db19a1665",
+    "eaopt/config.py": "552db78f8cf82519a48828f7ae91d6f7ed7b7efd9ef9f360a5b19be6767fd2b6",
+    "eaopt/geometry/__init__.py": "bfe640381a0470d46143f01b769c9e66d1b63330c3061d2b929a50c2d096e917",
+    "eaopt/geometry/contour.py": "ad2f4a485d1a92a9b88acf663eb57b30638129230ecc497438bb856b3cf5757a",
+    "eaopt/geometry/design.py": "0668c3d97ee24986f9a7eae0f165c8285c5ab03e197c99058690cfe1bb3655c0",
+    "eaopt/geometry/evolution.py": "417e9f610eb61de701b9f6b0285ef235b720eeead357ec02c5c5c4527464f82f",
+    "eaopt/geometry/implicit.py": "1ea52df79369aeb71dbeca24dd9dda6f4706b3600d62921c06fa55903d7b3812",
+    "eaopt/geometry/levelset.py": "d5c382c6630a8f50be9f341d22a95e21e34546fe6da5c4e3629c0e9425015094",
+    "eaopt/geometry/state.py": "5832475beef7487852c567350049c1b8181d2091e7903938c378baecaa34ae80",
+    "eaopt/optimize/__init__.py": "fe8318d222e45fce8ad6f9bb1a7c30729b6a5dd52062b5228cdcd63784912e39",
+    "eaopt/optimize/constraints.py": "25a43f4871fde11ec6e6e0328521875418224ee3318e77241a441702b69e448a",
+    "eaopt/optimize/objective.py": "8c6759087a179fdd96d34dc0ece5793e6a4e540ab02e6da6a866c17133a42d4b",
+    "eaopt/plotting.py": "a540e3317da3338a69e931bc3bc1fd5156fed957d7342b30518f610b88c49aa6",
+    "eaopt/runner.py": "ffad7e318d60e681b1df6877aeb337b428bccc49f0608b6cdadc3986f1aa1c81",
+    "eaopt/solver/__init__.py": "8f0ffd08cb9d0277c1666c46e870214e0451828800b534e90c03d1b67d5348c6",
+    "eaopt/solver/base.py": "364a432268125715365098f42e8bca47c20fb4eb9177a608a62ef57b02bcf2b0",
+    "eaopt/solver/case.py": "d87ae2ff57b31002068818e817fe8b45f8735c95d46d89fbf47c65e2af62d737",
+    "eaopt/solver/cst.py": "4b0d43f069bb844cf6dc6298b41cf34332b183f0bd6e83689072c63bc0f71076",
+    "eaopt/solver/cst_model.py": "c6c76f85152f2d220f2f0a5faab806d6f75d230cb907bcf6e4efa9be70594d64",
+    "eaopt/solver/cst_model_antenna.py": "67b6e2adfee5d070e086e5e06312ae45ac1025beabc156f18bef142b88537e48",
+    "eaopt/solver/cst_model_divider.py": "2fab71dead1445f47d0c54bf3939d551237a48e4d14ca99a828e0509d356362c",
+    "eaopt/solver/cst_results.py": "84dcfda5fd8be2dd998769bab1ff9f4149113e20a8ff262fcf4f753a914692cc",
+    "eaopt/solver/cst_setup.py": "eb3287cb37dae4a6876408119e0def143c3154c7c4b9d04aa16c1f687edc3b82",
+    "pyproject.toml": "c22dc359e782be497282d924f99422fef1827dd2d87710c423dbaf74910cc6eb",
+    "README.md": "74d49d146111cc45189367801a485890f46755f8296ed999c0fdb24c0dbf506f",
+    "scripts/analyze_antenna_mesh_regions.py": "f59da2185a4b99cc1795264f2db94a06f653aaef7786d441d1f0964c8686c238",
+    "scripts/analyze_s11_cross_case.py": "6337c732728230166b6e5d438befd179bedb4fe49d4a7ad3d557e38d8b966377",
+    "scripts/check_abs_objective_stationarity.py": "2e091797eeecc0dbf462577f253402118c90db1ef120ef9163bf31cb9f77199d",
+    "scripts/check_actual_cad_direction.py": "bc41ba50f9f710d5cbea88bbdd5de6789fafe3f858581b469ef707457162412b",
+    "scripts/check_algorithm_pipeline.py": "8b5d4719b4959a7348e14fad7507e126403de103db10868c881d86fb5a5937fc",
+    "scripts/check_antenna_cad_phi_roundtrip.py": "7062a37c88f6ccc68d5fb78a030471a7cb34e94859eea03a6474a9b88237a1b2",
+    "scripts/check_antenna_cad_state.py": "b0bc41bd4238b61e666fdda070d9cffee9fea8c1d7830bad54c2afa59dcc15ea",
+    "scripts/check_antenna_candidate_solid.py": "6e666a7bc3e817480c5b5ac31a122f0547875633948571ca342f2f9b7d577dda",
+    "scripts/check_antenna_directional_prediction.py": "71b68d98039dbc4cf46f9a033c490af067d8c5bfb416b8ff010f4f28d81f8a7b",
+    "scripts/check_antenna_exact_repeatability.py": "79a00dfa87a253d141e6f9b547f52b5fe810ef968a94bb87bc2f88e0adb969b3",
+    "scripts/check_antenna_field_sampling.py": "661944cd0c7aa4fe52537d4192d477aad41d276bf092827b6ec5e6a34087f48a",
+    "scripts/check_antenna_geometry_consistency.py": "573b3a061417a254422b2975f0cf4e147b899a4404818f46425247507c92ff81",
+    "scripts/check_antenna_length_geometry.py": "98a6d9694bd6b7ff7e0c14b969733f80a19201f5242d32f413c568676fbd2286",
+    "scripts/check_antenna_solver_isolation.py": "423b475c35ef717a5c1d7d330e6eb9813590e591b1ed495fba823845b15a4fcb",
+    "scripts/check_antenna_thickness_density.py": "fee91fa17b2407cb4aea488fcaf6af013ae023d03ea7ad0f2daf4b9f9d8e5cfd",
+    "scripts/check_boundary_sample_failure.py": "fcc93162c8a441cb0156661696b1a4a97b45a9d80cd4f765762b2daf11440dfa",
+    "scripts/check_cad_gradient_transport.py": "c034460064036a494d10449ec6637acd777d1027736608da82dec1de97940379",
+    "scripts/check_cad_normal_transport.py": "e649bd9f13b322637fb0a2a60a5774e625c81c0fa92a13e3678f969dc6d93bd5",
+    "scripts/check_cad_optimization.py": "06f21da640dea7d0c2bdb28dfe1aa8df23989f0289708f6f3b348249b894219d",
+    "scripts/check_cad_state_pipeline.py": "15aa378d8658ebcdc423a0fc73aedf3235d32376891fd4cd5f48aef8527f3f3a",
+    "scripts/check_coax_shape_reference.py": "5af3edaac18f01922c8482df133a247aeeacb921c271a233e71a81cddb4582d8",
+    "scripts/check_design_geometry.py": "9d65570626697333d97a2be7a6a80765ebe28afdf3ef32e6774fd92cd2dc18bf",
+    "scripts/check_hj_actual_direction.py": "14557069f18806f726beddd648c0b1e26322634c82ebd171b16be8696b664b98",
+    "scripts/check_hj_bilinear_area.py": "1fe1e419d5340486bb95419897e14c6c58bd65aa05e9640176d71e10845d71c9",
+    "scripts/check_hj_direction_transfer.py": "539c14ab204712acf29491658183e74a75e45a835551afee93ec47f54bd5dacb",
+    "scripts/check_hj_triangle_convergence.py": "d92e24e77a0cbed77a7f09eb35a93540d69ef25d8ae1b6f1cb08ac7980c6001c",
+    "scripts/check_hj_triangle_pipeline.py": "77ae7b25b8bd758f25a4b0dabeff64c63a661faaeaa6de7f7f4469d24530700b",
+    "scripts/check_pec_cylinder_smatrix.py": "e18ea6177cb5e6dde4c74bf3f2affa6b1d17d9e7618e099824902d895eacb3e7",
+    "scripts/check_polygon_optimization.py": "c165f6b496e06886fd07ea22940c4de2e666760026acd37965b638a9bd795f56",
+    "scripts/check_polygon_smatrix.py": "9c2fe6c1d494ad4cbb9a96c777eafaf242fd48225c4d693c244e1c0419ad6620",
+    "scripts/check_s11_cross_case.py": "af57ba9c49271fcd6b8635337ff2e558e9db78ebe898b168ef4950a257612a96",
+    "scripts/check_s11_sampling_normalization.py": "c4284dde9c076f54a86c471f7bb523c870d5a2a7da6a2dcebf87d056ac8d2257",
+    "scripts/check_s21_cross_case.py": "1ef93d8bb52ad405d2b95a5ebdc23e44c9213c95ef303f0f98552b2b2ccabb06",
+    "scripts/check_saved_cad_step.py": "0409c9f0bdf32f200aca4406d47f08ba361624dbbda169b79ba5c6ed2726950e",
+    "scripts/check_saved_extension_sign.py": "09383351ef87b5e99edd8281c4bfee8c7bc9e9320b0d0df7cc1187944d7ab29d",
+    "scripts/check_shape_derivative_mine.py": "5bda82f94e936be428d1a6c7195dd7f4715d5187d524205a9771c0f10ca0c837",
+    "scripts/cst_init_bwd.py": "3ac8879c664be6c4ee73e6060ea568db3a7a068c086e9050476bdc54dfce04f9",
+    "scripts/cst_init_fwd.py": "a07b88b167483155fc116ce512282dfdba4d6351b915ca20ad18a73c7d4b28cf",
+    "scripts/cst_update.py": "23829ebe5e64218da2c0b50c158c1cf2b403ca655e3f340e3a17661fa871147e",
+    "scripts/pec_polygon_reference.py": "956dab3714fb45364ea078d8de0a27bb1a7ec3ef9fe01f1c11e9b6617ce6cca5",
+    "scripts/plot_coupler_adjoint_levelset.py": "8f8271ecf9f28ee67818e27b3a90a04357a1c773dbe944b4e78233c478a4ae67",
+    "scripts/plot_efield_xy.py": "5fe1fec5cdba8b924b3222ef616e2364b49d117f1b1df7527cd5d5efa8fece09",
+    "scripts/plot_layout.py": "0075a1e4032c8136ad197e7b675df05803c3a8d0d88f8740bfcde587ea8152db",
+    "scripts/plot_polygon_optimization.py": "3c123366a3f8eeb8e8725d5b577b56b8ea604c1beccc0861b184a95d5b224be5",
+    "scripts/plot_results.py": "67f0ba0b13adfecc09a8ae43a03c90fc8ca76553f511cd4584be47308b3ee748",
+    "scripts/run_antenna_adjoint_levelset.py": "63cf98ad3b73df281b86307c782ef31c37c3e677303ae4ce3bb3a62e4fe10cf8",
+    "scripts/run_coupler_adjoint_levelset.py": "fc29da8797ab91f034bceaf538c907bebd65dd8818372e0f1255e298beffb4c5",
+    "scripts/run_divider_adjoint_levelset.py": "39346f13f8a9a96b61d84ed3ffdb33e44cb6dc6b95c04c0c4c9be95184274ae3",
+    "scripts/run_divider_multifreq.py": "489c8ab727495cc6caa9725542d47767b9985017503643f25cb9eb282efbf292",
+    "tests/test_boundary_sample_diagnostic.py": "e6da9473eba27f86e497ffdac6496fb8a551ecf18f0abdd6d1a9f37b952d2ca9",
+    "tests/test_boundary_sampling.py": "da6012f14b4d34a92dd35eebc5776c075ba588417259c4ef2a4afb8a6c490c2c",
+    "tests/test_cad_evolution.py": "29fff4195b9a58cdb880ffcafa1a4499df29ced3a08220d3d3dc609a69cee38c",
+    "tests/test_cad_geometry_state.py": "4133c97344396be4ab940af6bb75cd9b4f82c1dd19982fe798a88d6be09b2a10",
+    "tests/test_cst_parallel.py": "68b406484c78fee357e4b59dbc605f7a7e80e75d053ab21ba9887ef64040c7bc",
+    "tests/test_cst_ports.py": "cf5a2223e05c67fa9294f29b924549f2ef6f58ff5072f028a6436db120dde039",
+    "tests/test_geometry_consistency.py": "6adc7de5acf22e50d6a0b5ab8955eb42e2e564a27a5d5661faca13c86a13aa65",
+    "tests/test_implicit_geometry.py": "8dd5ebb04c71696600caa6d3880f0e4e3a8d87970962ad079a3849765e362bc2",
+    "tests/test_iteration_displacement.py": "50a17853d4d2011ebb29ed37357360c76c84d15aeb140a16c179b75a5e027081",
+    "tests/test_min_feature.py": "4f532410f43ff1900f925cf1c457b540b268c511641e17a4ae649bcd60155a7c",
+    "tests/test_native_geometry_audit.py": "346f53eb995d9b2e8624f8ae4c8f2edefda5bc3bedbd20f2e7e0dbf2d0948714",
+    "tests/test_polygon_reference.py": "2493308aa39c60283c25d68db076d4dd4e9f808befe582bf29b27c7cfc27da2b",
+    "tests/test_s_parameter_shape_variation.py": "fea33d9dc35fe61a25c9e6779b3076a52ee7270c79b87cf70430979df92c9760",
+    "tests/test_velocity_direction.py": "efff3f883f308a23104fb5ce14463d06e4e56273eb866b136cfb5d5816fb71f8"
+  },
+  "reference_runs": {
+    "antenna_hj_audited_2026-11-15": {
+      "frozen_run_config": {
+        "time_utc": "2026-11-15T01:47:32.943203+00:00",
+        "config_path": "E:\\efficient_adjoint\\configs\\antenna.yaml",
+        "config": {
+          "name": "antenna",
+          "description": "Continuous patch antenna, single-port S11 minimization",
+          "objective": {
+            "type": "transmission",
+            "from_port": 1,
+            "to_port": 1,
+            "frequencies_ghz": null,
+            "target_db": -3.0,
+            "beta_per_db": 1.0
+          },
+          "design_region": {
+            "box": {
+              "x": [
+                -20.0,
+                20.0
+              ],
+              "y": [
+                -20.0,
+                20.0
+              ]
+            },
+            "grid_step_mm": 0.2,
+            "field_margin_mm": 2.0
+          },
+          "initial_metal": [
+            {
+              "vertices": [
+                [
+                  -20.0,
+                  -10.0
+                ],
+                [
+                  0.0,
+                  -10.0
+                ],
+                [
+                  0.0,
+                  10.0
+                ],
+                [
+                  -20.0,
+                  10.0
+                ]
+              ]
+            }
+          ],
+          "fixed_region": [
+            {
+              "vertices": [
+                [
+                  -25.0,
+                  -2.5
+                ],
+                [
+                  -20.0,
+                  -2.5
+                ],
+                [
+                  -20.0,
+                  2.5
+                ],
+                [
+                  -25.0,
+                  2.5
+                ]
+              ]
+            }
+          ],
+          "constraints": {
+            "min_gap_mm": 0.0,
+            "min_feature_mm": 0.6,
+            "allowed_region": {
+              "x": [
+                -20.0,
+                20.0
+              ],
+              "y": [
+                -20.0,
+                20.0
+              ]
+            },
+            "require_connected": false,
+            "taper_edges": "none"
+          },
+          "sampling": {
+            "sample_side": "outside",
+            "intersection_offset_mm": 0.05,
+            "field_z_mm": 0.009
+          },
+          "optimizer": {
+            "pseudo_time_step": 1e-08,
+            "cfl": 0.5,
+            "velocity_sign": 1.0,
+            "max_iterations": 8
+          },
+          "level_set": {
+            "extension_band_mm": 1.0
+          },
+          "output": {
+            "dir": "E:\\efficient_adjoint\\results\\antenna_hj_audited_2026-11-15"
+          }
+        },
+        "setup": {
+          "frequency_ghz": 7.5,
+          "eps_r": 3.55,
+          "loss_tangent": 0.0027,
+          "substrate_h_mm": 1.524,
+          "metal_thickness_mm": 0.018,
+          "metal_material": "pec",
+          "ports": [
+            1
+          ],
+          "attach_gui": false,
+          "port_power_w": 0.5,
+          "export_step_mm": 0.2,
+          "export_step_z_mm": 0.1,
+          "save_fields": false,
+          "project_dir": null,
+          "project_names": [
+            "fwd",
+            "bwd"
+          ],
+          "quiet_mode": true,
+          "clear_results": true,
+          "solver_type": "fd"
+        },
+        "arguments": {
+          "config": "configs/antenna.yaml",
+          "attach": false,
+          "force_new": true,
+          "save_fields": null,
+          "log": null,
+          "output_dir": "results/antenna_hj_audited_2026-11-15",
+          "iterations": 8,
+          "sample_offset_mm": null,
+          "boundary_sampling": "cst-points",
+          "solver": "fd",
+          "adjoint_source": "objective",
+          "prefactor_scale": 1.0,
+          "gradient_check": false,
+          "geometry_update": "levelset"
+        },
+        "shape_derivative": "mine"
+      },
+      "trajectory": [
+        0.5463124954723375,
+        0.26053584145893516,
+        0.6106341889719157,
+        0.9519730405654482,
+        0.9090702934466108,
+        0.9626845161393037,
+        0.9562056128893862,
+        0.8981501572920745,
+        0.9354720763219793
+      ],
+      "sha256": {
+        "results/antenna_hj_audited_2026-11-15/run_config.json": "2b62bc18d80c3bf4bbf9a2e8121733f1255f349ac0ba320a51675498c7742a58",
+        "results/antenna_hj_audited_2026-11-15/adjoint_levelset_history.jsonl": "9038a3269bffd89e0c1218d2f8df90325d1354973be4a658d207a9bad5a5d9bb",
+        "results/antenna_hj_audited_2026-11-15/final_shape.json": "3be3390c09f5af800725ac8db0d34d3b9ba0ecf2b1bc2f61f78d429cfa522cc4",
+        "results/antenna_hj_audited_2026-11-15/iter_000/boundary_fields.npz": "4687f5725bac3191acccb5142b023d7b4f8b9301130a04525e619d218404258c",
+        "results/antenna_hj_audited_2026-11-15/iter_000/shape.json": "2d70ca201d1ebb64b94676b29cbe11564544411684d6c6f41af9c96c9cd85495",
+        "results/antenna_hj_audited_2026-11-15/iter_000/meta.json": "411003a806dc78bb41a82c2e6f91fcbcf095a4c88ce40b2dc95a00f4d6a6c6a0",
+        "results/antenna_hj_audited_2026-11-15/iter_000/native_geometry_fwd.json": "1c198903268982673620045516a40d3496d6a7669a5069e0c73a1289b199c1d8",
+        "results/antenna_hj_audited_2026-11-15/iter_001/boundary_fields.npz": "514ac86176ef5ffa6bca35f87972c49a09f908252d92b05429b8bb758e21d74c",
+        "results/antenna_hj_audited_2026-11-15/iter_001/shape.json": "b897802a5a6446d54d103e65bfe45bdabad50a9426020a7025326fd13fa2a3ef",
+        "results/antenna_hj_audited_2026-11-15/iter_001/meta.json": "6f030103cdbc865a7de95d58ebaf419de02d8bfe4f9143d01853801f70a12011",
+        "results/antenna_hj_audited_2026-11-15/iter_001/native_geometry_fwd.json": "2548ad37df4935730c280e4929981c5c06b0c9074a1650d900cf52b3cf83295e",
+        "results/antenna_hj_audited_2026-11-15/iter_002/boundary_fields.npz": "47b78ac710ef2e28e2e870cee2a2e36c843d27083e1f03ff1c00321508567b14",
+        "results/antenna_hj_audited_2026-11-15/iter_002/shape.json": "fbe2124d98b091c44219e19d619e01fb64dfd56cfa1843e345d684046a745d75",
+        "results/antenna_hj_audited_2026-11-15/iter_002/meta.json": "e8eddf784a5a046b18e08b0bddeffca278dfa07649174e821760eaddb08db0db",
+        "results/antenna_hj_audited_2026-11-15/iter_002/native_geometry_fwd.json": "76c1cf0851b60e9a0569a0912bf6daddd8a0d04d2c9b6d14b7fd74e004b5a554",
+        "results/antenna_hj_audited_2026-11-15/iter_003/boundary_fields.npz": "38fc36f1eac9b68b23a010aa2aa94183be615d7ecb0c942cb3f6d863d06f7ef9",
+        "results/antenna_hj_audited_2026-11-15/iter_003/shape.json": "8f717534562c95724e551931ecea667a70868298875139c2166ccd901b5bcd0d",
+        "results/antenna_hj_audited_2026-11-15/iter_003/meta.json": "af46f5a1f6d0a3f2fa4c859672017a30d4edf521065c9fb7b1cba865a645339c",
+        "results/antenna_hj_audited_2026-11-15/iter_003/native_geometry_fwd.json": "f74fbf70134b5716aa1c4c191489c8f2f2e5508d91c6926af639a19469a10eb8",
+        "results/antenna_hj_audited_2026-11-15/iter_004/boundary_fields.npz": "e0e3187c7de1f527bfc1cb220847a40c66f365120e276745d155f815902bbf3c",
+        "results/antenna_hj_audited_2026-11-15/iter_004/shape.json": "e4127e3ba5812df8cdb48478b3b00049377ce6a8c5f3a96a7c606661f9f6bb4b",
+        "results/antenna_hj_audited_2026-11-15/iter_004/meta.json": "c0acdaef960b43ddfbf8250ccd7a3444ac13d1b879b35f28271e3b4c506e4989",
+        "results/antenna_hj_audited_2026-11-15/iter_004/native_geometry_fwd.json": "2042429c48586c496744a7a428674df797c890a07a9c4f93f259b32fa025b0fb",
+        "results/antenna_hj_audited_2026-11-15/iter_005/boundary_fields.npz": "8cffc5fe4a0883af03fbd7c220ccfff74cd01ffad63477e02db880b2ded9975a",
+        "results/antenna_hj_audited_2026-11-15/iter_005/shape.json": "0fce886bfbc54b8a93fa86082911c312f7734b885f7434395d3298f437dba72c",
+        "results/antenna_hj_audited_2026-11-15/iter_005/meta.json": "6e62eec552e3fbaa26393dbdc304b096d75673fd05f1d934162dbd6814999c9f",
+        "results/antenna_hj_audited_2026-11-15/iter_005/native_geometry_fwd.json": "d1409c548531f3c3104e31931340ba26254b4c35d9dc557ffd9b98076bab020d",
+        "results/antenna_hj_audited_2026-11-15/iter_006/boundary_fields.npz": "8ae3b77abaee1de01d66f7dd9565fe3a388d85fe5a90ab11e1439f0b84083ca7",
+        "results/antenna_hj_audited_2026-11-15/iter_006/shape.json": "5070006227735045be0f53b962533891a9f282288d4fb525d7ce30324751289f",
+        "results/antenna_hj_audited_2026-11-15/iter_006/meta.json": "d3f7e845a70260b640e95e9cbe2ad8d33b5c81cc1ba5c96b25123b67d7604e00",
+        "results/antenna_hj_audited_2026-11-15/iter_006/native_geometry_fwd.json": "b576f46ac8e6528d4e3f0d5b903f8c46cd674dece4a7d215dd76111efc6871a7",
+        "results/antenna_hj_audited_2026-11-15/iter_007/boundary_fields.npz": "7b22bb34e8d95f5df9eb4e25f88f7fb94afe2e16f1563a0d736c07dc3de6ca07",
+        "results/antenna_hj_audited_2026-11-15/iter_007/shape.json": "87e290745ad019d427574e30b4eecaf67770dc1f4c99a764635369561ee4fd18",
+        "results/antenna_hj_audited_2026-11-15/iter_007/meta.json": "a39be82dbedf051c7390c98ce43e8b65fc812a18e9ce15a720d1df9379714e0c",
+        "results/antenna_hj_audited_2026-11-15/iter_007/native_geometry_fwd.json": "bdcfec618a223a369f556b81503dedb0cacba945f945afd485c5f9e8065e27bc",
+        "results/antenna_hj_audited_2026-11-15/iter_008/shape.json": "dd6912ceb4f3c4e285a3581d8851cbaf8a55efc85d4c31365baba7de46144ed3",
+        "results/antenna_hj_audited_2026-11-15/iter_008/meta.json": "4aefc56cc0a07e2b4b725f3b2b1a5d409030a6f5ba122248ed140338a457b264",
+        "results/antenna_hj_audited_2026-11-15/iter_008/native_geometry_fwd.json": "e71e84af81883839941867c463d3ab24fb5c929bb8ec9067fa59341c53e633c1",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_000.npz": "4a4057b8b2cc74bd558d40fc8c098644783ad1018ef615f54183167e22b110c3",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_000.npz": "9fc04e10b7ede3985410dba87248a258ec84aa2c20c5087125be7815214904f4",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_001.npz": "9fc04e10b7ede3985410dba87248a258ec84aa2c20c5087125be7815214904f4",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_001.npz": "6cbbfe55f5dd6d9859e2ce56cd9e2bd949eeff7614bca72c956a21cfac854770",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_002.npz": "6cbbfe55f5dd6d9859e2ce56cd9e2bd949eeff7614bca72c956a21cfac854770",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_002.npz": "49e2e2f9b941b235ff646c1f0d58e2930181f4c3a76b7046289fbc996cc14ed4",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_003.npz": "49e2e2f9b941b235ff646c1f0d58e2930181f4c3a76b7046289fbc996cc14ed4",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_003.npz": "6266dda67f159805e056294beda8289de1d8db09d11f3040fcd5a39c58068086",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_004.npz": "6266dda67f159805e056294beda8289de1d8db09d11f3040fcd5a39c58068086",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_004.npz": "c1c6d5c041168567bb34ff3e1eef90779ee1f5872a3c3c920f847bef7ebbcef5",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_005.npz": "c1c6d5c041168567bb34ff3e1eef90779ee1f5872a3c3c920f847bef7ebbcef5",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_005.npz": "9f4701889024ff99ec59e54af1692ebfef6aea08576f6647b4ad052abb231822",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_006.npz": "9f4701889024ff99ec59e54af1692ebfef6aea08576f6647b4ad052abb231822",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_006.npz": "de562eb5208b3ae888dbda0d1a0dc1a0ac91dc0599c89d8aa79201bf910947d5",
+        "results/antenna_hj_audited_2026-11-15/phi_before_iter_007.npz": "de562eb5208b3ae888dbda0d1a0dc1a0ac91dc0599c89d8aa79201bf910947d5",
+        "results/antenna_hj_audited_2026-11-15/phi_after_iter_007.npz": "3fb6e10f23e705c8e269d97f67464a0c49298601e01c92120004c24210b815d1"
+      }
+    },
+    "antenna_hj_capped_2026-11-15": {
+      "frozen_run_config": {
+        "time_utc": "2026-11-15T03:01:21.496313+00:00",
+        "config_path": "E:\\efficient_adjoint\\configs\\antenna.yaml",
+        "config": {
+          "name": "antenna",
+          "description": "Continuous patch antenna, single-port S11 minimization",
+          "objective": {
+            "type": "transmission",
+            "from_port": 1,
+            "to_port": 1,
+            "frequencies_ghz": null,
+            "target_db": -3.0,
+            "beta_per_db": 1.0
+          },
+          "design_region": {
+            "box": {
+              "x": [
+                -20.0,
+                20.0
+              ],
+              "y": [
+                -20.0,
+                20.0
+              ]
+            },
+            "grid_step_mm": 0.2,
+            "field_margin_mm": 2.0
+          },
+          "initial_metal": [
+            {
+              "vertices": [
+                [
+                  -20.0,
+                  -10.0
+                ],
+                [
+                  0.0,
+                  -10.0
+                ],
+                [
+                  0.0,
+                  10.0
+                ],
+                [
+                  -20.0,
+                  10.0
+                ]
+              ]
+            }
+          ],
+          "fixed_region": [
+            {
+              "vertices": [
+                [
+                  -25.0,
+                  -2.5
+                ],
+                [
+                  -20.0,
+                  -2.5
+                ],
+                [
+                  -20.0,
+                  2.5
+                ],
+                [
+                  -25.0,
+                  2.5
+                ]
+              ]
+            }
+          ],
+          "constraints": {
+            "min_gap_mm": 0.0,
+            "min_feature_mm": 0.6,
+            "allowed_region": {
+              "x": [
+                -20.0,
+                20.0
+              ],
+              "y": [
+                -20.0,
+                20.0
+              ]
+            },
+            "require_connected": false,
+            "taper_edges": "none"
+          },
+          "sampling": {
+            "sample_side": "outside",
+            "intersection_offset_mm": 0.05,
+            "field_z_mm": 0.009
+          },
+          "optimizer": {
+            "pseudo_time_step": 1e-08,
+            "cfl": 0.5,
+            "velocity_sign": 1.0,
+            "max_iterations": 8
+          },
+          "level_set": {
+            "extension_band_mm": 1.0
+          },
+          "output": {
+            "dir": "E:\\efficient_adjoint\\results\\antenna_hj_capped_2026-11-15"
+          }
+        },
+        "setup": {
+          "frequency_ghz": 7.5,
+          "eps_r": 3.55,
+          "loss_tangent": 0.0027,
+          "substrate_h_mm": 1.524,
+          "metal_thickness_mm": 0.018,
+          "metal_material": "pec",
+          "ports": [
+            1
+          ],
+          "attach_gui": false,
+          "port_power_w": 0.5,
+          "export_step_mm": 0.2,
+          "export_step_z_mm": 0.1,
+          "save_fields": false,
+          "project_dir": null,
+          "project_names": [
+            "fwd",
+            "bwd"
+          ],
+          "quiet_mode": true,
+          "clear_results": true,
+          "solver_type": "fd"
+        },
+        "arguments": {
+          "config": "configs/antenna.yaml",
+          "attach": false,
+          "force_new": true,
+          "save_fields": null,
+          "log": null,
+          "output_dir": "results/antenna_hj_capped_2026-11-15",
+          "iterations": 8,
+          "max_step_mm": 0.1,
+          "sample_offset_mm": null,
+          "boundary_sampling": "cst-points",
+          "solver": "fd",
+          "adjoint_source": "objective",
+          "prefactor_scale": 1.0,
+          "gradient_check": false,
+          "geometry_update": "levelset"
+        },
+        "shape_derivative": "mine"
+      },
+      "trajectory": [
+        0.546312764076829,
+        0.2832601696369612,
+        0.26430277272445013,
+        0.1806092114342006,
+        0.18130781343408248,
+        0.12252937082055765,
+        0.07321848174491041,
+        0.17172501053947586,
+        0.10345757021346325
+      ],
+      "sha256": {
+        "results/antenna_hj_capped_2026-11-15/run_config.json": "7abf97ac2c1f68b3bed34473f9aa1c12ad7b0dc7800acc16ac8493de01844d70",
+        "results/antenna_hj_capped_2026-11-15/adjoint_levelset_history.jsonl": "7c8fa02dab718cb72671ed40cd8308850dd2fb7f042f884968ffc185b4b245d5",
+        "results/antenna_hj_capped_2026-11-15/final_shape.json": "633d9fad33eae58111f203d8a072e80e552e5a58c076f7fa16b72698bf8b6201",
+        "results/antenna_hj_capped_2026-11-15/iter_000/boundary_fields.npz": "7ab530ccc03edb7c82e1be6ff9ee9fb286b618a98d8d36a10eac941c8bb3ed1f",
+        "results/antenna_hj_capped_2026-11-15/iter_000/shape.json": "2d70ca201d1ebb64b94676b29cbe11564544411684d6c6f41af9c96c9cd85495",
+        "results/antenna_hj_capped_2026-11-15/iter_000/meta.json": "d36b09aa863bc43674f954f80b02322f64e05e05d8f5f4cf941c3b6646c369c0",
+        "results/antenna_hj_capped_2026-11-15/iter_000/native_geometry_fwd.json": "208a41329426281145eeb9032c63ea797b991a63d2fe83812263a95eb61b114a",
+        "results/antenna_hj_capped_2026-11-15/iter_001/boundary_fields.npz": "84bcee930d33578a9df20cbe108f0b93a686964f0badb92484abdf66974d2cec",
+        "results/antenna_hj_capped_2026-11-15/iter_001/shape.json": "340c0ac4236a586eab67aa21174f3789e70ff8ee7f2f5f130a70a9be5b0d82d1",
+        "results/antenna_hj_capped_2026-11-15/iter_001/meta.json": "aa3a73af4361f097ca6680413916fd291dfca8ac96ae01ba23e0fefe5b8152c1",
+        "results/antenna_hj_capped_2026-11-15/iter_001/native_geometry_fwd.json": "575093cd99fefd61a9c0fb7b446d214a19f1437f2bf4ef18a7f085ac4c7a618f",
+        "results/antenna_hj_capped_2026-11-15/iter_002/boundary_fields.npz": "e78330f302dcf23bd7749738654994589160a1d466f4cb59854e0218cafa6710",
+        "results/antenna_hj_capped_2026-11-15/iter_002/shape.json": "7e2e284372c063ae7846f80a25e395c2de0e96c3826a256f3dc542b567a65081",
+        "results/antenna_hj_capped_2026-11-15/iter_002/meta.json": "7f52227eaa1e33f229613ef35f55a4d6f62865b3d0b445b64d88ed02bebf9654",
+        "results/antenna_hj_capped_2026-11-15/iter_002/native_geometry_fwd.json": "da3bb4357571ade787804d281a6c48310b4825a987126fd90d6a27fd19de4a58",
+        "results/antenna_hj_capped_2026-11-15/iter_003/boundary_fields.npz": "66fe30eb14d915f34d0749705ee248c5d87bc5fc43d03efaf1ad9ddf3af67de6",
+        "results/antenna_hj_capped_2026-11-15/iter_003/shape.json": "062d33268b1af8997eb4a33150f98d746b755cc6a9559d4bf053fc007472bef8",
+        "results/antenna_hj_capped_2026-11-15/iter_003/meta.json": "c3d65ec991a8c20e9b6394e013d941d83e8d850472746edb0abbae7c32e9483e",
+        "results/antenna_hj_capped_2026-11-15/iter_003/native_geometry_fwd.json": "960bbc8e0adad70ae79decd929ad96d390c2313d51435245659e9a61c363290e",
+        "results/antenna_hj_capped_2026-11-15/iter_004/boundary_fields.npz": "7656dfab2e263934b774cb82c322658219005f0d9433130ebc3d678dd74fc233",
+        "results/antenna_hj_capped_2026-11-15/iter_004/shape.json": "0ac7ad211a2feb369ada04a47f2a772980df87219fdf64d9078220ce76299a23",
+        "results/antenna_hj_capped_2026-11-15/iter_004/meta.json": "75a8a62243fc579e5fc043e2198442c6c61b7d99649716f9682e33e8f77872fb",
+        "results/antenna_hj_capped_2026-11-15/iter_004/native_geometry_fwd.json": "bc49bb175a5658136491c44b4e5d3ad96cdd7a46a2ddc6b60be01652177e1201",
+        "results/antenna_hj_capped_2026-11-15/iter_005/boundary_fields.npz": "ca148b152e093ac4b17a196fd11b2e69dfd42b01b99f843d3e72503ee58d185e",
+        "results/antenna_hj_capped_2026-11-15/iter_005/shape.json": "9aade44606244869e70ea6848eae94feb6888896b1e08f053887acf6b3377175",
+        "results/antenna_hj_capped_2026-11-15/iter_005/meta.json": "467aefd3c55d4595014d433f11ca77637cd36be2363605d6d4c10c9220110639",
+        "results/antenna_hj_capped_2026-11-15/iter_005/native_geometry_fwd.json": "d6e0b11a0888d31801ea991c0d6aa824b5e3783d195b5e96b773b3fab929d353",
+        "results/antenna_hj_capped_2026-11-15/iter_006/boundary_fields.npz": "403fec4b80e12b5896012e55154899184bd0f9d662538c6dac9ad07f583602a6",
+        "results/antenna_hj_capped_2026-11-15/iter_006/shape.json": "49967130ed87c5967d1b5ec91eb1806c16450c551aecb14de0ff572342e68d8b",
+        "results/antenna_hj_capped_2026-11-15/iter_006/meta.json": "04c8f5c1c504741927c808fca6410fc628d667d96ec92592690db4494494afa6",
+        "results/antenna_hj_capped_2026-11-15/iter_006/native_geometry_fwd.json": "c3349b73f58f67c4c5aae815c1cb948e2108b0e1d0c6c5367fffd91c91f66273",
+        "results/antenna_hj_capped_2026-11-15/iter_007/boundary_fields.npz": "b65f7e0ba2e92c28b2c5d3b9943834d31c3adfde6cedbebfa010c2c5d6b37e14",
+        "results/antenna_hj_capped_2026-11-15/iter_007/shape.json": "fd356e56c0c96653d889597595858039e4d74bdad4de0406bb4dd98da455f59f",
+        "results/antenna_hj_capped_2026-11-15/iter_007/meta.json": "a30efc456fa709df8acb61f8788eb1f15df447ad9040154196b32cf5cab408ee",
+        "results/antenna_hj_capped_2026-11-15/iter_007/native_geometry_fwd.json": "a1ed5fd4d1fdc34035fec932a588ea3eea0577a2b98daa46f6eba04dc6683392",
+        "results/antenna_hj_capped_2026-11-15/iter_008/shape.json": "e7a1be7bdb7606947e0979646b4c8619e325bd05d2aea78ba20e0d2136c40517",
+        "results/antenna_hj_capped_2026-11-15/iter_008/meta.json": "36ba3cccad3cba87cc50a4f25035afc8454977bb0863e5f9a2d04237253c2e9d",
+        "results/antenna_hj_capped_2026-11-15/iter_008/native_geometry_fwd.json": "e98100cacb5fb73afb625545a278442f87b80040efccd12e40480a4548741712",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_000.npz": "4a4057b8b2cc74bd558d40fc8c098644783ad1018ef615f54183167e22b110c3",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_000.npz": "2620c535970bbab1e66546e46d8deb0c5353afff56d2986c5323e904e65567e6",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_001.npz": "2620c535970bbab1e66546e46d8deb0c5353afff56d2986c5323e904e65567e6",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_001.npz": "a25f48a7c53b313d1b661da8c67fad020e28ccf537aea7eb3e868eca58a0cbae",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_002.npz": "a25f48a7c53b313d1b661da8c67fad020e28ccf537aea7eb3e868eca58a0cbae",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_002.npz": "66d11ea9978b21a0c9da50aeec4244b4721ca01e5d2a1049b64f8a0c0b6dc21f",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_003.npz": "66d11ea9978b21a0c9da50aeec4244b4721ca01e5d2a1049b64f8a0c0b6dc21f",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_003.npz": "59500b14ecdb19c1149613675118fd3a87e39e40be652bb90758b94397f280f8",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_004.npz": "59500b14ecdb19c1149613675118fd3a87e39e40be652bb90758b94397f280f8",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_004.npz": "f416292f7ed5b52bda597622e94503070fe2e34db158c175ef88a6194eb7caa9",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_005.npz": "f416292f7ed5b52bda597622e94503070fe2e34db158c175ef88a6194eb7caa9",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_005.npz": "fa866ec1ea04ee8330c8a2ecfe0a23c9588e265e1cb45440e5fcc9ad32f9b45c",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_006.npz": "fa866ec1ea04ee8330c8a2ecfe0a23c9588e265e1cb45440e5fcc9ad32f9b45c",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_006.npz": "83ca6f2fa350580fb788b090d9da5ad6d6164cac5e2b5fd678af986e6afa2035",
+        "results/antenna_hj_capped_2026-11-15/phi_before_iter_007.npz": "83ca6f2fa350580fb788b090d9da5ad6d6164cac5e2b5fd678af986e6afa2035",
+        "results/antenna_hj_capped_2026-11-15/phi_after_iter_007.npz": "f358de6fcfbdb471c536f9cf5d0e072539ff4d0afccea3069121eb16b0a7abf5"
+      }
+    },
+    "antenna_hj_capped_repeat_2026-11-15": {
+      "frozen_run_config": {
+        "time_utc": "2026-11-15T03:13:04.140438+00:00",
+        "config_path": "E:\\efficient_adjoint\\configs\\antenna.yaml",
+        "config": {
+          "name": "antenna",
+          "description": "Continuous patch antenna, single-port S11 minimization",
+          "objective": {
+            "type": "transmission",
+            "from_port": 1,
+            "to_port": 1,
+            "frequencies_ghz": null,
+            "target_db": -3.0,
+            "beta_per_db": 1.0
+          },
+          "design_region": {
+            "box": {
+              "x": [
+                -20.0,
+                20.0
+              ],
+              "y": [
+                -20.0,
+                20.0
+              ]
+            },
+            "grid_step_mm": 0.2,
+            "field_margin_mm": 2.0
+          },
+          "initial_metal": [
+            {
+              "vertices": [
+                [
+                  -20.0,
+                  -10.0
+                ],
+                [
+                  0.0,
+                  -10.0
+                ],
+                [
+                  0.0,
+                  10.0
+                ],
+                [
+                  -20.0,
+                  10.0
+                ]
+              ]
+            }
+          ],
+          "fixed_region": [
+            {
+              "vertices": [
+                [
+                  -25.0,
+                  -2.5
+                ],
+                [
+                  -20.0,
+                  -2.5
+                ],
+                [
+                  -20.0,
+                  2.5
+                ],
+                [
+                  -25.0,
+                  2.5
+                ]
+              ]
+            }
+          ],
+          "constraints": {
+            "min_gap_mm": 0.0,
+            "min_feature_mm": 0.6,
+            "allowed_region": {
+              "x": [
+                -20.0,
+                20.0
+              ],
+              "y": [
+                -20.0,
+                20.0
+              ]
+            },
+            "require_connected": false,
+            "taper_edges": "none"
+          },
+          "sampling": {
+            "sample_side": "outside",
+            "intersection_offset_mm": 0.05,
+            "field_z_mm": 0.009
+          },
+          "optimizer": {
+            "pseudo_time_step": 1e-08,
+            "cfl": 0.5,
+            "velocity_sign": 1.0,
+            "max_iterations": 8
+          },
+          "level_set": {
+            "extension_band_mm": 1.0
+          },
+          "output": {
+            "dir": "E:\\efficient_adjoint\\results\\antenna_hj_capped_repeat_2026-11-15"
+          }
+        },
+        "setup": {
+          "frequency_ghz": 7.5,
+          "eps_r": 3.55,
+          "loss_tangent": 0.0027,
+          "substrate_h_mm": 1.524,
+          "metal_thickness_mm": 0.018,
+          "metal_material": "pec",
+          "ports": [
+            1
+          ],
+          "attach_gui": false,
+          "port_power_w": 0.5,
+          "export_step_mm": 0.2,
+          "export_step_z_mm": 0.1,
+          "save_fields": false,
+          "project_dir": null,
+          "project_names": [
+            "fwd",
+            "bwd"
+          ],
+          "quiet_mode": true,
+          "clear_results": true,
+          "solver_type": "fd"
+        },
+        "arguments": {
+          "config": "configs/antenna.yaml",
+          "attach": false,
+          "force_new": true,
+          "save_fields": null,
+          "log": null,
+          "output_dir": "results/antenna_hj_capped_repeat_2026-11-15",
+          "iterations": 8,
+          "max_step_mm": 0.1,
+          "sample_offset_mm": null,
+          "boundary_sampling": "cst-points",
+          "solver": "fd",
+          "adjoint_source": "objective",
+          "prefactor_scale": 1.0,
+          "gradient_check": false,
+          "geometry_update": "levelset"
+        },
+        "shape_derivative": "mine"
+      },
+      "trajectory": [
+        0.5463129268156384,
+        0.2341541353239505,
+        0.21163522999387327,
+        0.20532980914103896,
+        0.24706478916792118,
+        0.18888383913771947,
+        0.053147463859330286,
+        0.07426582751728125,
+        0.20366426251846517
+      ],
+      "sha256": {
+        "results/antenna_hj_capped_repeat_2026-11-15/run_config.json": "d65e8d7b91ad651262c1d510548c38c4722d63776381d69511c0f7eefc92ede6",
+        "results/antenna_hj_capped_repeat_2026-11-15/adjoint_levelset_history.jsonl": "432b5dabcb82981cd81171520c66c77b52f10f216edae8421bbc12863fab1077",
+        "results/antenna_hj_capped_repeat_2026-11-15/final_shape.json": "12fc1be1b0c8a111ebdb982ebd378a74a44a8fa5019ef69882a36901a41459c0",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_000/boundary_fields.npz": "7720c2aa2c509ef1ad66b6e867984a2c559b06fa93022837de984ade0c2f0bb2",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_000/shape.json": "2d70ca201d1ebb64b94676b29cbe11564544411684d6c6f41af9c96c9cd85495",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_000/meta.json": "ea2fa637cff3cadeb8a5ad6015655eca04324ac86ad70800fcaf35252ea5c481",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_000/native_geometry_fwd.json": "208a41329426281145eeb9032c63ea797b991a63d2fe83812263a95eb61b114a",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_001/boundary_fields.npz": "b448a92cef971d61e27300a45ffb27bfaf56d3e48e5ebc3a9aba1c15eb537163",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_001/shape.json": "20078a88e708b1ddd69f2802bf484f19e3c43767a9edd524da9b1b651eeb0140",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_001/meta.json": "df1e85f4684c22d90934c1fc9df3ecdb6bb1f2acde993cd5363767be6dd6baa8",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_001/native_geometry_fwd.json": "965bc0f7921e9ee1a426ec35eb9ad83fdda9055ddf26b7a4342913c0808f328e",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_002/boundary_fields.npz": "f106bb0c583a8c0eb4e59115e3cc33bb2f04559292e82e2dcf6f83b70fc2a050",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_002/shape.json": "335a83e48c564547af819eaed95eaaa211beed48625b142894b37e14693b46f6",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_002/meta.json": "f5d6b30d55da791503f36cfabe88575c8d920bf6731c73ca9163f0eb74103df2",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_002/native_geometry_fwd.json": "e1bc287047e58f047f6bd1e155f6e0c0d653942fc3e54680aa914df0bb5b4c75",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_003/boundary_fields.npz": "4c395eae3b41bfb971e287214a6ddd6f3b05931f5d953ed139f6123fc44ba743",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_003/shape.json": "de852c789971c19207fd3f9086f0af12ccc30a1e6a20ee29f46d3f86525c04c2",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_003/meta.json": "1f404562710df3d6eb8f7754109e7706722ee32d145ebcdf47b1cb985037bd57",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_003/native_geometry_fwd.json": "fc80a446a6698530c01698191a1382742871204edca80bd96084aee66ccb8b20",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_004/boundary_fields.npz": "8c2d379102b5e20fa04f50ef033ddc10efaa162227f5927b91f38075fda8341e",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_004/shape.json": "dc10b29ec45210beb73e380923d7afd756970b0d71a3327dd6a7f8a296307d6c",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_004/meta.json": "a554e046a5c4bb4c8c2c7f0af0e4e40423bb35e3c60666a790af5c5127a5537c",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_004/native_geometry_fwd.json": "3cc8dcea488a356e4a283b4f75494bfbc5b941201e39db1ebd9747fc626884a9",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_005/boundary_fields.npz": "3d9b41f82ea5ce5732e3cf9340f44c5bfdb356613f8ca7e929b67e3913dd3129",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_005/shape.json": "9d00f015eb8b044203fe81c12448e88d345e532b833a5a8a46e2b110588ad5cb",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_005/meta.json": "19e99e8475aef733ee0222b6d7e2dd40e395c3a1f1ac50597ff3c1c59c4440f3",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_005/native_geometry_fwd.json": "1a42077c02da9970834200087078855f0552bfd5b9ff80e93207bdbc2193ed42",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_006/boundary_fields.npz": "4242cdc2af7a4dffe5c2233fd9a8227bd339deaa86ac3a7dc6dd9c6f5de6d519",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_006/shape.json": "344c242ea3ba0570bfe09e807b094c07811832527ab342890274fc9f6b4074c4",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_006/meta.json": "cd582c527fe954224ff82ec424d0b07a889680acae84836656865485db5ad985",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_006/native_geometry_fwd.json": "bfbec25bedecf5caefa2e7e834ea8552285c83d2e7fbee73f45a3b1d1eb05c16",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_007/boundary_fields.npz": "a2532455a9b7efd9479edff67ae10d32d855213fecde3fcfcab70dc92fcbac9c",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_007/shape.json": "45122a87a729fff86dfc5a1d621c55e7df6bd47f0edff51f939f42bd3238f73a",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_007/meta.json": "59ec6c57dcccb813cea3c2f042c289c313772c96f8ac2486e384d95bcfb3d07e",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_007/native_geometry_fwd.json": "bcf079e1ca998bf43953d350657bae09aa9f07b847f1fe72e64efc83745eb4dd",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_008/shape.json": "cc23d7920b3aeeadddd081bc6c4984beb24dacfbd79d8bb05dacd23132e458e5",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_008/meta.json": "8a6230b75bc129943e54f3d1b90589ca7b096b9453b820cd32541e45972ec354",
+        "results/antenna_hj_capped_repeat_2026-11-15/iter_008/native_geometry_fwd.json": "bfd82952275e1c159b093d836d66ab4dece0ba000f0186fd4f73e998e1f3ef9f",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_000.npz": "4a4057b8b2cc74bd558d40fc8c098644783ad1018ef615f54183167e22b110c3",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_000.npz": "b21b17d3e46eacec7d785abfd23a03c3c611df19befa32e4fea9ab42bf80dd93",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_001.npz": "b21b17d3e46eacec7d785abfd23a03c3c611df19befa32e4fea9ab42bf80dd93",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_001.npz": "117978c48d97fd7b142c9caf1a4d0cf49dbf50700f25e2010d08dbb62ba52b4f",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_002.npz": "117978c48d97fd7b142c9caf1a4d0cf49dbf50700f25e2010d08dbb62ba52b4f",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_002.npz": "ce2f3c507bee5d297c3258d7b61e0624ce86dfe1dd59a7064ae351451bee5a3e",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_003.npz": "ce2f3c507bee5d297c3258d7b61e0624ce86dfe1dd59a7064ae351451bee5a3e",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_003.npz": "1a14c824b25de47213ff4c5a3c8d8359bac1b3fb78bef533a414ba6da6ede8e3",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_004.npz": "1a14c824b25de47213ff4c5a3c8d8359bac1b3fb78bef533a414ba6da6ede8e3",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_004.npz": "069352bd3655cf1bfccd373c6049b61c5fefff4ecae481d397064f0feb80ca4f",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_005.npz": "069352bd3655cf1bfccd373c6049b61c5fefff4ecae481d397064f0feb80ca4f",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_005.npz": "6562b08ca8730c6f156aac19948ae3a03aba08489fcf97521d4cf6926176efb0",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_006.npz": "6562b08ca8730c6f156aac19948ae3a03aba08489fcf97521d4cf6926176efb0",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_006.npz": "6f017af9ef56b269f669f22b746721ac89bf9d4cf5d65652190a4e94e2373633",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_before_iter_007.npz": "6f017af9ef56b269f669f22b746721ac89bf9d4cf5d65652190a4e94e2373633",
+        "results/antenna_hj_capped_repeat_2026-11-15/phi_after_iter_007.npz": "4e0efb38505d01ea811791d7056495db5f2dce99a103337287e247320b370cd0"
+      }
+    }
+  },
+  "documentation_cleanup": {
+    "date": "2026-11-15",
+    "changed_hashes": {
+      "docs/antenna_oscillation_complete_report_2026-11-15.md": {
+        "before": "1b397e35247883be2cdaaa2c83dd6e01c5ceef7ad660f8157169672a4c38bb04",
+        "after": "9a239e661b9ad2879e5cdc09b6f59126db5f27c85e92ecc893d22998e3c66aea"
+      },
+      "docs/server_runbook.md": {
+        "before": "acdccfe95c4b93798f36036a721b07fbca81e41dcc0e65c41367d1caa9db8d77",
+        "after": "dd31e5ca4f62bc938e72ded11d5247ff07a5b97588068a321ae19dddbd953066"
+      },
+      "README.md": {
+        "before": "e822b3678432e805ee793b902db0df58c19974db1446fb839f2ba98c7fd31e76",
+        "after": "74d49d146111cc45189367801a485890f46755f8296ed999c0fdb24c0dbf506f"
+      }
+    },
+    "record": "docs/antenna_cleanup_2026-11-15.json"
+  },
+  "documentation_sha256": {
+    "docs/analysis_summary_2026-11-02.md": "feec7fa79f597af0fd9627217defb171540d338dc3ef2dc4521b6f33c10603a8",
+    "docs/antenna_oscillation_complete_report_2026-11-15.md": "9a239e661b9ad2879e5cdc09b6f59126db5f27c85e92ecc893d22998e3c66aea",
+    "docs/levelset_open_source_review_2026-11-15.md": "45d37938241f9466517dce72e881eb2d5815ca449a98e9e6918f9252d1bee8f2",
+    "docs/pec_smatrix_derivation_2026-11-12.md": "ed9450f00674b3250ca8faf50caa34f53ea9140977ba0661f5cfcb79bcf933ed",
+    "docs/server_runbook.md": "dd31e5ca4f62bc938e72ded11d5247ff07a5b97588068a321ae19dddbd953066",
+    "docs/sidewall_density_interface_2026-11-14.md": "7a5f582dc0ce5beacb18de4877ba66996b03fae836a61ccd5a44f8ef0a9e1d1d"
+  }
+}

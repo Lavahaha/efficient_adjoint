@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, Polygon, LineString
 from shapely.geometry.polygon import orient
 from scipy.interpolate import RegularGridInterpolator
 from shapely.ops import unary_union
@@ -35,9 +35,54 @@ from eaopt import artifacts, plotting
 from eaopt.geometry.design import (compose_metal_regions, connection_boundary_mask,
                                    design_box, polygon_union, region_rings)
 from eaopt.geometry.contour import classify_metal_regions
+from eaopt.geometry.state import CadGeometryState
+from eaopt.geometry.evolution import CadEvolution
 
 
-def boundary_sample_points(boundary, offset_mm, z_mm, setup, metal, substrate, air_top_mm):
+def _project_case_geometry(trial, topology_candidate, cfg, initial_phi, pinned_boundary,
+                           force_air, force_metal, topology_guard, design_mask, log):
+    """Apply case constraints using polygon feature filtering for retained CAD."""
+    if trial.geometry_state is not None:
+        trial.geometry_state = trial.geometry_state.filter_features(cfg.constraints.min_feature_mm)
+        trial.phi = trial.geometry_state.phi
+    topology_candidate.phi = np.asarray(trial.phi, dtype=float).copy()
+    topology_candidate.phi[pinned_boundary] = initial_phi[pinned_boundary]
+    apply_min_gap(topology_candidate, cfg)
+    if trial.geometry_state is None:
+        apply_min_feature(topology_candidate, cfg.constraints.min_feature_mm,
+                          force_air=force_air, force_metal=force_metal)
+    else:
+        # Frozen material constraints take precedence over the feature filter.
+        if force_air is not None:
+            topology_candidate.phi[np.asarray(force_air, bool)] = trial.grid.dx
+        if force_metal is not None:
+            topology_candidate.phi[np.asarray(force_metal, bool)] = -trial.grid.dx
+    topology_candidate.phi[pinned_boundary] = initial_phi[pinned_boundary]
+    if topology_guard is not None and not topology_guard.apply(topology_candidate, log=log):
+        raise RuntimeError('Connectivity repair failed for the updated geometry')
+    if trial.geometry_state is None:
+        trial.phi = topology_candidate.phi.copy()
+        trial.reinit()
+        trial.phi[pinned_boundary] = initial_phi[pinned_boundary]
+    else:
+        add = (topology_candidate.phi < 0) & (trial.phi >= 0)
+        remove = (topology_candidate.phi > 0) & (trial.phi <= 0)
+        if add.any() or remove.any():
+            trial.geometry_state, _ = trial.geometry_state.apply_node_edits(add, remove)
+        trial.phi = trial.geometry_state.phi
+        topology_candidate.phi = trial.phi.copy()
+        if topology_guard is not None:
+            actual = trial.geometry_state.geometry.intersection(design_box(cfg))
+            if topology_guard.violations(topology_candidate) or actual.geom_type != 'Polygon':
+                raise RuntimeError('Projected CAD failed actual connectivity validation')
+    if topology_guard is not None:
+        design_mask[:] = build_velocity_mask(topology_candidate, cfg, taper_mm=1.0,
+                                            frozen=topology_guard.frozen)
+        design_mask[pinned_boundary] = 0.0
+
+
+def boundary_sample_points(boundary, offset_mm, z_mm, setup, metal, substrate, air_top_mm,
+                           *, clearance_limited=False):
     """One material side, with explicit validation against the actual CAD."""
     if not np.isfinite([offset_mm, z_mm]).all() or offset_mm <= 0:
         raise ValueError("Direct PEC samples require a finite positive outward offset and finite z")
@@ -47,6 +92,26 @@ def boundary_sample_points(boundary, offset_mm, z_mm, setup, metal, substrate, a
     xy = boundary.pts[indices] + offset_mm * boundary.normals[indices]
     if not len(indices) or not np.isfinite(xy).all():
         raise ValueError("No finite active boundary sample points")
+    if clearance_limited and 0 < z_mm <= setup.metal_thickness_mm:
+        # Follow the connected exterior interval, never jump over a thin PEC
+        # feature to a seemingly valid endpoint on its other side.
+        tolerance = 1e-8  # mm: above exported-coordinate rounding, below sampling scales
+        for k, i in enumerate(indices):
+            origin, normal = boundary.pts[i], boundary.normals[i]
+            if (metal.boundary.distance(Point(origin)) > tolerance or
+                    not np.isclose(np.linalg.norm(normal), 1., atol=1e-10)):
+                raise ValueError('Clearance sampling requires actual boundary points and unit normals')
+            probe = origin+tolerance*normal
+            if offset_mm <= tolerance or metal.covers(Point(probe)):
+                raise ValueError('No resolved exterior interval along the boundary normal')
+            ray = LineString([probe, origin+offset_mm*normal])
+            obstacle = ray.intersection(metal)
+            if not obstacle.is_empty:
+                clearance = Point(origin).distance(obstacle)
+                offset = .5*clearance
+                if offset <= tolerance:
+                    raise ValueError('Exterior sampling clearance is below geometric resolution')
+                xy[k] = origin+offset*normal
     invalid = []
     details = []
     for i, p in zip(indices, xy):
@@ -221,9 +286,11 @@ class CstAdjointLevelSetProblem:
         evaluation_dir.mkdir(parents=True, exist_ok=False)
         np.savez_compressed(evaluation_dir / "levelset.npz", phi=ls.phi,
                             x=ls.grid.x, y=ls.grid.y, cst_eval_id=eval_id)
+        if ls.geometry_state is not None:
+            _write_json(evaluation_dir / "geometry_state.json", ls.geometry_state.to_dict())
         contours = None
         try:
-            regions = compose_metal_regions(self.cfg, ls.phi)
+            regions = compose_metal_regions(self.cfg, ls.phi, geometry_state=ls.geometry_state)
             if (any(region.holes for region in regions) and
                     not getattr(self.solver.M, "SUPPORTS_NESTED_CONTOURS", False)):
                 raise ValueError(
@@ -335,10 +402,8 @@ class CstAdjointLevelSetProblem:
     def _source_amplitude(self, fwd):
         amplitude = 1.0 + 0j
         if self.adjoint_source == "objective":
-            magnitude = abs(fwd.s)
-            if not np.isfinite(magnitude) or magnitude == 0:
-                raise ValueError(f"Experimental adjoint coefficient requires finite nonzero S, got {fwd.s}")
-            amplitude = -1j * self.omega * np.conj(fwd.s) / magnitude
+            _, weight = als.fom_value_and_weight(fwd.s, self.fom_kind)
+            amplitude = -1j * self.omega * np.conj(weight)
         self._write_eval({"eval_id": fwd.extra["eval_id"], "kind": "adjoint_source",
             "mode": self.adjoint_source, "objective": self.fom_kind,
             "omega_rad_per_s": self.omega,
@@ -346,7 +411,7 @@ class CstAdjointLevelSetProblem:
             "amplitude_real": float(amplitude.real), "amplitude_imag": float(amplitude.imag)})
         return amplitude
 
-    def _point_gradient(self, fwd, boundary):
+    def _point_gradient(self, fwd, boundary, *, clearance_limited=False):
         if not boundary.active.any():
             return np.zeros(len(boundary.pts))
         model = self.solver.M
@@ -371,7 +436,8 @@ class CstAdjointLevelSetProblem:
         try:
             points, eps, indices = boundary_sample_points(
                 boundary, self.sample_offset, self.requested_z_mm,
-                self.setup, metal, substrate, model.AIR_H)
+                self.setup, metal, substrate, model.AIR_H,
+                clearance_limited=clearance_limited)
         except ValueError as error:
             np.savez_compressed(folder / "invalid_boundary_samples.npz",
                 boundary=boundary.pts, normals=boundary.normals, active=boundary.active,
@@ -394,16 +460,24 @@ class CstAdjointLevelSetProblem:
                          "fields_reused_from":"forward" if self.forward_only else None})
         amplitude = self._source_amplitude(fwd)
         material = "substrate" if self.requested_z_mm < 0 else "air"
+        actual_offsets = np.linalg.norm(points[:, :2]-boundary.pts[indices], axis=1)
+        limited = actual_offsets < self.sample_offset*(1-1e-10)
+        if limited.any():
+            self.log(f"[boundary fields] clearance-limited offsets: {int(limited.sum())} points, "
+                     f"minimum={actual_offsets.min():.6g} mm")
         self.log(f"[boundary fields] {len(points)} active points, z={self.requested_z_mm:g} mm, "
                  f"material={material}, eps={eps:.9g} F/m")
         np.savez_compressed(folder / "boundary_fields.npz", points_mm=points,
             boundary_indices=indices,boundary=boundary.pts,normals=boundary.normals,weights=boundary.weights,
             excluded_contact_indices=np.asarray(excluded, dtype=np.int64),
             active=boundary.active,eps_f_per_m=eps,z_mm=self.requested_z_mm,
-            offset_mm=self.sample_offset,E_fwd=ef,H_fwd=hf,E_bwd=eb,H_bwd=hb)
+            offset_mm=self.sample_offset,actual_offsets_mm=actual_offsets,
+            E_fwd=ef,H_fwd=hf,E_bwd=eb,H_bwd=hb)
         self._write_eval({"eval_id":fwd.extra["eval_id"],"kind":"boundary_fields",
             "sampling":"cst-points","field_z_mm":self.requested_z_mm,
             "sample_offset_mm":self.sample_offset,"eps_f_per_m":eps,
+            "clearance_limited_count":int(limited.sum()),
+            "minimum_actual_offset_mm":float(actual_offsets.min()),
             "material":material,"sample_count":len(points),"frequency_ghz":freq,
             "solver_type":self.setup.solver_type})
         selected = als.Boundary(boundary.pts[indices],boundary.normals[indices],
@@ -415,7 +489,8 @@ class CstAdjointLevelSetProblem:
 
     def boundary_gradient(self, ls, fwd, boundary):
         if self.boundary_sampling == "cst-points" and not self.frequencies:
-            return self._point_gradient(fwd,boundary)
+            return self._point_gradient(fwd,boundary,
+                clearance_limited=getattr(ls, 'geometry_state', None) is not None)
         point_forward = None
         if self.boundary_sampling == "cst-points":
             xy = boundary.pts + self.sample_offset * boundary.normals
@@ -595,7 +670,8 @@ def _save_evaluation(problem, candidate, fwd, details, field_box):
     plotting.adjoint_levelset_state_figure(
         problem.cfg, candidate.phi, candidate.grid.x, candidate.grid.y,
         ex, ey, e_mag, iteration=details.get("it"), z_used=z_used,
-        evaluation_id=eval_id, path=out / "evaluation.png")
+        evaluation_id=eval_id, path=out / "evaluation.png",
+        geometry_state=candidate.geometry_state)
     problem.log(f"[evaluation] eval={eval_id:03d}, phase={row['phase']}, "
                 f"FoM={row['objective_value']:.8g}, accepted={row['accepted']}: {out}")
     return row
@@ -610,6 +686,9 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     )
     parser.add_argument("--output-dir", help="output root (default: <configured output>/adjoint_levelset)")
     parser.add_argument("--iterations", type=int, help="override optimizer.max_iterations")
+    if expected_case == "antenna":
+        parser.add_argument("--max-step-mm", type=float,
+                            help="antenna HJ experiment: cap whole-iteration predicted grid displacement")
     parser.add_argument("--sample-offset-mm", type=float,
                         help="outward offset in mm; PEC grid defaults to one export cell, points to the configured physical offset")
     parser.add_argument("--boundary-sampling", choices=("grid", "cst-points"), default=None,
@@ -622,7 +701,15 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
                         help="real scale/sign on the shape derivative; default follows velocity_sign")
     parser.add_argument("--gradient-check", action="store_true",
                         help="run central finite-difference checks before optimization (extra CST solves)")
+    parser.add_argument("--geometry-update", choices=("levelset", "cad"), default="levelset",
+                        help="retain legacy HJ updates or explicitly use the validated CAD vertex update")
     args = parser.parse_args()
+    max_step_mm = getattr(args, "max_step_mm", None)
+    if max_step_mm is not None:
+        if not np.isfinite(max_step_mm) or max_step_mm <= 0:
+            raise ValueError("--max-step-mm must be finite and positive")
+        if args.geometry_update != "levelset":
+            raise ValueError("--max-step-mm supports the antenna HJ experiment only")
     from eaopt.solver.cst import CstSolver
 
     cfg = CaseConfig.from_yaml(args.config)
@@ -671,6 +758,11 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     grid = als.Grid2D(ls_old.nx, ls_old.ny, dx,
                       x0=float(ls_old.xs[0]), y0=float(ls_old.ys[0]))
     ls = als.LevelSet(grid, ls_old.phi)
+    if args.geometry_update == 'cad':
+        state = CadGeometryState(polygon_union([p.vertices for p in cfg.initial_metal]), grid.x, grid.y)
+        ls = als.LevelSet(grid, state.phi, geometry_state=state)
+        if args.gradient_check:
+            raise ValueError('CAD checks require explicit geometric perturbations, not phi +/- delta')
     design_mask, force_metal, force_air, anchor = _movement_constraints(ls_old, cfg)
     pinned_boundary = connection_boundary_mask(ls_old, cfg, model.fixed_metal_polygons())
     design_mask[pinned_boundary] = 0.0
@@ -684,26 +776,8 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
 
     def project_geometry(trial):
         """Apply shared geometric projections and repair connectivity in place."""
-        topology_candidate.phi = np.asarray(trial.phi, dtype=float).copy()
-        topology_candidate.phi[pinned_boundary] = ls_old.phi[pinned_boundary]
-        apply_min_gap(topology_candidate, cfg)
-        apply_min_feature(
-            topology_candidate, cfg.constraints.min_feature_mm,
-            force_air=force_air, force_metal=force_metal)
-        topology_candidate.phi[pinned_boundary] = ls_old.phi[pinned_boundary]
-        if topology_guard is not None and not topology_guard.apply(topology_candidate, log=log):
-            raise RuntimeError(
-                "Connectivity repair failed for the updated geometry; refusing to "
-                "run CST on a topology that violates require_connected."
-            )
-        trial.phi = topology_candidate.phi.copy()
-        trial.reinit()
-        trial.phi[pinned_boundary] = ls_old.phi[pinned_boundary]
-        if topology_guard is not None:
-            design_mask[:] = build_velocity_mask(
-                topology_candidate, cfg, taper_mm=1.0,
-                frozen=topology_guard.frozen)
-            design_mask[pinned_boundary] = 0.0
+        _project_case_geometry(trial, topology_candidate, cfg, ls_old.phi, pinned_boundary,
+                               force_air, force_metal, topology_guard, design_mask, log)
 
     field_step_xy_mm = setup.resolve_export_steps(cfg.field_export_step_mm)[0]
     if args.sample_offset_mm is not None:
@@ -732,16 +806,24 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     log(f"[adjoint_levelset] pseudo_time_step={cfg.optimizer.pseudo_time_step:g}; "
         f"CFL={cfg.optimizer.cfl:g}; "
         f"extension band={cfg.level_set.extension_band_mm:g} mm")
-    log("[adjoint_levelset] each valid update is committed with fixed pseudo_time_step; "
-        "FoM changes are recorded without acceptance filtering")
-    log("[adjoint_levelset] signed-distance reinitialization runs on every update")
+    if max_step_mm is None:
+        log("[adjoint_levelset] each valid update is committed with fixed pseudo_time_step; "
+            "FoM changes are recorded without acceptance filtering")
+    else:
+        log(f"[adjoint_levelset] antenna experiment: dt=min(configured_dt, {max_step_mm:g}/max|V|); "
+            "FoM changes are recorded without acceptance filtering")
+    log(f"[adjoint_levelset] geometry update: {args.geometry_update}")
+    log("[adjoint_levelset] CAD is retained; phi is sampled from the updated CAD" if args.geometry_update == 'cad'
+        else "[adjoint_levelset] signed-distance reinitialization runs on every update")
+    gradient_check_hint = ("validate with explicit CAD perturbations" if args.geometry_update == 'cad'
+                           else "validate it with --gradient-check")
     if cfg.objective.frequencies_ghz:
         log("[adjoint_levelset] prefactor is (-2j*omega/Pin) times "
-            f"scale={prefactor_scale:g}; validate it with --gradient-check")
+            f"scale={prefactor_scale:g}; {gradient_check_hint}")
     else:
         log("[adjoint_levelset] shape_derivative_mine: "
             "Re[eps*E_perp.Eb_perp + mu*H_par.Hb_par]; "
-            f"scale={prefactor_scale:g}; validate it with --gradient-check")
+            f"scale={prefactor_scale:g}; {gradient_check_hint}")
 
     solver = None
     try:
@@ -765,11 +847,13 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             cfl=float(cfg.optimizer.cfl),
             smooth_sigma_cells=1.5,
             band_cells=float(cfg.level_set.extension_band_mm) / dx,
+            max_step_mm=max_step_mm,
         )
         optimizer = als.AdjointLevelSetOptimizer(
             problem, design_mask, opt_cfg, force_metal=force_metal,
             force_air=force_air, anchor=anchor,
-            geometry_projector=project_geometry)
+            geometry_projector=project_geometry,
+            geometry_evolution=CadEvolution() if args.geometry_update == 'cad' else None)
         layout = model.layout_view()
         fixed_metal_polygons = model.fixed_metal_polygons()
         substrate = next(shape for shape in layout["shapes"] if shape[0] == "substrate")
@@ -838,6 +922,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
                         data["e_x"], data["e_y"], data["e_mag"],
                         iteration=state_it, z_used=float(data["z_mm"]),
                         layout=layout, fixed_metal_polygons=fixed_metal_polygons,
+                        geometry_state=state_ls.geometry_state,
                         path=output_dir / f"fig6b_iter_{state_it:03d}.png")
                 evaluation = artifacts.load_json(evaluation_dir / "evaluation.json")
                 sparams_history.append({
@@ -863,7 +948,9 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
         )
         final_fom = (optimizer.history[-1]["f_after"] if optimizer.history
                      else float("nan"))
-        final_regions = compose_metal_regions(cfg, final_ls.phi)
+        final_regions = compose_metal_regions(cfg, final_ls.phi, geometry_state=final_ls.geometry_state)
+        if final_ls.geometry_state is not None:
+            _write_json(output_dir / "geometry_final.json", final_ls.geometry_state.to_dict())
         final_polygons = region_rings(final_regions)
         final_shape = {
             "unit": "mm", "n_polygons": len(final_polygons),
@@ -887,6 +974,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             "final_fom": final_fom,
             "stop_reason": optimizer.stop_reason,
             "pseudo_time_step_initial": cfg.optimizer.pseudo_time_step,
+            "max_step_mm": max_step_mm,
             "iterations_requested": cfg.optimizer.max_iterations,
             "iterations_recorded": len(iteration_records),
             "cst_evaluations": problem.next_eval_id,

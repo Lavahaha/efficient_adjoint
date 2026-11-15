@@ -193,27 +193,31 @@ def design_region_update(polys, height_mm: float,
 
 
 # 端口所在的计算域边界面（CST 的 .Orientation 只认这组名字）
-PORT_FACES = ("xmin", "xmax", "ymin", "ymax")
+PORT_FACES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 
 
 def waveguide_port(port_number: int, name: str, face: str, at: float,
-                   u0: float, u1: float, z0: float, z1: float) -> str:
-    """波导端口（单模）：端口面落在计算域边界面 face 上。
+                   u0: float, u1: float, z0: float, z1: float, *,
+                   port_on_bound: bool = True) -> str:
+    """波导端口（单模）：默认落在计算域边界面 face 上。
 
-    face: "xmin"/"xmax"/"ymin"/"ymax" —— CST 2024 实测：.Orientation
+    face: "xmin"/"xmax"/"ymin"/"ymax"/"zmin"/"zmax"；.Orientation
     不接受 "positive"/"negative"，只认边界面名（录制宏同）。
     at: 该面的坐标（如 xmin 面的 x 值）；u0..u1 为面内横向范围
-    （x 面 → y 范围，y 面 → x 范围）；z0..z1 为高度范围。
+    （x 面 → y 范围，y/z 面 → x 范围）；z0..z1 为第二面内范围
+    （x/y 面 → z 范围，z 面 → y 范围）。port_on_bound=False 保留 at
+    指定的内部端口位置，避免 expanded open 边界把端口移离同轴线。
     .Coordinates 必须 "Free"（给显式范围；合法值仅 Free/Full/Picks）。
     """
     if face not in PORT_FACES:
         raise ValueError(f"face 只能是 {PORT_FACES}，收到 {face!r}")
-    axis, side = face[0], face[1:]
+    axis = face[0]
     u_axis = "y" if axis == "x" else "x"
+    v_axis = "y" if axis == "z" else "z"
     rng = {
         axis: f'"{at:.6g}", "{at:.6g}"',      # 端口面：该轴为常量
         u_axis: f'"{u0:.6g}", "{u1:.6g}"',
-        "z": f'"{z0:.6g}", "{z1:.6g}"',
+        v_axis: f'"{z0:.6g}", "{z1:.6g}"',
     }
     return (
         "With Port\n"
@@ -229,7 +233,7 @@ def waveguide_port(port_number: int, name: str, face: str, at: float,
         '    .TextMaxLimit "1"\n'
         '    .Coordinates "Free"\n'
         f'    .Orientation "{face}"\n'
-        '    .PortOnBound "True"\n'      # 端口面就在计算域边界面上
+        f'    .PortOnBound "{port_on_bound}"\n'
         '    .ClipPickedPortToBound "False"\n'
         f'    .Xrange {rng["x"]}\n'
         f'    .Yrange {rng["y"]}\n'

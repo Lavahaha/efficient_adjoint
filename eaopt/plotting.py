@@ -304,7 +304,7 @@ def efield_evolution_figure(cfg, outdir, path, *, max_panels: int = 6):
 def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
                                   iteration: int, z_used: float, path, layout=None,
                                   fixed_metal_polygons=None, dpi: int = 140,
-                                  evaluation_id: int | None = None):
+                                  evaluation_id: int | None = None, geometry_state=None):
     """Full case layout with the updated level set and its forward |E| map."""
     import matplotlib
     matplotlib.use("Agg")
@@ -360,7 +360,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
         ))
 
     from eaopt.geometry.design import compose_metal_regions, region_rings
-    for ring in region_rings(compose_metal_regions(cfg, phi)):
+    for ring in region_rings(compose_metal_regions(cfg, phi, geometry_state=geometry_state)):
         ax.plot(ring[:, 0], ring[:, 1], color="white",
                 linewidth=metal_outline_width, zorder=6)
 

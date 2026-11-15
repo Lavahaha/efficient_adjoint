@@ -1,10 +1,17 @@
 """CST template for a continuously optimized, single-feed patch antenna."""
 from __future__ import annotations
 
+import math
+import json
+from pathlib import Path
+
+import numpy as np
+from shapely.geometry import Polygon
+
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header, brick,
     delete_component, field_monitor, frequency_range, material_normal,
-    polygon_extrude, set_boundaries, solver_setup,
+    polygon_extrude, set_boundaries, solver_setup, waveguide_port,
 )
 from eaopt.solver.cst_setup import ANTENNA
 from eaopt.geometry.contour import MetalRegion
@@ -16,7 +23,9 @@ __all__ = [
     "FEED_PAD",
     "SUB_H", "METAL_T", "FREQ", "FMIN", "FMAX", "AIR_H",
     "PIN_DIAMETER", "GROUND_CLEARANCE_DIAMETER",
+    "COAX_LENGTH", "COAX_OUTER_RADIUS", "COAX_PORT_Z", "COAX_EPS_R",
     "SUPPORTS_NESTED_CONTOURS", "DESIGN_BOUNDARY_PAD_MM",
+    "audit_design_regions",
 ]
 
 BOARD = (-30.0, 30.0)
@@ -42,8 +51,63 @@ FMIN, FMAX = 6.0, 9.0
 AIR_H = 10.0
 SUBSTRATE = "Rogers4003C"
 GROUND_Z = -SUB_H - METAL_T
+COAX_LENGTH = 5.0
+COAX_OUTER_RADIUS = GROUND_CLEARANCE_DIAMETER / 2.0 + 0.5
+COAX_PORT_Z = GROUND_Z - COAX_LENGTH
+# Match the existing pin/clearance diameters to nominal 50 ohms without
+# post-solve renormalization, so S parameters and adjoint fields stay consistent.
+COAX_EPS_R = (59.9584916 * math.log(GROUND_CLEARANCE_DIAMETER / PIN_DIAMETER) / 50.0) ** 2
+COAX_DIELECTRIC = "AntennaCoaxDielectric"
 SUPPORTS_NESTED_CONTOURS = True
 DESIGN_BOUNDARY_PAD_MM = 0.0
+
+
+def audit_design_regions(m3d, regions, height_mm, destination):
+    """Check actual extruded volume and bounds before permitting a field solve.
+
+    These checks detect gross import/truncation errors, not every possible shape
+    discrepancy. They do not certify the accuracy of the electromagnetic mesh.
+    """
+    regions = list(regions)
+    if not regions or not np.isfinite(height_mm) or height_mm <= 0:
+        raise ValueError('Positive thickness and nonempty antenna regions required')
+    expected = [Polygon(r.outer,r.holes) for r in regions]
+    if any(not p.is_valid or p.area <= 0 for p in expected):
+        raise ValueError('Antenna audit requires valid nonempty polygonal regions')
+    destination = Path(destination).resolve()
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    destination.write_text(json.dumps(dict(passed=False,status='started')),encoding='utf-8')
+    raw = destination.with_suffix('.txt')
+    raw.unlink(missing_ok=True)
+    quoted_path = str(raw).replace('"','""')
+    code = ['Sub Main','Dim a As Double,b As Double,c As Double,d As Double,e As Double,f As Double',
+            'Dim ok As Boolean',f'Open "{quoted_path}" For Output As #1']
+    for i in range(len(regions)):
+        name = f'{DESIGN_COMPONENT}:antenna_metal_{i}'
+        code += [f'Print #1, Solid.GetVolume("{name}")',
+                 f'Print #1, Solid.GetNumberOfPoints("{name}")',
+                 f'ok=Solid.GetLooseBoundingBoxOfShape("{name}",a,b,c,d,e,f)',
+                 'If Not ok Then Err.Raise 1, , "Antenna bounding box unavailable"',
+                 'Print #1,a','Print #1,b','Print #1,c','Print #1,d','Print #1,e','Print #1,f']
+    code += ['Close #1','End Sub']
+    m3d._execute_vba_code('\n'.join(code))
+    data = np.array(list(map(float,raw.read_text().split())))
+    if data.size != 8*len(regions) or not np.isfinite(data).all():
+        raise ValueError('Incomplete or nonfinite CST antenna geometry audit')
+    records=[]
+    for i,(polygon,row) in enumerate(zip(expected,data.reshape(-1,8))):
+        xmin,ymin,xmax,ymax=polygon.bounds
+        volume=polygon.area*height_mm
+        bounds=[xmin,xmax,ymin,ymax,0.,height_mm]
+        records.append(dict(region=i,expected_volume_mm3=volume,native_volume_mm3=float(row[0]),
+                            native_vertices=float(row[1]),expected_bounds_mm=bounds,native_bounds_mm=row[2:].tolist()))
+    passed=all(np.isclose(r['native_volume_mm3'],r['expected_volume_mm3'],rtol=1e-8,atol=1e-9)
+               and np.allclose(r['native_bounds_mm'],r['expected_bounds_mm'],rtol=0,atol=1e-9)
+               and r['native_vertices'] >= 4 and float(r['native_vertices']).is_integer() for r in records)
+    destination.write_text(json.dumps(dict(passed=bool(passed),status='complete',regions=records),indent=2),encoding='utf-8')
+    if not passed:
+        raise ValueError(f'CST antenna solid differs from its requested volume/bounds: {destination}')
+    return records
 
 
 def design_region_update(regions, height_mm: float,
@@ -74,29 +138,17 @@ def design_region_update(regions, height_mm: float,
     return "".join(commands)
 
 
-def _discrete_port() -> str:
-    # Excite radially across the annular clearance at the ground/substrate
-    # interface: both endpoints sit on conductor edges, with the port line
-    # spanning only the air gap between the probe and the ground plane.
-    probe_edge_x = FEED_X + PIN_DIAMETER / 2.0
-    ground_edge_x = FEED_X + GROUND_CLEARANCE_DIAMETER / 2.0
-    return (
-        "With DiscretePort\n"
-        "    .Reset\n"
-        '    .PortNumber "1"\n'
-        '    .Type "SParameter"\n'
-        '    .Impedance "50"\n'
-        '    .Monitor "True"\n'
-        '    .Radius "0.0"\n'
-        f'    .SetP1 "False", "{probe_edge_x:g}", "{FEED_Y:g}", "{-SUB_H:g}"\n'
-        f'    .SetP2 "False", "{ground_edge_x:g}", "{FEED_Y:g}", "{-SUB_H:g}"\n'
-        "    .Create\n"
-        "End With\n"
+def _coax_port() -> str:
+    return waveguide_port(
+        1, "coax_feed", "zmin", COAX_PORT_Z,
+        FEED_X - COAX_OUTER_RADIUS, FEED_X + COAX_OUTER_RADIUS,
+        FEED_Y - COAX_OUTER_RADIUS, FEED_Y + COAX_OUTER_RADIUS,
+        port_on_bound=False,
     )
 
 
 def model_blocks() -> list[str]:
-    """Build the substrate, slotted ground, patch, probe pin, and feed port."""
+    """Build the antenna and a uniform coaxial feed with a single-mode port."""
     x0, x1 = BOARD
     y0, y1 = BOARD
     px0, px1 = PATCH
@@ -106,6 +158,7 @@ def model_blocks() -> list[str]:
     substrate_cut_overrun = 0.01
     return [
         material_normal(SUBSTRATE, ANTENNA.eps_r, 1.0, ANTENNA.loss_tangent),
+        material_normal(COAX_DIELECTRIC, COAX_EPS_R, 1.0, 0.0),
         brick("substrate", "component1", SUBSTRATE,
               x0, x1, y0, y1, -SUB_H, 0.0),
         _cylinder("substrate_probe_bore", "component1", "Vacuum",
@@ -131,14 +184,20 @@ def model_blocks() -> list[str]:
             [(px0, py0), (px1, py0), (px1, py1), (px0, py1)], METAL_T),
         _cylinder("feed_probe", "component1", "Copper (annealed)",
                   FEED_X, FEED_Y, PIN_DIAMETER / 2.0,
-                  -SUB_H, 0.0),
-        _discrete_port(),
+                  COAX_PORT_Z, 0.0),
+        _cylinder("coax_dielectric", "component1", COAX_DIELECTRIC,
+                  FEED_X, FEED_Y, clearance_radius,
+                  COAX_PORT_Z, GROUND_Z, inner_radius=PIN_DIAMETER / 2.0),
+        _cylinder("coax_outer", "component1", "PEC",
+                  FEED_X, FEED_Y, COAX_OUTER_RADIUS,
+                  COAX_PORT_Z, -SUB_H, inner_radius=clearance_radius),
+        _coax_port(),
     ]
 
 
 def _cylinder(name: str, component: str, material: str,
               x: float, y: float, radius: float,
-              z0: float, z1: float) -> str:
+              z0: float, z1: float, *, inner_radius: float = 0.0) -> str:
     """CST z-axis cylinder; coordinates and radii are in millimetres."""
     return (
         "With Cylinder\n"
@@ -148,7 +207,7 @@ def _cylinder(name: str, component: str, material: str,
         f'    .Material "{material}"\n'
         '    .Axis "z"\n'
         f'    .OuterRadius "{radius:.6g}"\n'
-        '    .InnerRadius "0"\n'
+        f'    .InnerRadius "{inner_radius:.6g}"\n'
         f'    .Xcenter "{x:.6g}"\n'
         f'    .Ycenter "{y:.6g}"\n'
         f'    .Zrange "{z0:.6g}", "{z1:.6g}"\n'
@@ -160,7 +219,7 @@ def _cylinder(name: str, component: str, material: str,
 
 def setting_blocks(portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
     if int(portnum) != 1:
-        raise ValueError(f"antenna template only has discrete port 1, got {portnum}")
+        raise ValueError(f"antenna template only has waveguide port 1, got {portnum}")
     return [
         ("Mesh", MESH_CREATOR),
         ("Solver", solver_setup(portnum, FREQ, solver_type)),

@@ -1,5 +1,9 @@
 # CST 服务器运行手册
 
+天线最新检测结论、源码指纹、八步对照与独立重复命令见
+[天线震荡完整报告（2026-11-15）](antenna_oscillation_complete_report_2026-11-15.md)。
+正式入口已并行启动异端口目标的 fwd/bwd；S11 同端口目标复用前向场。
+
 单频入口当前默认 `--solver fd --boundary-sampling cst-points`；多频仍使用原有 TD 默认路径。
 请使用新输出目录，旧 TD 工程不会自动转换为 FD。PEC 边界点要求外侧偏移和非零材料侧高度，
 正反向实际四面体网格不一致时终止计算。详细命令、产物格式及未通过的网格精度检查见
@@ -53,8 +57,8 @@ python scripts/run_divider_multifreq.py --iterations 2 --output-dir results/divi
 保留当前伴随源权重与速度比例，不再乘公式（25）的 `-2j*omega/Pin`。
 默认实验权重为 `-1j*omega*conj(S)/|S|`，其中 `omega=2*pi*f`，单位 rad/s；磁场点乘项只乘 `MU0`。
 `cst_evaluations.jsonl` 记录角频率、实际复数系数及作为诊断数据的入射/出射功率。
-该系数此前的 3 轮仿真见 [-jω 实验记录](experimental_minus_jomega_validation_2026-11-09.md)；
-该记录中的磁场核含 `j*omega`，其中约 `1e-20` 至 `1e-19` 的实验步长需按当前磁场核重新选择。
+历史系数试验的范围见[完整报告](antenna_oscillation_complete_report_2026-11-15.md)第 3 节；
+旧磁场核含 `j*omega`，其中约 `1e-20` 至 `1e-19` 的实验步长需按当前磁场核重新选择。
 `run_config.json` 的 `shape_derivative` 记录所用公式；双频仍为 `paper_eq25`。
 正向/反向工程同时保持打开；每轮几何更新后，通过 CST 原生 `start_solver()`
 异步启动两个求解器，再查询运行状态并等待两者完成。每个求解都必须返回 `SUCCESS`；

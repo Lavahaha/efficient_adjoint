@@ -7,6 +7,11 @@ DOI: 10.1109/TMTT.2024.3421558。
 所有优化案例统一使用根目录的 `adjoint_levelset.py`。`eaopt/runner.py` 提供
 公共 CST 适配器与运行流程，各案例脚本只负责选择配置和优化方向。
 
+天线 S11 震荡检测、原因证据、代码调整和服务器复现命令统一见
+[完整报告（2026-11-15）](docs/antenna_oscillation_complete_report_2026-11-15.md)。
+天线位移上限试验需显式传入 `--max-step-mm 0.1`；异端口案例的 fwd/bwd
+默认并行求解，同端口 S11 复用前向场。
+
 ## 安装
 
 需要 Python 3.10 或更新版本；实际运行 CST 时还须满足所安装 CST 官方
@@ -40,6 +45,12 @@ Shapely 用于金属多边形的差集、并集与孔洞处理；更新代码后
 单频默认使用频域四面体求解和 CST 指定边界点取场（`--solver fd --boundary-sampling cst-points`）；
 多频默认路径不变。单频 PEC 配置使用外侧偏移和非零采样高度，绘图只导出该高度的二维场。
 实现、真实短程结果及尚未通过的网格精度检查见[综合测试分析报告](docs/analysis_summary_2026-11-02.md)。
+
+天线采用探针连接贴片，地板下方接 5 mm 同轴段，底端使用单模 waveguide port 1
+沿 +z 激励，设计基模为 TEM。内导体直径 1.27 mm、外导体内径 4.10 mm，
+同轴填充理想无损介质（εr≈1.9751），使解析特性阻抗为 50 Ω；S 参数仍以
+CST 实际计算的端口阻抗归一化。参考面在同轴底端，不做去嵌。
+此模板替换了旧离散端口；已有 `.cst` 工程不会自动转换，请使用新的输出目录重建。
 
 ```bash
 # 指定小规模运行、独立输出目录和日志
@@ -87,7 +98,8 @@ python scripts/run_antenna_adjoint_levelset.py --help
 其中 `omega=2*pi*f`，单位 rad/s；每轮按当前 S 参数重新计算。
 源权重的模为 `omega`；形状核磁场点乘前的系数为 `mu`。
 S 为零或非有限时会报错，避免未定义相位进入梯度；端口功率继续记录为诊断数据。
-当前磁场核尚未重新进行 CST 仿真；下方历史报告中的步长对应旧磁场核，运行前需重新选择。
+当前磁场核已完成天线八步及耦合器/功分器短程回归，结果与局限见上述完整报告；
+11 月 9 日历史报告中的步长对应旧磁场核，不能直接视作当前核的验证配置。
 权重在取实部前乘入反向场；`--adjoint-source unit` 使用单位反向场。
 新公式不乘原来的 `-2j*omega/Pin`；`--prefactor-scale` 与 `velocity_sign` 只整体缩放结果。
 双频路径按各频点的角频率计算灵敏度，通过 dB 目标的复数链式因子和 soft-min
@@ -206,12 +218,9 @@ python scripts/check_design_geometry.py
 python scripts/check_shape_derivative_mine.py
 ```
 
-`shape_derivative_mine` 的三个案例真实场回放和本机 CST 求解尝试见
-[本地验证记录](docs/shape_derivative_mine_validation_2026-11-09.md)。
-当前 `-j*omega` 实验系数此前完成的 3 轮仿真保留在
-[-jω 系数验证记录](docs/experimental_minus_jomega_validation_2026-11-09.md)。
-此前出射功率归一化系数的结果保留在
-[历史实验记录](docs/experimental_coefficient_validation_2026-11-09.md)。
+当前公式、真实场回放结论、历史系数试验的适用范围及复现步骤见
+[完整检测报告](docs/antenna_oscillation_complete_report_2026-11-15.md)。
+对应原始结果仍保存在 `results/`；重复阶段报告已合并删除。
 
 使用四个案例入口的 `--help` 检查参数和导入，使用 `--gradient-check` 在配置好
 CST 的环境中检查目标变化与伴随梯度，并先做 1–2 轮小规模运行确认几何、场数据
