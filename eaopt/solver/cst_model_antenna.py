@@ -15,6 +15,9 @@ from eaopt.solver.cst_model import (
 )
 from eaopt.solver.cst_setup import ANTENNA
 from eaopt.geometry.contour import MetalRegion
+from eaopt.solver.cst_boolean import (
+    plan_pec_unions, restore_fixed_metal, merged_design_solids as _merged_design_solids,
+)
 
 __all__ = [
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
@@ -25,7 +28,7 @@ __all__ = [
     "PIN_DIAMETER", "GROUND_CLEARANCE_DIAMETER",
     "COAX_LENGTH", "COAX_OUTER_RADIUS", "COAX_PORT_Z", "COAX_EPS_R",
     "SUPPORTS_NESTED_CONTOURS", "DESIGN_BOUNDARY_PAD_MM",
-    "audit_design_regions",
+    "audit_design_regions", "fixed_metal_solids", "merged_design_solids",
 ]
 
 BOARD = (-30.0, 30.0)
@@ -62,8 +65,16 @@ SUPPORTS_NESTED_CONTOURS = True
 DESIGN_BOUNDARY_PAD_MM = 0.0
 
 
-def audit_design_regions(m3d, regions, height_mm, destination):
-    """Check actual extruded volume and bounds before permitting a field solve.
+def fixed_metal_solids():
+    return [("component1:feed_pad_fixed", FEED_PAD)]
+
+
+def merged_design_solids(regions):
+    return _merged_design_solids(regions, fixed_metal_solids())
+
+
+def audit_design_regions(m3d, regions, height_mm, destination, *, fixed_solids=None):
+    """Check final Boolean-union volume and bounds before permitting a field solve.
 
     These checks detect gross import/truncation errors, not every possible shape
     discrepancy. They do not certify the accuracy of the electromagnetic mesh.
@@ -74,6 +85,9 @@ def audit_design_regions(m3d, regions, height_mm, destination):
     expected = [Polygon(r.outer,r.holes) for r in regions]
     if any(not p.is_valid or p.area <= 0 for p in expected):
         raise ValueError('Antenna audit requires valid nonempty polygonal regions')
+    fixed_solids = fixed_metal_solids() if fixed_solids is None else fixed_solids
+    solids = _merged_design_solids(regions, fixed_solids)
+    expected = [polygon for _, polygon in solids]
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True,exist_ok=True)
     destination.write_text(json.dumps(dict(passed=False,status='started')),encoding='utf-8')
@@ -82,8 +96,7 @@ def audit_design_regions(m3d, regions, height_mm, destination):
     quoted_path = str(raw).replace('"','""')
     code = ['Sub Main','Dim a As Double,b As Double,c As Double,d As Double,e As Double,f As Double',
             'Dim ok As Boolean',f'Open "{quoted_path}" For Output As #1']
-    for i in range(len(regions)):
-        name = f'{DESIGN_COMPONENT}:antenna_metal_{i}'
+    for name, _ in solids:
         code += [f'Print #1, Solid.GetVolume("{name}")',
                  f'Print #1, Solid.GetNumberOfPoints("{name}")',
                  f'ok=Solid.GetLooseBoundingBoxOfShape("{name}",a,b,c,d,e,f)',
@@ -92,14 +105,14 @@ def audit_design_regions(m3d, regions, height_mm, destination):
     code += ['Close #1','End Sub']
     m3d._execute_vba_code('\n'.join(code))
     data = np.array(list(map(float,raw.read_text().split())))
-    if data.size != 8*len(regions) or not np.isfinite(data).all():
+    if data.size != 8*len(solids) or not np.isfinite(data).all():
         raise ValueError('Incomplete or nonfinite CST antenna geometry audit')
     records=[]
     for i,(polygon,row) in enumerate(zip(expected,data.reshape(-1,8))):
         xmin,ymin,xmax,ymax=polygon.bounds
         volume=polygon.area*height_mm
         bounds=[xmin,xmax,ymin,ymax,0.,height_mm]
-        records.append(dict(region=i,expected_volume_mm3=volume,native_volume_mm3=float(row[0]),
+        records.append(dict(region=i,solid=solids[i][0],expected_volume_mm3=volume,native_volume_mm3=float(row[0]),
                             native_vertices=float(row[1]),expected_bounds_mm=bounds,native_bounds_mm=row[2:].tolist()))
     passed=all(np.isclose(r['native_volume_mm3'],r['expected_volume_mm3'],rtol=1e-8,atol=1e-9)
                and np.allclose(r['native_bounds_mm'],r['expected_bounds_mm'],rtol=0,atol=1e-9)
@@ -112,16 +125,19 @@ def audit_design_regions(m3d, regions, height_mm, destination):
 
 def design_region_update(regions, height_mm: float,
                          component: str = DESIGN_COMPONENT,
-                         material: str = "PEC", z0: float = 0.0) -> str:
-    """Extrude each metal outer ring and subtract its enclosed hole tools."""
+                         material: str = "PEC", z0: float = 0.0, *, fixed_solids=None) -> str:
+    """Restore fixed feeds, extrude/subtract design metal, then Boolean-add PEC."""
     regions = list(regions)
     if regions and not isinstance(regions[0], MetalRegion):
         from eaopt.geometry.contour import classify_metal_regions
         regions = classify_metal_regions(regions)
     if not regions:
         raise ValueError("regions 为空：拒绝生成没有辐射金属的天线")
+    if material.upper() != "PEC":
+        raise ValueError("Fixed-feed Boolean updates require PEC design metal")
+    fixed_solids = fixed_metal_solids() if fixed_solids is None else fixed_solids
     cut_overrun = 0.05
-    commands = [delete_component(component)]
+    commands = [restore_fixed_metal(fixed_solids, height_mm, z0), delete_component(component)]
     for region_index, region in enumerate(regions):
         outer_name = f"antenna_metal_{region_index}"
         commands.append(polygon_extrude(
@@ -135,7 +151,10 @@ def design_region_update(regions, height_mm: float,
             commands.append(
                 f'Solid.Subtract "{component}:{outer_name}", '
                 f'"{component}:{tool_name}"\n')
-    return "".join(commands)
+    additions, _ = plan_pec_unions(
+        [(f"{component}:antenna_metal_{i}", Polygon(r.outer, r.holes))
+         for i, r in enumerate(regions)], fixed_solids)
+    return "".join(commands + additions)
 
 
 def _coax_port() -> str:
@@ -177,7 +196,7 @@ def model_blocks(initial_metal) -> list[str]:
               x0, x1, y0, y1, METAL_T, AIR_H),
         polygon_extrude(
             "feed_pad_fixed", "component1", "PEC", FEED_PAD, METAL_T),
-        *initial_metal_blocks(initial_metal, METAL_T),
+        *initial_metal_blocks(initial_metal, METAL_T, fixed_solids=fixed_metal_solids()),
         _cylinder("feed_probe", "component1", "Copper (annealed)",
                   FEED_X, FEED_Y, PIN_DIAMETER / 2.0,
                   COAX_PORT_Z, 0.0),

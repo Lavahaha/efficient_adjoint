@@ -45,6 +45,7 @@ from __future__ import annotations
 import math
 
 from eaopt.solver.cst_setup import COUPLER
+from eaopt.solver.cst_boolean import plan_pec_unions, restore_fixed_metal
 
 __all__ = [
     # VBA 片段
@@ -57,7 +58,7 @@ __all__ = [
     "ASCII_EXPORT_MODE", "ASCII_EXPORT_EXECUTE", "ascii_export_params",
     # 模板
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
-    "UNITS_BLOCK", "arc_points", "layout_view", "fixed_metal_polygons",
+    "UNITS_BLOCK", "arc_points", "layout_view", "fixed_metal_polygons", "fixed_metal_solids",
     # 布局常量
     "SUB_H", "EPS_R", "TAND", "METAL_T", "W", "G", "D",
     "LEG_L_IN", "LEG_R_IN", "LEG_L_OUT", "LEG_R_OUT",
@@ -141,7 +142,7 @@ def polygon_extrude(name: str, component: str, material: str,
     return "\n".join(lines) + "\n"
 
 
-def initial_metal_blocks(initial_metal, height_mm: float) -> list[str]:
+def initial_metal_blocks(initial_metal, height_mm: float, *, fixed_solids=()) -> list[str]:
     """Extrude the exact union of YAML initial_metal, including enclosed voids."""
     from eaopt.geometry.design import polygon_union
 
@@ -160,7 +161,10 @@ def initial_metal_blocks(initial_metal, height_mm: float) -> list[str]:
                                           hole.coords, height_mm + 0.1, z0=-0.05))
             blocks.append(f'Solid.Subtract "{DESIGN_COMPONENT}:{name}", '
                           f'"{DESIGN_COMPONENT}:{tool}"\n')
-    return blocks
+    commands, _ = plan_pec_unions(
+        [(f"{DESIGN_COMPONENT}:initial_metal_{i}", p) for i, p in enumerate(regions)],
+        fixed_solids)
+    return blocks + commands
 
 
 #: 设计区组件名。**模板与每轮重建必须用同一个名字**——名字漂移的话每轮会
@@ -187,8 +191,9 @@ def delete_component(component: str) -> str:
 
 def design_region_update(polys, height_mm: float,
                          component: str = DESIGN_COMPONENT,
-                         material: str = "PEC", z0: float = 0.0) -> str:
-    """一轮形状更新：删掉设计区组件 → 按多边形逐个挤出。
+                         material: str = "PEC", z0: float = 0.0, *,
+                         fixed_solids=None) -> str:
+    """一轮形状更新：恢复固定馈线 → 重建设计区 → 合并相连的 PEC 金属。
 
     整段是**一条历史记录**（调用方把它整体交给 ``add_to_history``）：
     既改当前模型、又写进 History List，所以工程重放历史得到的就是当前
@@ -206,11 +211,18 @@ def design_region_update(polys, height_mm: float,
             raise ValueError(f"polys[{i}] 只有 {len(p)} 个点，CST 建不出实体")
         if any(len(q) < 2 for q in p):
             raise ValueError(f"polys[{i}] 的元素必须形如 (x, y)")
-    parts = [delete_component(component)]
+    from shapely.geometry import Polygon
+
+    fixed_solids = fixed_metal_solids() if fixed_solids is None else fixed_solids
+    if material.upper() != "PEC":
+        raise ValueError("Fixed-feed Boolean updates require PEC design metal")
+    parts = [restore_fixed_metal(fixed_solids, height_mm, z0), delete_component(component)]
     for i, p in enumerate(polys):
         parts.append(polygon_extrude(f"design_{i}", component, material,
                                      p, height_mm, z0=z0))
-    return "".join(parts)
+    commands, _ = plan_pec_unions(
+        [(f"{component}:design_{i}", Polygon(p)) for i, p in enumerate(polys)], fixed_solids)
+    return "".join(parts + commands)
 
 
 # 端口所在的计算域边界面（CST 的 .Orientation 只认这组名字）
@@ -574,6 +586,11 @@ def _fixed_metal_parts() -> list[str]:
     ]
 
 
+def fixed_metal_solids():
+    return list(zip(("feed:thru_line", "feed:leg_left", "feed:leg_right"),
+                    fixed_metal_polygons()))
+
+
 def _ports() -> list[str]:
     """4 个波导端口：1/2 在直通线两端（xmin/xmax 面），3/4 在两腿底（ymin 面）。
 
@@ -600,7 +617,7 @@ def model_blocks(initial_metal) -> list[str]:
     """全部**建模**命令块（顺序即执行顺序）：基板/接地/空气盒 → 固定金属
     → 设计区初始金属 → 4 个端口。"""
     return (_substrate_parts() + _fixed_metal_parts()
-            + initial_metal_blocks(initial_metal, METAL_T) + _ports())
+            + initial_metal_blocks(initial_metal, METAL_T, fixed_solids=fixed_metal_solids()) + _ports())
 
 
 def setting_blocks(portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:

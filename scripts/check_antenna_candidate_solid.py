@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from dataclasses import replace
 from unittest.mock import patch
 import numpy as np
-from shapely.geometry import Polygon
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
@@ -27,11 +26,11 @@ def main(source):
     if len(regions)!=1 or regions[0].holes:
         raise ValueError('This diagnostic audits one solid contour without holes')
     rings=region_rings(regions)
-    expected=Polygon(regions[0].outer)
     out=ROOT/'results'/('antenna_solid_audit_'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S'))
     out.mkdir()
     cfg.output.dir=str(out)
     setup,model=load_case(cfg)
+    native_name, expected = model.merged_design_solids(regions)[0]
     setup=replace(setup,solver_type='fd')
     log=make_log(out/'run.log')
     solver=CstSolver(cfg,setup=setup,model=model,force_new=True,auto_init=True,point_sampling=True,log=log)
@@ -46,9 +45,9 @@ def main(source):
         native=out/'native_solid.txt'
         code=('Sub Main\nDim a As Double,b As Double,c As Double,d As Double,e As Double,f As Double\n'
             'Dim ok As Boolean\nOpen "'+str(native)+'" For Output As #1\n'
-            'Print #1, Solid.GetVolume("design_region:antenna_metal_0")\n'
-            'Print #1, Solid.GetNumberOfPoints("design_region:antenna_metal_0")\n'
-            'ok=Solid.GetLooseBoundingBoxOfShape("design_region:antenna_metal_0",a,b,c,d,e,f)\n'
+            f'Print #1, Solid.GetVolume("{native_name}")\n'
+            f'Print #1, Solid.GetNumberOfPoints("{native_name}")\n'
+            f'ok=Solid.GetLooseBoundingBoxOfShape("{native_name}",a,b,c,d,e,f)\n'
             'If Not ok Then Err.Raise 1, , "Bounding box unavailable"\n'
             'Print #1,a\nPrint #1,b\nPrint #1,c\nPrint #1,d\nPrint #1,e\nPrint #1,f\nClose #1\nEnd Sub')
         project.model3d._execute_vba_code(code)

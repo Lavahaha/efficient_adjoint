@@ -10,7 +10,10 @@ from eaopt.solver.cst_model import (
     field_monitor, frequency_range, material_normal, polygon_extrude,
     set_boundaries, solver_setup, waveguide_port, initial_metal_blocks,
 )
-from eaopt.solver.cst_model_antenna import audit_design_regions, design_region_update
+from eaopt.solver.cst_model_antenna import (
+    audit_design_regions as _audit_design_regions, design_region_update as _design_region_update,
+)
+from eaopt.solver.cst_boolean import merged_design_solids as _merged_design_solids
 from eaopt.solver.cst_setup import PATCH_ANTENNA
 
 BOARD = (-30.0, 30.0)
@@ -32,6 +35,25 @@ def fixed_metal_polygons():
     return [[(-f, BOARD[0]), (f, BOARD[0]), (f, DESIGN_Y0), (-f, DESIGN_Y0)]]
 
 
+def fixed_metal_solids():
+    return [("component1:feed_fixed", fixed_metal_polygons()[0])]
+
+
+def design_region_update(regions, height_mm, component=DESIGN_COMPONENT,
+                         material="PEC", z0=0.0):
+    return _design_region_update(regions, height_mm, component, material, z0,
+                                 fixed_solids=fixed_metal_solids())
+
+
+def merged_design_solids(regions):
+    return _merged_design_solids(regions, fixed_metal_solids())
+
+
+def audit_design_regions(m3d, regions, height_mm, destination):
+    return _audit_design_regions(m3d, regions, height_mm, destination,
+                                fixed_solids=fixed_metal_solids())
+
+
 def _feed_port():
     # Keep the reference plane at the board edge with expanded-open boundaries.
     half_width = FEED_WIDTH / 2 + 3 * SUB_H
@@ -48,7 +70,7 @@ def model_blocks(initial_metal):
         brick("ground", "component1", "PEC", a, b, a, b, GROUND_Z, -SUB_H),
         brick("air", "component1", "Vacuum", a, b, a, b, METAL_T, AIR_H),
         polygon_extrude("feed_fixed", "component1", "PEC", fixed_metal_polygons()[0], METAL_T),
-        *initial_metal_blocks(initial_metal, METAL_T),
+        *initial_metal_blocks(initial_metal, METAL_T, fixed_solids=fixed_metal_solids()),
         _feed_port(),
     ]
 

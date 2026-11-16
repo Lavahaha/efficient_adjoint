@@ -13,9 +13,9 @@
 一次调用做的事（直接调 CST 官方库，中间没有封装层）：
   1. 连实例（默认复用已运行的；``--attach`` 只附接，连不上报错）；
   2. 两个工程**复用或打开**（同一个 ``.cst`` 绝不打开两次）；
-  3. 每个工程写**恰好一条**历史记录：``Component.Delete "design_region"``
-     + 按新轮廓逐个 Extrude——走 ``add_to_history``，所以工程重放历史得到
-     的就是当前形状；
+  3. 每个工程写**恰好一条**历史记录：恢复原始固定馈线 + 删除设计区组件
+     + 按新轮廓逐个 Extrude/减孔 + 相连 PEC 布尔合并；走 ``add_to_history``，
+     所以工程重放历史得到的就是当前形状；
   4. 两个工程都改成功后，才把**真正施加的**形状写进
      ``iter_NNN/shape.json``（覆盖写）；
   5. 每个工程：求解 → 存盘 → 读 S 参数（cst.results）→ 导 E/H 场并裁到
@@ -90,7 +90,7 @@ def main(argv=None) -> int:
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=log)
             _update_design_region(prj.model3d, polys, setup, M,
                                   what=f"更新 {tag} 工程设计区", log=log)
-            if cfg.name == 'antenna':
+            if cfg.name in ('antenna', 'patch_antenna'):
                 M.audit_design_regions(prj.model3d,polys,setup.metal_thickness_mm,
                     artifacts.iteration_dir(cfg.output.dir,n)/f'native_geometry_{tag}.json')
         if polys and hasattr(polys[0], "outer"):
@@ -266,7 +266,7 @@ def _apply_blocks(m3d, blocks, what: str, log) -> int:
 
 
 def _update_design_region(m3d, polys, setup, model, *, what: str, log) -> None:
-    """一轮形状更新 = **一条**历史记录：删整个组件 + 按新轮廓重建。
+    """一轮形状更新 = **一条**历史记录：恢复馈线 + 重建设计区 + PEC 合并。
 
     整段作为一条进历史表（既改当前模型、又能被重放），每轮历史表只长一条。
     ``model`` = 该算例的模板模块（组件名与 Extrude 命令由它给，见 case.py）。

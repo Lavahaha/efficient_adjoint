@@ -25,6 +25,7 @@ from eaopt.geometry.levelset import LevelSet2D, make_level_set
 from eaopt.optimize.constraints import apply_min_feature, apply_min_gap
 from eaopt.runner import CstAdjointLevelSetProblem, _movement_constraints
 from eaopt.solver.case import load_case
+from eaopt.geometry.contour import classify_metal_regions
 
 SOURCE = ROOT / 'results/antenna_oscillation_2026-11-10/local_diagnostics/stages'
 OUT = ROOT / 'results/antenna_geometry_fix_2026-11-10'
@@ -218,7 +219,8 @@ def live(mode, phase_error=None, de_pid=None, local_mesh_mm=None):
                 f' .Set "PhaseErrorFar", "{phase_error:g}"\nEnd With\n')
         if local_mesh_mm:
             project.model3d.add_to_history('diagnostic patch local tetrahedral size',
-                f'Solid.SetMeshStepwidthTet "design_region:antenna_metal_0", "{local_mesh_mm:g}"\n')
+                ''.join(f'Solid.SetMeshStepwidthTet "{solid}", "{local_mesh_mm:g}"\n'
+                        for solid, _ in MODEL.merged_design_solids(classify_metal_regions(polys))))
         path = solver.project_path('fwd')
         result['memory_before_solve'] = memory()
         save(dest / 'results.json', result)

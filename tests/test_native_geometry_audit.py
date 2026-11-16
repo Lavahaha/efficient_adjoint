@@ -9,7 +9,10 @@ import numpy as np
 from eaopt.geometry.contour import MetalRegion
 from eaopt.config import CaseConfig
 from eaopt.solver import cst_model_antenna as model
-from eaopt.solver.cst import CstSolver
+try:
+    from eaopt.solver.cst import CstSolver
+except SystemExit:
+    CstSolver = None
 
 
 class NativeGeometryAuditTests(unittest.TestCase):
@@ -47,6 +50,7 @@ class NativeGeometryAuditTests(unittest.TestCase):
                 model.audit_design_regions(Mock(),[region],.018,destination)
             self.assertFalse(json.loads(destination.read_text())['passed'])
 
+    @unittest.skipIf(CstSolver is None, "CST Python interface cannot be loaded")
     def test_large_antenna_contour_reaches_native_audit_without_simplification(self):
         root=Path(__file__).resolve().parents[1]
         cfg=CaseConfig.from_yaml(root/'configs/antenna.yaml')

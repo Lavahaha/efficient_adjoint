@@ -14,17 +14,20 @@ import numpy as np
 from shapely.geometry import Polygon
 
 import check_antenna_geometry_consistency as d
+from eaopt.geometry.contour import classify_metal_regions
 from check_antenna_field_sampling import containing_cells, read_slim
 
 OUT = d.ROOT/'results/antenna_directional_validation_2026-11-11'
 
 
 def native_geometry(project, destination, h):
+    native_name, expected = d.MODEL.merged_design_solids(
+        classify_metal_regions(d.rectangle(h, 'length', False)))[0]
     code = '''Sub Main
 Dim name As String, ok As Boolean
 Dim xmin As Double, xmax As Double, ymin As Double, ymax As Double, zmin As Double, zmax As Double
 Dim x0 As Double, y0 As Double, z0 As Double, x1 As Double, y1 As Double, z1 As Double
-name = "design_region:antenna_metal_0"
+name = "NATIVE_NAME"
 Open "OUTPUT" For Output As #1
 Print #1, "volume|" & Solid.GetVolume(name)
 Print #1, "area|" & Solid.GetArea(name)
@@ -40,17 +43,18 @@ Print #1, "port_grid_length|" & DiscretePort.GetGridLength(1)
 Print #1, "contact_patch|" & Solid.IsPointInsideShape(-19.999999, 0, 0.009, name)
 Print #1, "contact_feed|" & Solid.IsPointInsideShape(-20.000001, 0, 0.009, "component1:feed_pad_fixed")
 Close #1
-End Sub'''.replace('OUTPUT', str(destination))
+End Sub'''.replace('OUTPUT', str(destination)).replace('NATIVE_NAME', native_name)
     project.model3d._execute_vba_code(code)
     record = {}
     for line in destination.read_text().splitlines():
         key, *values = [v.strip() for v in line.split('|')]
         record[key] = [float(v) for v in values] if not key.startswith('contact_') else values[0].lower() == 'true'
-    np.testing.assert_allclose(record['bbox'], [-20, h, -10, 10, 0, .018], rtol=0, atol=1e-10)
-    np.testing.assert_allclose(record['volume'], [7.2+.36*h], rtol=0, atol=1e-8)
-    np.testing.assert_allclose(record['area'], [801.44+40.036*h], rtol=0, atol=1e-8)
+    x0, y0, x1, y1 = expected.bounds
+    np.testing.assert_allclose(record['bbox'], [x0, x1, y0, y1, 0, .018], rtol=0, atol=1e-10)
+    np.testing.assert_allclose(record['volume'], [expected.area*.018], rtol=0, atol=1e-8)
+    np.testing.assert_allclose(record['area'], [2*expected.area+expected.length*.018], rtol=0, atol=1e-8)
     np.testing.assert_allclose(record['port'], [-21.865, 0, -1.524, -20.45, 0, -1.524], rtol=0, atol=1e-10)
-    assert record['vertices'] == [8] and record['contact_patch'] and record['contact_feed']
+    assert record['vertices'][0] >= 4 and record['contact_patch'] and record['contact_feed']
     np.testing.assert_allclose(record['port_length'], [1.415], rtol=0, atol=1e-10)
     return record
 
@@ -130,8 +134,10 @@ def main():
                 assert polygon.is_valid and abs(polygon.area-(400+20*h)) < 1e-10
                 solver.build_model(d.rectangle(h, 'length', False), None)
                 project = solver.projects['fwd']; path = solver.project_path('fwd')
+                native_name = d.MODEL.merged_design_solids(
+                    classify_metal_regions(d.rectangle(h, 'length', False)))[0][0]
                 command = ('With FDSolver\n .Type "Direct"\n .SetAllowFloatDirectSolver "False"\nEnd With\n'
-                    f'Solid.SetMeshStepwidthTet "design_region:antenna_metal_0", "{step:g}"\n')
+                    f'Solid.SetMeshStepwidthTet "{native_name}", "{step:g}"\n')
                 project.model3d.add_to_history('direct CAD controlled length derivative', command)
                 native = native_geometry(project, out/f'{name}_native.txt', h)
                 report['pending_case'] = dict(name=name, h_mm=h, mesh_step_mm=step,

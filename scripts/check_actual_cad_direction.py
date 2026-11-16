@@ -55,7 +55,8 @@ def main(source, factors, affine_length=False):
     try:
         for index, factor in enumerate((0., *factors, 0.)):
             trial = state.with_geometry(mesh.moved(displacement, factor))
-            rings = region_rings(compose_metal_regions(cfg, trial.phi, geometry_state=trial))
+            regions = compose_metal_regions(cfg, trial.phi, geometry_state=trial)
+            rings = region_rings(regions)
             solver.begin_iteration(index)
             solver.build_model(rings)
             folder = out/f'iter_{index:03d}'
@@ -64,13 +65,17 @@ def main(source, factors, affine_length=False):
             project = solver.projects['fwd']
             path = solver.project_path('fwd')
             native_path = folder/'native_volume.txt'
+            native_solids = model.merged_design_solids(regions)
+            if len(native_solids) != 1:
+                raise ValueError('Direction scan requires one connected native signal solid')
+            native_name, native_polygon = native_solids[0]
             code = ('Sub Main\nOpen "'+str(native_path)+'" For Output As #1\n'
-                    'Print #1, Solid.GetVolume("design_region:antenna_metal_0")\n'
-                    'Print #1, Solid.GetNumberOfPoints("design_region:antenna_metal_0")\n'
+                    f'Print #1, Solid.GetVolume("{native_name}")\n'
+                    f'Print #1, Solid.GetNumberOfPoints("{native_name}")\n'
                     'Close #1\nEnd Sub')
             project.model3d._execute_vba_code(code)
             native_volume, native_vertices = map(float, native_path.read_text().split())
-            expected_volume = trial.geometry.area*setup.metal_thickness_mm
+            expected_volume = native_polygon.area*setup.metal_thickness_mm
             np.testing.assert_allclose(native_volume, expected_volume, rtol=1e-8, atol=1e-9)
             elapsed = _run_solver(project.model3d, log)
             _save(project, path, log)

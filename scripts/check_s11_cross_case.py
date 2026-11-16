@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 import adjoint_levelset as als
 from eaopt.config import CaseConfig
 from eaopt.solver.case import load_case
+from eaopt.solver.cst_boolean import plan_pec_unions
 from check_antenna_field_sampling import read_slim, containing_cells
 
 OUT = ROOT / 'results/s11_cross_case_2026-11-12'
@@ -60,17 +61,17 @@ def geometry(cfg, h):
         x_range_mm=[a, b]), sample_x, speed, line_weights
 
 
-def native_audit(project, path, metadata, thickness):
+def native_audit(project, path, metadata, thickness, native_name):
     code = '''Sub Main
 Dim ok As Boolean, x0 As Double, x1 As Double, y0 As Double, y1 As Double, z0 As Double, z1 As Double
-ok = Solid.GetLooseBoundingBoxOfShape("design_region:design_0", x0, x1, y0, y1, z0, z1)
+ok = Solid.GetLooseBoundingBoxOfShape("NATIVE_NAME", x0, x1, y0, y1, z0, z1)
 If Not ok Then Err.Raise 1, , "Missing design body"
 Open "OUTPUT" For Output As #1
-Print #1, Solid.GetVolume("design_region:design_0")
-Print #1, Solid.GetArea("design_region:design_0")
+Print #1, Solid.GetVolume("NATIVE_NAME")
+Print #1, Solid.GetArea("NATIVE_NAME")
 Print #1, x0 & "|" & x1 & "|" & y0 & "|" & y1 & "|" & z0 & "|" & z1
 Close #1
-End Sub'''.replace('OUTPUT', str(path))
+End Sub'''.replace('OUTPUT', str(path)).replace('NATIVE_NAME', native_name)
     project.model3d._execute_vba_code(code)
     lines = path.read_text().splitlines()
     values = dict(volume_mm3=float(lines[0]), surface_area_mm2=float(lines[1]),
@@ -227,10 +228,17 @@ def main():
                     project, path = solver.projects['fwd'], solver.project_path('fwd')
                     prepared = unary_union([Polygon(p) for p in solver.last_prepared_polys])
                     assert prepared.symmetric_difference(Polygon(points)).area < 1e-10
+                    _, survivors = plan_pec_unions([("design_region:design_0", prepared)], model.fixed_metal_solids())
+                    native_solids = [(name, p) for name, p in survivors if p.intersection(prepared).area > 0]
+                    if len(native_solids) != 1:
+                        raise ValueError('S11 directional check requires one connected signal solid')
+                    native_name, native_polygon = native_solids[0]
                     commands = ('With FDSolver\n .Type "Direct"\n .SetAllowFloatDirectSolver "False"\nEnd With\n'
-                        'Solid.SetMeshStepwidthTet "design_region:design_0", "0.5"\n')
+                        f'Solid.SetMeshStepwidthTet "{native_name}", "0.5"\n')
                     project.model3d.add_to_history('Fixed mesh S11 directional diagnostic', commands)
-                    audit = native_audit(project, case_dir/'native.txt', metadata, setup.metal_thickness_mm)
+                    audit = native_audit(project, case_dir/'native.txt',
+                        dict(area_mm2=native_polygon.area, perimeter_mm=native_polygon.length,
+                             bounds=native_polygon.bounds), setup.metal_thickness_mm, native_name)
                     write(case_dir/'geometry.json', dict(vertices=points.tolist(), **metadata, native=audit))
                     _save(project, path, solver.log)
                     seconds = _run_solver(project.model3d, solver.log)

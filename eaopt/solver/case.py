@@ -29,7 +29,7 @@ __all__ = ["load_case", "known_cases", "CASE_INTERFACE"]
 #: 建模 + 存盘，因此在加载算例时先检查接口。
 CASE_INTERFACE = ("template_blocks", "model_blocks", "setting_blocks",
                   "DESIGN_COMPONENT", "design_region_update", "layout_view",
-                  "fixed_metal_polygons")
+                  "fixed_metal_polygons", "fixed_metal_solids")
 
 
 def known_cases() -> tuple[str, ...]:

@@ -33,7 +33,7 @@ import math
 
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header,
-    brick, design_region_update, field_monitor, frequency_range, initial_metal_blocks,
+    brick, design_region_update as _design_region_update, field_monitor, frequency_range, initial_metal_blocks,
     material_normal, polygon_extrude, set_boundaries,
     waveguide_port, solver_setup,
 )
@@ -41,14 +41,11 @@ from eaopt.solver.cst_setup import DIVIDER
 
 __all__ = [
     # 模板接口（与 cst_model 同名同义）：求解器与三个 CST 程序只按这套名字
-    # design_region_update 是**通用实现**，这里只是重新导出——
-    # 漏掉它的话 cst_init_*.py 建工程一切正常，直到 runner 第一次
-    # build_model 才在 cst.py 里 AttributeError（实测踩过）。
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
     "UNITS_BLOCK", "DESIGN_COMPONENT", "design_region_update", "layout_view",
     # 固定金属几何；初始可动金属来自 YAML。
     "output_trace_polygon",
-    "input_feed_polygon", "fixed_metal_polygons",
+    "input_feed_polygon", "fixed_metal_polygons", "fixed_metal_solids",
     # 布局常量
     "W", "EPS_EFF", "LAMBDA_G", "L_IN", "L_ARM", "ARM_DX", "ARM_DY",
     "THETA_DEG", "FORK", "ARM_END", "BOX_X0", "BOX_X1", "BOX_Y0", "BOX_Y1",
@@ -157,6 +154,17 @@ def _fixed_metal_parts() -> list[str]:
     ]
 
 
+def fixed_metal_solids():
+    return list(zip(("feed:in_feed", "feed:out_top", "feed:out_bot"),
+                    fixed_metal_polygons()))
+
+
+def design_region_update(polys, height_mm, component=DESIGN_COMPONENT,
+                         material="PEC", z0=0.0):
+    return _design_region_update(polys, height_mm, component, material, z0,
+                                 fixed_solids=fixed_metal_solids())
+
+
 def _ports() -> list[str]:
     """3 个波导端口：1 在 xmin 面，2/3 在 xmax 面（按优化目标激励 1/2）。
 
@@ -180,7 +188,7 @@ def model_blocks(initial_metal) -> list[str]:
     """全部**建模**命令块（顺序即执行顺序）：基板/接地/空气盒 → 固定金属
     → 设计区初始金属 → 3 个端口。"""
     return (_substrate_parts() + _fixed_metal_parts()
-            + initial_metal_blocks(initial_metal, METAL_T) + _ports())
+            + initial_metal_blocks(initial_metal, METAL_T, fixed_solids=fixed_metal_solids()) + _ports())
 
 
 def setting_blocks(portnum: int, frequencies_ghz=None, solver_type: str = "td") -> list[tuple[str, str]]:

@@ -212,8 +212,8 @@ class CstSolver(SolverInterface):
         "已有结果 + 模型要变"时会弹确认框，GUI 模式下脚本会卡在那一行。
 
         movable: 完整闭合金属轮廓，含区外初始金属（世界坐标 mm）；
-        fixed: 固定金属与馈线——**模板里已经有了，这里忽略**（固定几何只在
-        建模板时写一次，runner 不重复施加）。
+        fixed: 由算例模板提供固定金属与馈线；每轮恢复原始馈线，再合并本轮
+        PEC 设计金属，避免上一轮并集残留。
         """
         # 区内简化在拼合前完成；这里不能再移动区外固定轮廓。
         self.last_prepared_polys = None
@@ -568,7 +568,7 @@ def _apply_blocks(m3d, blocks, what: str, log) -> int:
 
 
 def _update_design_region(m3d, polys, setup, model, *, what: str, log) -> None:
-    """一轮形状更新 = **一条**历史记录：删整个组件 + 按新轮廓重建。
+    """一轮形状更新 = **一条**历史记录：恢复馈线 + 重建设计区 + PEC 合并。
 
     ``model`` = 该算例的模板模块（组件名与 Extrude 命令由它给，见 case.py）。
     """
