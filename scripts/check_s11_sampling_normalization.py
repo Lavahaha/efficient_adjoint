@@ -61,7 +61,8 @@ def axis_quadrature(edges, step):
 
 def port_audit(project, base, cfg, model, folder):
     m3d = project.model3d
-    blocks = [code for title, code in model.template_blocks(cfg.name, 1, solver_type='fd') if title == 'Port p1']
+    blocks = [code for title, code in model.template_blocks(cfg.name, 1, solver_type='fd',
+        initial_metal=[p.vertices for p in cfg.initial_metal]) if title == 'Port p1']
     assert len(blocks) == 1 and '.Orientation "xmin"' in blocks[0]
     bounds = np.array([[float(v) for v in re.search(r'\.'+axis+r'range\s+"([^"]+)",\s*"([^"]+)"', blocks[0]).groups()]
         for axis in ('X', 'Y', 'Z')])

@@ -329,7 +329,7 @@ def adjoint_levelset_state_figure(cfg, phi, x, y, e_x, e_y, e_magnitude, *,
     if layout is None or fixed_metal_polygons is None:
         _, model = load_case(cfg)
     if layout is None:
-        layout = model.layout_view()
+        layout = model.layout_view([p.vertices for p in cfg.initial_metal])
     if fixed_metal_polygons is None:
         fixed_metal_polygons = model.fixed_metal_polygons()
     substrate = next(s for s in layout["shapes"] if s[0] == "substrate")

@@ -5,9 +5,8 @@
 
 1. **VBA 命令片段**（材质/长方体/挤出/端口/监视器/边界/求解器/ASCIIExport
    参数）——版本敏感的写法与实测结论都写在各自 docstring 里；
-2. **模板命令块** ``template_blocks(project, portnum)``——建一个工程所需的
-   全部 ``[(标题, 命令文本)]``，是几何的**单一事实来源**：改几何只改这里，
-   三个脚本不会有第二份定义。
+2. **模板命令块** ``template_blocks(..., initial_metal=...)``——固定结构来自模板，
+   初始可动金属统一由调用方传入 YAML 坐标，三个建模入口使用同一套命令。
 
 约定（服务器实测，勿违反）：
 
@@ -49,7 +48,7 @@ from eaopt.solver.cst_setup import COUPLER
 
 __all__ = [
     # VBA 片段
-    "material_normal", "brick", "polygon_extrude",
+    "material_normal", "brick", "polygon_extrude", "initial_metal_blocks",
     "DESIGN_COMPONENT", "delete_component", "design_region_update",
     "waveguide_port", "field_monitor", "field_monitor_name",
     "field_result_path", "FIELD_TYPES",
@@ -140,6 +139,28 @@ def polygon_extrude(name: str, component: str, material: str,
         lines.append(f'    .LineTo "{x:.17g}", "{y:.17g}"')
     lines += ["    .Create", "End With", ""]
     return "\n".join(lines) + "\n"
+
+
+def initial_metal_blocks(initial_metal, height_mm: float) -> list[str]:
+    """Extrude the exact union of YAML initial_metal, including enclosed voids."""
+    from eaopt.geometry.design import polygon_union
+
+    metal = polygon_union(initial_metal)
+    if metal.is_empty:
+        raise ValueError("initial_metal must contain nonempty valid polygons")
+    regions = [metal] if metal.geom_type == "Polygon" else list(metal.geoms)
+    blocks = []
+    for i, region in enumerate(regions):
+        name = f"initial_metal_{i}"
+        blocks.append(polygon_extrude(name, DESIGN_COMPONENT, "PEC",
+                                      region.exterior.coords, height_mm))
+        for j, hole in enumerate(region.interiors):
+            tool = f"initial_hole_{i}_{j}"
+            blocks.append(polygon_extrude(tool, DESIGN_COMPONENT, "PEC",
+                                          hole.coords, height_mm + 0.1, z0=-0.05))
+            blocks.append(f'Solid.Subtract "{DESIGN_COMPONENT}:{name}", '
+                          f'"{DESIGN_COMPONENT}:{tool}"\n')
+    return blocks
 
 
 #: 设计区组件名。**模板与每轮重建必须用同一个名字**——名字漂移的话每轮会
@@ -527,21 +548,6 @@ def _right_leg_polygon() -> list[tuple[float, float]]:
     return [(2 * mid - x, y) for x, y in reversed(_left_leg_polygon())]
 
 
-def _arm_design_polygon() -> list[tuple[float, float]]:
-    """设计区初始金属轮廓（耦合臂横段 + 两端内侧四分之一圆过渡）。
-
-    两端内圆角与腿的外圆角同心（同一条带拐弯），切点落在设计区边角：
-    左 (0,-2.0)→(0.4,-1.6)，右 (12,-2.0)→(11.6,-1.6)。
-    """
-    cx, cy = LEG_L_IN + R_IN, ARM_LO - R_IN               # (0.4, -2.0)
-    cx2 = LEG_R_IN - R_IN                                 # 11.6
-    return ([(LEG_L_IN, cy)]
-            + arc_points(cx, cy, R_IN, 180.0, 90.0)
-            + [(cx2, ARM_LO)]
-            + arc_points(cx2, cy, R_IN, 90.0, 0.0)   # 末点即 (LEG_R_IN, cy)
-            + [(LEG_R_IN, ARM_HI), (LEG_L_IN, ARM_HI)])
-
-
 def _substrate_parts() -> list[str]:
     """基板 + 接地 + 空气盒（空气盒只用于撑大计算域）。"""
     return [
@@ -568,17 +574,6 @@ def _fixed_metal_parts() -> list[str]:
     ]
 
 
-def _arm_design_part() -> str:
-    """设计区初始金属（耦合臂横段 + 两端内侧圆角，runner 每轮重建）。
-
-    轮廓与 configs/coupler.yaml 的 initial_metal 一致（由测试锁定）。
-    圆弧用折线近似（Extrude "Pointlist" 生成的是直边多边形）；弦高误差
-    ~0.013 mm，远小于网格与最小间距。
-    """
-    return polygon_extrude("arm_init", DESIGN_COMPONENT, "PEC",
-                           _arm_design_polygon(), METAL_T)
-
-
 def _ports() -> list[str]:
     """4 个波导端口：1/2 在直通线两端（xmin/xmax 面），3/4 在两腿底（ymin 面）。
 
@@ -601,11 +596,11 @@ def _ports() -> list[str]:
     ]
 
 
-def model_blocks() -> list[str]:
+def model_blocks(initial_metal) -> list[str]:
     """全部**建模**命令块（顺序即执行顺序）：基板/接地/空气盒 → 固定金属
     → 设计区初始金属 → 4 个端口。"""
     return (_substrate_parts() + _fixed_metal_parts()
-            + [_arm_design_part()] + _ports())
+            + initial_metal_blocks(initial_metal, METAL_T) + _ports())
 
 
 def setting_blocks(portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
@@ -654,27 +649,27 @@ def block_header(cmd: str) -> str:
     return kind
 
 
-def template_blocks(project: str, portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
+def template_blocks(project: str, portnum: int, solver_type: str = "td", *, initial_metal) -> list[tuple[str, str]]:
     """模板的全部命令块 ``[(标题, VBA 命令文本)]`` —— **单一事实来源**。
 
-    调用方逐块交给 ``model3d.add_to_history(标题, 命令文本)``。改几何只改
-    这里（以及它调用的 VBA 生成器），三个 CST 程序不会有第二份定义。
+    调用方逐块交给 ``model3d.add_to_history(标题, 命令文本)``。
+    ``initial_metal`` 必须传入 YAML 的完整坐标，包含设计区外的初始金属。
 
     ``project`` 只是日志里用的名字，不进命令文本。
     """
     blocks = [("Units", UNITS_BLOCK)]
-    blocks += [(block_header(c), c) for c in model_blocks()]
+    blocks += [(block_header(c), c) for c in model_blocks(initial_metal)]
     blocks += setting_blocks(portnum, solver_type)
     return blocks
 
 
-def layout_view() -> dict:
+def layout_view(initial_metal) -> dict:
     """模板侧几何的绘图数据（``scripts/plot_layout.py`` 用，不出 CST）。
 
     ``{"bounds": (x0, x1, y0, y1), "shapes": [(种类, 点列, 图例), ...],
     "ports": [(编号, x, y, 朝内 dx, 朝内 dy), ...]}``——种类 ∈
     ``{"substrate", "metal"}``，配色由 ``eaopt.plotting`` 定。两个算例的
-    模板模块都实现它，画图脚本因此与算例无关（几何只有模板这一份来源）。
+    模板模块都实现它，初始金属和建模一样由 YAML 坐标传入。
     """
     fixed = fixed_metal_polygons()
     return {
@@ -686,7 +681,8 @@ def layout_view() -> dict:
             ("metal", fixed[0], "through line (p1-p2)"),
             ("metal", fixed[1], "legs (p3-p4)"),
             ("metal", fixed[2], None),
-            ("metal", _arm_design_polygon(), "design metal (arm)"),
+            *(("metal", p, "initial metal (YAML)" if i == 0 else None)
+              for i, p in enumerate(initial_metal)),
         ],
         "ports": [
             (1, THRU_X0, (THRU_LO + THRU_HI) / 2, 1, 0),

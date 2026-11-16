@@ -73,7 +73,11 @@ def main(argv=None) -> int:
         prj = de.new_mws()
         log("[OK] 新建 MWS 工程")
         port = setup.stimulus(TAG, cfg.objective)
-        blocks = M.template_blocks(f"{cfg.name}_{TAG}", port, solver_type=setup.solver_type)
+        kwargs = {"initial_metal": [p.vertices for p in cfg.initial_metal],
+                  "solver_type": setup.solver_type}
+        if cfg.objective.frequencies_ghz:
+            kwargs["frequencies_ghz"] = cfg.objective.frequencies_ghz
+        blocks = M.template_blocks(f"{cfg.name}_{TAG}", port, **kwargs)
         log(f"[ .. ] 建 {TAG} 工程：{len(blocks)} 个命令块，激励端口 = {port}")
         _apply_blocks(prj.model3d, blocks, f"建 {TAG} 工程（激励端口 {port}）",
                       log)

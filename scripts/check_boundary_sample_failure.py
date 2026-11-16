@@ -105,7 +105,7 @@ def main():
                   max(4 * offset, 2 * cfg.design_region.grid_step_mm))
     if not np.isfinite(ray_length) or ray_length < offset:
         parser.error("--ray-length-mm must be finite and at least the sampling offset")
-    substrate = unary_union([Polygon(p) for kind, p, _ in model.layout_view()["shapes"]
+    substrate = unary_union([Polygon(p) for kind, p, _ in model.layout_view([p.vertices for p in cfg.initial_metal])["shapes"]
                              if kind == "substrate"])
     rows = []
     with np.load(folder / "invalid_boundary_samples.npz") as saved:

@@ -8,15 +8,14 @@ from __future__ import annotations
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header, brick,
     field_monitor, frequency_range, material_normal, polygon_extrude,
-    set_boundaries, solver_setup, waveguide_port,
+    set_boundaries, solver_setup, waveguide_port, initial_metal_blocks,
 )
 from eaopt.solver.cst_model_antenna import audit_design_regions, design_region_update
 from eaopt.solver.cst_setup import PATCH_ANTENNA
 
 BOARD = (-30.0, 30.0)
 DESIGN_Y0 = -20.0
-PATCH_WIDTH, PATCH_LENGTH = 13.25, 9.93
-FEED_WIDTH, INSET_DEPTH, INSET_GAP = 3.38, 3.59, 0.50
+FEED_WIDTH = 3.38
 SUB_H = PATCH_ANTENNA.substrate_h_mm
 METAL_T = PATCH_ANTENNA.metal_thickness_mm
 FREQ = PATCH_ANTENNA.frequency_ghz
@@ -24,21 +23,8 @@ FMIN, FMAX = 6.0, 9.0
 AIR_H = 10.0
 SUBSTRATE = "Rogers4003C"
 GROUND_Z = -SUB_H - METAL_T
-FEED_END_Y = -PATCH_LENGTH / 2 + INSET_DEPTH
-FEED_LENGTH = FEED_END_Y - BOARD[0]  # 28.625 mm, rounded to 28.63 in the drawing.
 SUPPORTS_NESTED_CONTOURS = True
 DESIGN_BOUNDARY_PAD_MM = 0.0
-
-
-def initial_patch_polygon():
-    """One connected polygon: patch, two open inset slots, and in-box feed."""
-    w, h = PATCH_WIDTH / 2, PATCH_LENGTH / 2
-    f, s = FEED_WIDTH / 2, FEED_WIDTH / 2 + INSET_GAP
-    return [
-        (-f, DESIGN_Y0), (f, DESIGN_Y0), (f, FEED_END_Y),
-        (s, FEED_END_Y), (s, -h), (w, -h), (w, h), (-w, h),
-        (-w, -h), (-s, -h), (-s, FEED_END_Y), (-f, FEED_END_Y),
-    ]
 
 
 def fixed_metal_polygons():
@@ -54,7 +40,7 @@ def _feed_port():
                           port_on_bound=False)
 
 
-def model_blocks():
+def model_blocks(initial_metal):
     a, b = BOARD
     return [
         material_normal(SUBSTRATE, PATCH_ANTENNA.eps_r, 1.0, PATCH_ANTENNA.loss_tangent),
@@ -62,7 +48,7 @@ def model_blocks():
         brick("ground", "component1", "PEC", a, b, a, b, GROUND_Z, -SUB_H),
         brick("air", "component1", "Vacuum", a, b, a, b, METAL_T, AIR_H),
         polygon_extrude("feed_fixed", "component1", "PEC", fixed_metal_polygons()[0], METAL_T),
-        polygon_extrude("patch_initial", DESIGN_COMPONENT, "PEC", initial_patch_polygon(), METAL_T),
+        *initial_metal_blocks(initial_metal, METAL_T),
         _feed_port(),
     ]
 
@@ -80,20 +66,21 @@ def setting_blocks(portnum, solver_type="td"):
     ]
 
 
-def template_blocks(project, portnum, solver_type="td"):
+def template_blocks(project, portnum, solver_type="td", *, initial_metal):
     return ([("Units", UNITS_BLOCK)]
-            + [(block_header(c), c) for c in model_blocks()]
+            + [(block_header(c), c) for c in model_blocks(initial_metal)]
             + setting_blocks(portnum, solver_type))
 
 
-def layout_view():
+def layout_view(initial_metal):
     a, b = BOARD
     return {
         "bounds": (a - 5, b + 5, a - 12, b + 5),
         "shapes": [
             ("substrate", [(a, a), (b, a), (b, b), (a, b)], "RO4003C 60 x 60 mm"),
             ("metal", fixed_metal_polygons()[0], "Fixed microstrip feed"),
-            ("metal", initial_patch_polygon(), "Inset-fed patch 13.25 x 9.93 mm"),
+            *(("metal", p, "initial metal (YAML)" if i == 0 else None)
+              for i, p in enumerate(initial_metal)),
         ],
         "ports": [(1, 0.0, a, 0, 1)],
     }

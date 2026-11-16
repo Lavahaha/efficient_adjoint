@@ -25,7 +25,7 @@ class WaveguidePortTests(unittest.TestCase):
         self.assertIn(f'.Zrange "{antenna.COAX_PORT_Z:g}", "{antenna.COAX_PORT_Z:g}"', command)
         self.assertLess(antenna.COAX_PORT_Z, antenna.GROUND_Z)
         self.assertIn('.NumberOfModes "1"', command)
-        self.assertNotIn('DiscretePort', ''.join(antenna.model_blocks()))
+        self.assertNotIn('DiscretePort', ''.join(antenna.model_blocks([[[-20, -10], [0, -10], [0, 10], [-20, 10]]])))
 
     def test_invalid_face_is_rejected(self):
         with self.assertRaises(ValueError):

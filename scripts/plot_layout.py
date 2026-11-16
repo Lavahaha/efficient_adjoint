@@ -1,9 +1,8 @@
 """渲染 CST 侧布局参考图（用来对着论文 Fig.5/Fig.9 核对 CST 里的模板模型）。
 
 画两类东西，叠在一张图上，便于发现配置与模板不一致：
-  - 模板侧（CST 宏会建出来的实体）：基板、固定金属、设计区初始金属、
-    端口位置——**几何取自算例的模板模块**（``layout_view()``），
-    画图脚本不自己算坐标，与 VBA 命令是同一批构造函数
+  - CST 宏会建出来的实体：基板、固定金属、端口位置取自模板，初始金属
+    与初始化入口一样传入 YAML 的 initial_metal，不使用写死的初始形状
   - 配置侧（算例相关，来自 YAML）：设计区 / 允许区 / 固定区三类框
     （样式与图例文案在 ``eaopt.plotting``，与 iter_NNN.png 共用一套）、
     initial_metal 各多边形（只描绿边，不填充）
@@ -53,7 +52,7 @@ def default_out(cfg: CaseConfig) -> Path:
 
 def plot_layout(cfg: CaseConfig, out: Path) -> Path:
     _, model = load_case(cfg)          # 算例的模板模块（几何的单一来源）
-    view = model.layout_view()
+    view = model.layout_view([p.vertices for p in cfg.initial_metal])
 
     fig, ax = plt.subplots(figsize=(9, 7))
 

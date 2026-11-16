@@ -33,7 +33,7 @@ import math
 
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header,
-    brick, design_region_update, field_monitor, frequency_range,
+    brick, design_region_update, field_monitor, frequency_range, initial_metal_blocks,
     material_normal, polygon_extrude, set_boundaries,
     waveguide_port, solver_setup,
 )
@@ -46,9 +46,9 @@ __all__ = [
     # build_model 才在 cst.py 里 AttributeError（实测踩过）。
     "template_blocks", "model_blocks", "setting_blocks", "block_header",
     "UNITS_BLOCK", "DESIGN_COMPONENT", "design_region_update", "layout_view",
-    # 几何（模板与 YAML 的共同来源：测试按它们锁 YAML）
-    "input_strip_polygon", "arm_polygon", "output_trace_polygon",
-    "input_feed_polygon", "initial_metal_polygons", "fixed_metal_polygons",
+    # 固定金属几何；初始可动金属来自 YAML。
+    "output_trace_polygon",
+    "input_feed_polygon", "fixed_metal_polygons",
     # 布局常量
     "W", "EPS_EFF", "LAMBDA_G", "L_IN", "L_ARM", "ARM_DX", "ARM_DY",
     "THETA_DEG", "FORK", "ARM_END", "BOX_X0", "BOX_X1", "BOX_Y0", "BOX_Y1",
@@ -102,51 +102,6 @@ DESIGN_BOUNDARY_PAD_MM = 0.0
 # =========================================================================== #
 # 二、几何（模板与 YAML 的共同来源）
 # =========================================================================== #
-def input_strip_polygon() -> list[tuple[float, float]]:
-    """设计区内的输入段（**可动**）：从框左界直行到分叉点，宽 w。"""
-    h = W / 2.0
-    return [(BOX_X0, -h), (FORK[0], -h), (FORK[0], h), (BOX_X0, h)]
-
-
-def arm_polygon(sign: float) -> list[tuple[float, float]]:
-    """分路臂（**可动**）：``sign=+1`` 上臂 / ``-1`` 下臂，从分叉点到臂端。
-
-    分叉主体沿中心线方向保持宽 ``W``；右端最后
-    ``ARM_JUNCTION_TRANSITION_MM`` 做梯形过渡，使边界 ``x=BOX_X1`` 上的两个
-    臂端顶点与对应固定输出线的两个顶点完全重合。这样连接处没有三角缺口，
-    同时活动区不越过设计区边界。
-    """
-    s = 1.0 if sign > 0 else -1.0
-    fx, fy = FORK
-    ex, ey = ARM_END[0], s * ARM_END[1]
-    dx, dy = ex - fx, ey - fy
-    length = math.hypot(dx, dy)
-    ux, uy = dx / length, dy / length
-    nx, ny = -uy, ux                        # 单位法向（指向 s 一侧）
-    h = W / 2.0
-    plus_start = (fx + h * nx, fy + h * ny)
-    plus_end = (ex + h * nx, ey + h * ny)
-    minus_end = (ex - h * nx, ey - h * ny)
-    minus_start = (fx - h * nx, fy - h * ny)
-    x_transition = BOX_X1 - ARM_JUNCTION_TRANSITION_MM
-
-    def side_at_transition(start, end):
-        if not min(start[0], end[0]) <= x_transition <= max(start[0], end[0]):
-            raise ValueError(
-                "ARM_JUNCTION_TRANSITION_MM must place the transition inside "
-                "both slanted arm edges"
-            )
-        t = (x_transition - start[0]) / (end[0] - start[0])
-        return (x_transition, start[1] + t * (end[1] - start[1]))
-
-    plus_transition = side_at_transition(plus_start, plus_end)
-    minus_transition = side_at_transition(minus_start, minus_end)
-    junction_upper = (BOX_X1, s * ARM_DY + h)
-    junction_lower = (BOX_X1, s * ARM_DY - h)
-    return [plus_start, plus_transition, junction_upper, junction_lower,
-            minus_transition, minus_start]
-
-
 def input_feed_polygon() -> list[tuple[float, float]]:
     """输入馈线（固定）：端口 1（板左边缘）到设计区左界，宽 w。"""
     h = W / 2.0
@@ -162,17 +117,6 @@ def output_trace_polygon(sign: float) -> list[tuple[float, float]]:
         (BOX_X1, y0), (BOARD_X[1], y0),
         (BOARD_X[1], y1), (BOX_X1, y1),
     ]
-
-
-def initial_metal_polygons() -> list[list[tuple[float, float]]]:
-    """设计区初始金属 = 输入段 ∪ 上臂 ∪ 下臂（Y 形，三个多边形取并集）。
-
-    ``LevelSet2D.init_from_polygons`` 对多个多边形取距离最小、内部取或，
-    所以交集处自动连成一体，不用手搓单条外轮廓；CST 侧也是三个挤出实体
-    （重叠的同类材料实体，CST 自己合并）。
-    **必须与 configs/divider.yaml 的 initial_metal 逐点一致**（测试锁定）。
-    """
-    return [input_strip_polygon(), arm_polygon(+1.0), arm_polygon(-1.0)]
 
 
 def fixed_metal_polygons() -> list[list[tuple[float, float]]]:
@@ -213,14 +157,6 @@ def _fixed_metal_parts() -> list[str]:
     ]
 
 
-def _design_parts() -> list[str]:
-    """设计区初始金属（Y 形，runner 每轮按 φ 重建整块设计区）。"""
-    names = ("in_strip", "arm_top", "arm_bot")
-    polys = initial_metal_polygons()
-    return [polygon_extrude(n, DESIGN_COMPONENT, "PEC", p, METAL_T)
-            for n, p in zip(names, polys)]
-
-
 def _ports() -> list[str]:
     """3 个波导端口：1 在 xmin 面，2/3 在 xmax 面（按优化目标激励 1/2）。
 
@@ -240,11 +176,11 @@ def _ports() -> list[str]:
     ]
 
 
-def model_blocks() -> list[str]:
+def model_blocks(initial_metal) -> list[str]:
     """全部**建模**命令块（顺序即执行顺序）：基板/接地/空气盒 → 固定金属
     → 设计区初始金属 → 3 个端口。"""
     return (_substrate_parts() + _fixed_metal_parts()
-            + _design_parts() + _ports())
+            + initial_metal_blocks(initial_metal, METAL_T) + _ports())
 
 
 def setting_blocks(portnum: int, frequencies_ghz=None, solver_type: str = "td") -> list[tuple[str, str]]:
@@ -283,24 +219,23 @@ def setting_blocks(portnum: int, frequencies_ghz=None, solver_type: str = "td") 
 
 
 def template_blocks(project: str, portnum: int,
-                    frequencies_ghz=None, solver_type: str = "td") -> list[tuple[str, str]]:
+                    frequencies_ghz=None, solver_type: str = "td", *, initial_metal) -> list[tuple[str, str]]:
     """模板的全部命令块 ``[(标题, VBA 命令文本)]`` —— **单一事实来源**。
 
     调用方逐块交给 ``model3d.add_to_history(标题, 命令文本)``。``project``
     只是日志里用的名字，不进命令文本。
     """
     blocks = [("Units", UNITS_BLOCK)]
-    blocks += [(block_header(c), c) for c in model_blocks()]
+    blocks += [(block_header(c), c) for c in model_blocks(initial_metal)]
     blocks += setting_blocks(portnum, frequencies_ghz, solver_type)
     return blocks
 
 
-def layout_view() -> dict:
+def layout_view(initial_metal) -> dict:
     """模板侧几何的绘图数据（``scripts/plot_layout.py`` 用，不出 CST）。
 
-    结构同 ``cst_model.layout_view``（两个算例同一套接口）。这里画的是
-    **模板自己的**几何：板 → 两条固定馈线 → Y 形设计金属 → 3 个端口，
-    与 ``cst_model_divider`` 生成的 VBA 是同一批构造函数。
+    结构同 ``cst_model.layout_view``。固定结构来自模板，初始金属坐标
+    与建模入口一样由 YAML 传入。
     """
     x0, x1 = BOARD_X
     y0, y1 = BOARD_Y
@@ -313,9 +248,8 @@ def layout_view() -> dict:
             ("metal", fixed[0], "input feed (p1)"),
             ("metal", fixed[1], "output traces (p2/p3)"),
             ("metal", fixed[2], None),
-            ("metal", input_strip_polygon(), "design metal (Y)"),
-            ("metal", arm_polygon(+1.0), None),
-            ("metal", arm_polygon(-1.0), None),
+            *(("metal", p, "initial metal (YAML)" if i == 0 else None)
+              for i, p in enumerate(initial_metal)),
         ],
         "ports": [
             (1, x0, 0.0, 1, 0),                 # 输入：板左边缘

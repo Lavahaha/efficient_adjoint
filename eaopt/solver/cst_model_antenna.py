@@ -11,7 +11,7 @@ from shapely.geometry import Polygon
 from eaopt.solver.cst_model import (
     DESIGN_COMPONENT, MESH_CREATOR, UNITS_BLOCK, block_header, brick,
     delete_component, field_monitor, frequency_range, material_normal,
-    polygon_extrude, set_boundaries, solver_setup, waveguide_port,
+    polygon_extrude, set_boundaries, solver_setup, waveguide_port, initial_metal_blocks,
 )
 from eaopt.solver.cst_setup import ANTENNA
 from eaopt.geometry.contour import MetalRegion
@@ -147,12 +147,10 @@ def _coax_port() -> str:
     )
 
 
-def model_blocks() -> list[str]:
+def model_blocks(initial_metal) -> list[str]:
     """Build the antenna and a uniform coaxial feed with a single-mode port."""
     x0, x1 = BOARD
     y0, y1 = BOARD
-    px0, px1 = PATCH
-    py0, py1 = PATCH_Y
     clearance_radius = GROUND_CLEARANCE_DIAMETER / 2.0
     ground_cut_overrun = 0.01
     substrate_cut_overrun = 0.01
@@ -179,9 +177,7 @@ def model_blocks() -> list[str]:
               x0, x1, y0, y1, METAL_T, AIR_H),
         polygon_extrude(
             "feed_pad_fixed", "component1", "PEC", FEED_PAD, METAL_T),
-        polygon_extrude(
-            "patch_initial", DESIGN_COMPONENT, "PEC",
-            [(px0, py0), (px1, py0), (px1, py1), (px0, py1)], METAL_T),
+        *initial_metal_blocks(initial_metal, METAL_T),
         _cylinder("feed_probe", "component1", "Copper (annealed)",
                   FEED_X, FEED_Y, PIN_DIAMETER / 2.0,
                   COAX_PORT_Z, 0.0),
@@ -233,24 +229,18 @@ def setting_blocks(portnum: int, solver_type: str = "td") -> list[tuple[str, str
     ]
 
 
-def template_blocks(project: str, portnum: int, solver_type: str = "td") -> list[tuple[str, str]]:
+def template_blocks(project: str, portnum: int, solver_type: str = "td", *, initial_metal) -> list[tuple[str, str]]:
     blocks = [("Units", UNITS_BLOCK)]
-    blocks += [(block_header(command), command) for command in model_blocks()]
+    blocks += [(block_header(command), command) for command in model_blocks(initial_metal)]
     blocks += setting_blocks(portnum, solver_type)
     return blocks
-
-
-def initial_patch_polygon():
-    px0, px1 = PATCH
-    py0, py1 = PATCH_Y
-    return [(px0, py0), (px1, py0), (px1, py1), (px0, py1)]
 
 
 def fixed_metal_polygons() -> list[list[tuple[float, float]]]:
     return [FEED_PAD]
 
 
-def layout_view() -> dict:
+def layout_view(initial_metal) -> dict:
     x0, x1 = BOARD
     y0, y1 = BOARD
     return {
@@ -259,7 +249,8 @@ def layout_view() -> dict:
             ("substrate", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
              "Rogers 4003C"),
             ("metal", FEED_PAD, "5 mm fixed feed pad"),
-            ("metal", initial_patch_polygon(), "20 × 20 mm initial design patch"),
+            *(("metal", p, "initial metal (YAML)" if i == 0 else None)
+              for i, p in enumerate(initial_metal)),
         ],
         "ports": [(1, FEED_X, FEED_Y, 0, 1)],
     }

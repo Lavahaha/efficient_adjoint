@@ -48,7 +48,7 @@ def main() -> None:
 
     if args.only in ("all", "states"):
         _, model = load_case(cfg)
-        layout = model.layout_view()
+        layout = model.layout_view([p.vertices for p in cfg.initial_metal])
         fixed_metal_polygons = model.fixed_metal_polygons()
         snapshots = sorted(outdir.glob("adjoint_levelset_state_*.npz"))
         current_states = ({(int(row["iteration"]), int(row["cst_eval_id"])) for row in history}

@@ -184,10 +184,12 @@ class CstSolver(SolverInterface):
         freqs = self.cfg.objective.frequencies_ghz
         if freqs:
             blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port,
-                                            frequencies_ghz=freqs)
+                                            frequencies_ghz=freqs,
+                                            initial_metal=[p.vertices for p in self.cfg.initial_metal])
         else:
             blocks = self.M.template_blocks(f"{self.cfg.name}_{tag}", port,
-                                            solver_type=self.setup.solver_type)
+                                            solver_type=self.setup.solver_type,
+                                            initial_metal=[p.vertices for p in self.cfg.initial_metal])
         self.log(f"[ .. ] 建 {tag} 工程：{len(blocks)} 个命令块，"
                  f"激励端口 = {port}")
         _apply_blocks(prj.model3d, blocks,

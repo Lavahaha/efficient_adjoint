@@ -419,7 +419,7 @@ class CstAdjointLevelSetProblem:
         regions = classify_metal_regions(self.solver.last_prepared_polys)
         metal = unary_union([Polygon(r.outer, r.holes) for r in regions] +
                             [fixed])
-        substrate = unary_union([Polygon(p) for kind, p, _ in model.layout_view()["shapes"]
+        substrate = unary_union([Polygon(p) for kind, p, _ in model.layout_view([p.vertices for p in self.cfg.initial_metal])["shapes"]
                                  if kind == "substrate"])
         domain = design_box(self.cfg)
         frozen = polygon_union([p.vertices for p in self.cfg.initial_metal]).difference(domain).union(fixed)
@@ -854,7 +854,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
             force_air=force_air, anchor=anchor,
             geometry_projector=project_geometry,
             geometry_evolution=CadEvolution() if args.geometry_update == 'cad' else None)
-        layout = model.layout_view()
+        layout = model.layout_view([p.vertices for p in cfg.initial_metal])
         fixed_metal_polygons = model.fixed_metal_polygons()
         substrate = next(shape for shape in layout["shapes"] if shape[0] == "substrate")
         substrate_xy = np.asarray(substrate[1], dtype=float)
