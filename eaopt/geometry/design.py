@@ -32,7 +32,7 @@ def region_rings(regions):
 def contour_point_limit(cfg):
     # Antenna solids are audited after each extrusion; 400 was an empirical
     # sample size, not a demonstrated CST limit. Never simplify to meet it.
-    return np.inf if cfg.name == "antenna" else SIMPLIFY_MAX_POINTS
+    return np.inf if cfg.name in ("antenna", "patch_antenna") else SIMPLIFY_MAX_POINTS
 
 
 def _regions(geometry):
@@ -94,7 +94,7 @@ def compose_metal_regions(cfg, phi, *, geometry_state=None):
             contours.append(points)
         interpolate = RegularGridInterpolator((initial_ls.xs, initial_ls.ys), phi)
         # Antenna updates must not acquire a displacement from vertex selection.
-        exact_contour = cfg.name == "antenna"
+        exact_contour = cfg.name in ("antenna", "patch_antenna")
         tol = 1e-9 if exact_contour else SIMPLIFY_TOL_CELLS * initial_ls.dx
         for _ in range(1 if exact_contour else 9):
             lines = [domain.boundary]

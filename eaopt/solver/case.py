@@ -34,7 +34,7 @@ CASE_INTERFACE = ("template_blocks", "model_blocks", "setting_blocks",
 
 def known_cases() -> tuple[str, ...]:
     """有 ``CstSetup`` + 模板模块的算例名（= 合法的 YAML ``name``）。"""
-    return ("coupler", "divider", "divider_multifreq", "antenna")
+    return ("coupler", "divider", "divider_multifreq", "antenna", "patch_antenna")
 
 
 def _check_interface(model, name: str) -> None:
@@ -72,6 +72,11 @@ def load_case(cfg: CaseConfig) -> tuple[CstSetup, object]:
         from eaopt.solver import cst_model_antenna as model
         _check_interface(model, cfg.name)
         return ANTENNA, model
+    if cfg.name == "patch_antenna":
+        from eaopt.solver import cst_model_patch_antenna as model
+        from eaopt.solver.cst_setup import PATCH_ANTENNA
+        _check_interface(model, cfg.name)
+        return PATCH_ANTENNA, model
     raise ValueError(
         f"未知算例 name={cfg.name!r}：已知 {known_cases()}。"
         "算例 = cst_setup.py 里的 CstSetup + cst_model*.py 模板模块 + 这里"

@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-__all__ = ["CstSetup", "COUPLER", "DIVIDER", "ANTENNA"]
+__all__ = ["CstSetup", "COUPLER", "DIVIDER", "ANTENNA", "PATCH_ANTENNA"]
 
 
 @dataclass(frozen=True)
@@ -153,3 +153,8 @@ DIVIDER = CstSetup(eps_r=3.0, loss_tangent=0.001, ports=(1, 2, 3),
 ANTENNA = CstSetup(frequency_ghz=7.5, eps_r=3.55, loss_tangent=0.0027,
                    substrate_h_mm=1.524, metal_thickness_mm=0.018,
                    ports=(1,), export_step_mm=0.2, export_step_z_mm=0.1)
+
+# Supplied inset-fed rectangular patch; resolve the 0.50 mm slots on a finer grid.
+PATCH_ANTENNA = CstSetup(frequency_ghz=7.5, eps_r=3.55, loss_tangent=0.0027,
+                        substrate_h_mm=1.524, metal_thickness_mm=0.018,
+                        ports=(1,), export_step_mm=0.1, export_step_z_mm=0.1)

@@ -249,7 +249,7 @@ class CstSolver(SolverInterface):
                 _clear_results(prj.model3d, what=f"{tag} 工程", log=self.log)
             _update_design_region(prj.model3d, geometry, self.setup, self.M,
                                   what=f"更新 {tag} 工程设计区", log=self.log)
-            if self.cfg.name == 'antenna':
+            if self.cfg.name in ('antenna', 'patch_antenna'):
                 folder = artifacts.iteration_dir(self.cfg.output.dir,self._it if self._it is not None else 0)
                 self.M.audit_design_regions(prj.model3d,geometry,self.setup.metal_thickness_mm,
                                             folder/f'native_geometry_{tag}.json')

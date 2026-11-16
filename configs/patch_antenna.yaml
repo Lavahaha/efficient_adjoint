@@ -1,0 +1,51 @@
+# Supplied 7.5 GHz inset-fed patch drawing; all dimensions are in mm.
+name: patch_antenna
+description: RO4003C inset-fed rectangular patch, single-port S11 minimization
+
+objective:
+  type: transmission
+  from_port: 1
+  to_port: 1
+
+# Same center as the 60 x 60 mm substrate and rectangular patch.
+design_region:
+  box:
+    x: [-20.0, 20.0]
+    y: [-20.0, 20.0]
+  grid_step_mm: 0.1
+  field_margin_mm: 2.0
+
+# Patch W=13.25, L=9.93; feed W=3.38; inset depth=3.59, gap=0.50 each side.
+initial_metal:
+  - vertices: [[-1.69, -20.0], [1.69, -20.0], [1.69, -1.375],
+               [2.19, -1.375], [2.19, -4.965], [6.625, -4.965],
+               [6.625, 4.965], [-6.625, 4.965], [-6.625, -4.965],
+               [-2.19, -4.965], [-2.19, -1.375], [-1.69, -1.375]]
+
+# Board edge to design-box edge; the connection at y=-20 is pinned.
+fixed_region:
+  - vertices: [[-1.69, -30.0], [1.69, -30.0], [1.69, -20.0], [-1.69, -20.0]]
+
+constraints:
+  min_gap_mm: 0.0
+  min_feature_mm: 0.2  # smaller than the 0.50 mm inset slots
+  allowed_region:
+    x: [-20.0, 20.0]
+    y: [-20.0, 20.0]
+  taper_edges: none
+  require_connected: false
+
+sampling:
+  field_z_mm: 0.009
+  intersection_offset_mm: 0.05
+  sample_side: outside
+
+optimizer:
+  pseudo_time_step: 1.0e-8
+  cfl: 0.5
+  velocity_sign: 1.0
+  max_iterations: 30
+level_set:
+  extension_band_mm: 1.0
+output:
+  dir: results/patch_antenna

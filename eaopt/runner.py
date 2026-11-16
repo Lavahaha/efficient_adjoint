@@ -686,7 +686,7 @@ def main(config_default: str = str(ROOT / "configs" / "coupler.yaml"),
     )
     parser.add_argument("--output-dir", help="output root (default: <configured output>/adjoint_levelset)")
     parser.add_argument("--iterations", type=int, help="override optimizer.max_iterations")
-    if expected_case == "antenna":
+    if expected_case in ("antenna", "patch_antenna"):
         parser.add_argument("--max-step-mm", type=float,
                             help="antenna HJ experiment: cap whole-iteration predicted grid displacement")
     parser.add_argument("--sample-offset-mm", type=float,

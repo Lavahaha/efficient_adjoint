@@ -37,9 +37,10 @@ Shapely 用于金属多边形的差集、并集与孔洞处理；更新代码后
 | 耦合器 | `python scripts/run_coupler_adjoint_levelset.py` | 最大化单频 \|S31\| |
 | 功分器 | `python scripts/run_divider_adjoint_levelset.py` | 最大化单频 \|S21\| |
 | 天线 | `python scripts/run_antenna_adjoint_levelset.py` | 最小化单频 \|S11\| |
+| 内嵌馈电矩形贴片 | `python scripts/run_patch_antenna_adjoint_levelset.py` | 最小化 7.5 GHz \|S11\| |
 | 双频功分器 | `python scripts/run_divider_multifreq.py` | 最大化 4/6 GHz 相对 −3 dB 门槛的 dB 余量 soft-min |
 
-四个入口均调用 `eaopt.runner.main`，再使用 `adjoint_levelset.AdjointLevelSetOptimizer`。
+五个入口均调用 `eaopt.runner.main`，再使用 `adjoint_levelset.AdjointLevelSetOptimizer`。
 旧入口 `scripts/run_coupler.py` 及旧的 `eaopt.pipeline` 已删除。
 
 单频默认使用频域四面体求解和 CST 指定边界点取场（`--solver fd --boundary-sampling cst-points`）；
@@ -51,6 +52,16 @@ Shapely 用于金属多边形的差集、并集与孔洞处理；更新代码后
 同轴填充理想无损介质（εr≈1.9751），使解析特性阻抗为 50 Ω；S 参数仍以
 CST 实际计算的端口阻抗归一化。参考面在同轴底端，不做去嵌。
 此模板替换了旧离散端口；已有 `.cst` 工程不会自动转换，请使用新的输出目录重建。
+
+新增的 `patch_antenna` 对应用户提供的矩形微带贴片图，与上述探针馈电案例分别配置。
+基板为 60 × 60 mm RO4003C（εr=3.55，厚 1.524 mm），顶层 PEC 和连续接地 PEC
+各厚 0.018 mm。基板、13.25 × 9.93 mm 贴片及 40 × 40 mm 设计区均以原点为中心。
+馈线沿 +y 从板底边 y=−30 mm 引入，宽 3.38 mm，内嵌深 3.59 mm，两侧槽宽各 0.50 mm；
+馈线总长按尺寸推导为 28.625 mm（图中约 28.63 mm）。y=−30～−20 mm 的馈线固定，
+区内馈线和贴片参与形状优化，设计区入口保持连接。网格为 0.1 mm，最小特征过滤尺度为
+0.2 mm，避免初始 0.50 mm 槽被过滤闭合。端口 1 位于板底边的微带截面，沿 +y 激励，
+参考面不去嵌；其实际阻抗和 7.5 GHz 匹配性能需 CST 仿真确认。输出目录为 `results/patch_antenna`。
+布局图可用 `python scripts/plot_layout.py configs/patch_antenna.yaml` 生成。
 
 ```bash
 # 指定小规模运行、独立输出目录和日志
@@ -90,7 +101,7 @@ python scripts/run_antenna_adjoint_levelset.py --help
 每次更新都重初始化符号距离；保留零速度、极小预测位移的停止条件及几何和数值校验。
 `optimizer.max_iterations` 控制最大迭代次数。
 
-三个单频案例使用 `shape_derivative_mine(boundary, Ef, Hf, Eb, Hb, omega, eps=EPS0, mu=MU0)`：
+四个单频案例使用 `shape_derivative_mine(boundary, Ef, Hf, Eb, Hb, omega, eps=EPS0, mu=MU0)`：
 `Re[eps * E_perp · Eb_perp + mu * H_parallel · Hb_parallel]`。
 输入场为 `(3, N)` 复数数组，点积不取共轭；`omega` 参数保留以兼容现有调用。
 `eps` 取实际采样侧介电常数，`mu` 默认 `MU0`。直接取场和网格插值均调用该接口。
@@ -222,6 +233,6 @@ python scripts/check_shape_derivative_mine.py
 [完整检测报告](docs/antenna_oscillation_complete_report_2026-11-15.md)。
 对应原始结果仍保存在 `results/`；重复阶段报告已合并删除。
 
-使用四个案例入口的 `--help` 检查参数和导入，使用 `--gradient-check` 在配置好
+使用五个案例入口的 `--help` 检查参数和导入，使用 `--gradient-check` 在配置好
 CST 的环境中检查目标变化与伴随梯度，并先做 1–2 轮小规模运行确认几何、场数据
 和目标趋势。代码清理后的静态检查与离线数值检查不能代替实际 CST 验收。
